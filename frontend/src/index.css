@@ -1,0 +1,143 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Lanvex tokens. Light first; .dark overrides. Components use these semantic names only. */
+:root {
+  --canvas: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f1f3f6;
+  --line: #e2e5ea;
+  --line-strong: #cfd4db;
+  --ink: #151a21;
+  --muted: #5d6673;
+  --faint: #8a929e;
+  --accent: #2e6be6;
+  --accent-ink: #ffffff;
+  --accent-soft: #e8effd;
+  --ok: #1d8a57;
+  --ok-soft: #e3f4ea;
+  --warn: #a8670f;
+  --warn-soft: #fbf0dc;
+  --danger: #c23b33;
+  --danger-soft: #fbe7e5;
+  --info: #127a8f;
+  --info-soft: #dff2f5;
+  --strip-used: #2e6be6;
+  --strip-child: #8fb0f2;
+  --strip-free: #e9ecf0;
+  --ring: #2e6be680;
+  --shadow-pop: 0 1px 2px rgb(16 24 40 / 6%), 0 8px 24px -6px rgb(16 24 40 / 16%);
+}
+
+.dark {
+  --canvas: #111519;
+  --surface: #171c22;
+  --surface-2: #1d232a;
+  --line: #262d36;
+  --line-strong: #343c47;
+  --ink: #e6e9ee;
+  --muted: #8d96a3;
+  --faint: #6a7380;
+  --accent: #6c97f0;
+  --accent-ink: #0d1420;
+  --accent-soft: #1d2a42;
+  --ok: #4cc28a;
+  --ok-soft: #173326;
+  --warn: #e0a54a;
+  --warn-soft: #372a14;
+  --danger: #ef7d74;
+  --danger-soft: #3a1d1b;
+  --info: #5cc3d6;
+  --info-soft: #14313a;
+  --strip-used: #6c97f0;
+  --strip-child: #3d5a92;
+  --strip-free: #232a33;
+  --ring: #6c97f080;
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 30%), 0 12px 32px -8px rgb(0 0 0 / 55%);
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --shadow-pop: var(--shadow-pop);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-canvas text-ink font-sans text-sm;
+    font-feature-settings: "tnum" 1;
+  }
+  * {
+    @apply border-line;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+}
+
+@layer utilities {
+  .addr {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    letter-spacing: -0.01em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: translate(-50%, 4px) scale(0.985); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+@keyframes sheet-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}

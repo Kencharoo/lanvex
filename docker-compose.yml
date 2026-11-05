@@ -1,0 +1,56 @@
+# Lanvex — self-hosted stack. NetBox runs separately (yours, or the local one in deploy/netbox).
+#   cp .env.example .env   # then edit secrets and the NetBox URL/token
+#   docker compose up -d --build
+name: lanvex
+
+services:
+  lanvex:
+    build: .
+    image: lanvex:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LANVEX_DATABASE_URL: postgresql+asyncpg://lanvex:${LANVEX_POSTGRES_PASSWORD:?set LANVEX_POSTGRES_PASSWORD in .env}@lanvex-db:5432/lanvex
+      LANVEX_REDIS_URL: redis://lanvex-redis:6379/0
+    ports:
+      - "${LANVEX_HTTP_PORT:-8080}:8000"
+    depends_on:
+      lanvex-db:
+        condition: service_healthy
+      lanvex-redis:
+        condition: service_healthy
+    networks: [lanvex]
+
+  lanvex-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lanvex
+      POSTGRES_USER: lanvex
+      POSTGRES_PASSWORD: ${LANVEX_POSTGRES_PASSWORD:?set LANVEX_POSTGRES_PASSWORD in .env}
+    volumes:
+      - lanvex-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lanvex -d lanvex"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [lanvex]
+
+  lanvex-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [lanvex]
+
+volumes:
+  lanvex-db:
+
+networks:
+  lanvex:
+    name: lanvex

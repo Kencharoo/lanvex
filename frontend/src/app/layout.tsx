@@ -1,0 +1,212 @@
+import { useQuery } from "@tanstack/react-query";
+import {
+  Activity,
+  ChevronsLeft,
+  ChevronsRight,
+  Cpu,
+  LayoutGrid,
+  LogOut,
+  Moon,
+  Network,
+  Server,
+  Settings,
+  Share2,
+  Sun,
+  SunMoon,
+  Tags,
+  Workflow,
+  Waypoints,
+} from "lucide-react";
+import * as React from "react";
+import { NavLink, Outlet, useLocation } from "react-router";
+import { Wordmark } from "@/components/logo";
+import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Tooltip } from "@/components/ui/misc";
+import { api } from "@/lib/api";
+import type { NetBoxStatus } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { useSession } from "./session";
+import { type ThemePref, useTheme } from "./theme";
+
+type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }>; later?: boolean };
+
+const NAV: NavItem[][] = [
+  [{ to: "/", label: "Overview", icon: LayoutGrid }],
+  [
+    { to: "/networks", label: "Networks", icon: Network },
+    { to: "/ip-addresses", label: "IP Addresses", icon: Waypoints },
+    { to: "/vlans", label: "VLANs", icon: Tags },
+    { to: "/devices", label: "Devices", icon: Cpu },
+    { to: "/servers", label: "Servers", icon: Server, later: true },
+  ],
+  [
+    { to: "/topology", label: "Topology", icon: Share2, later: true },
+    { to: "/automation", label: "Automation", icon: Workflow, later: true },
+    { to: "/activity", label: "Activity & Audit Logs", icon: Activity },
+  ],
+  [{ to: "/settings", label: "Settings", icon: Settings }],
+];
+
+const COLLAPSE_KEY = "lanvex-sidebar-collapsed";
+
+function useNetBoxStatus() {
+  return useQuery({
+    queryKey: ["netbox-status"],
+    queryFn: () => api<NetBoxStatus>("/system/netbox"),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+}
+
+function ConnectionIndicator({ collapsed }: { collapsed: boolean }) {
+  const { data, isPending } = useNetBoxStatus();
+  const state = isPending
+    ? { tone: "bg-faint", text: "Checking NetBox…" }
+    : !data?.configured
+      ? { tone: "bg-faint", text: "NetBox not configured" }
+      : !data.reachable
+        ? { tone: "bg-danger", text: "NetBox unreachable" }
+        : !data.authenticated
+          ? { tone: "bg-warn", text: "NetBox token rejected" }
+          : data.supported === false
+            ? { tone: "bg-warn", text: `NetBox ${data.version} unsupported` }
+            : { tone: "bg-ok", text: `NetBox ${data.version}` };
+  const content = (
+    <NavLink
+      to="/settings"
+      className="flex items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-xs text-muted hover:bg-surface-2 hover:text-ink"
+    >
+      <span className={cn("size-2 shrink-0 rounded-full", state.tone)} aria-hidden />
+      {!collapsed && <span className="truncate">{state.text}</span>}
+      {collapsed && <span className="sr-only">{state.text}</span>}
+    </NavLink>
+  );
+  return collapsed ? <Tooltip content={state.text} side="right">{content}</Tooltip> : content;
+}
+
+function UserMenu({ collapsed }: { collapsed: boolean }) {
+  const { user, signOut } = useSession();
+  const { theme, setTheme } = useTheme();
+  const themes: { v: ThemePref; label: string; icon: typeof Sun }[] = [
+    { v: "light", label: "Light", icon: Sun },
+    { v: "dark", label: "Dark", icon: Moon },
+    { v: "system", label: "Match system", icon: SunMoon },
+  ];
+  const initials = (user.display_name || user.username).slice(0, 2).toUpperCase();
+  return (
+    <Menu>
+      <MenuTrigger className="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-left hover:bg-surface-2">
+        <span className="grid size-6 shrink-0 place-items-center rounded-full bg-accent-soft text-2xs font-semibold text-accent">{initials}</span>
+        {!collapsed && (
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-medium">{user.display_name || user.username}</span>
+            <span className="block truncate text-xs text-muted">{user.display_name ? user.username : user.role === "admin" ? "Administrator" : "Read-only"}</span>
+          </span>
+        )}
+      </MenuTrigger>
+      <MenuContent align="start" side="top" className="w-52">
+        {themes.map((t) => (
+          <MenuItem key={t.v} onSelect={() => setTheme(t.v)} aria-checked={theme === t.v} role="menuitemradio">
+            <t.icon /> {t.label}
+            {theme === t.v && <span className="ml-auto size-1.5 rounded-full bg-accent" aria-hidden />}
+          </MenuItem>
+        ))}
+        <MenuSeparator />
+        <MenuItem onSelect={() => void signOut()}>
+          <LogOut /> Sign out
+        </MenuItem>
+      </MenuContent>
+    </Menu>
+  );
+}
+
+export function AppLayout() {
+  const [collapsed, setCollapsed] = React.useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = () => {
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem(COLLAPSE_KEY, c ? "0" : "1");
+      } catch {
+        /* ignore */
+      }
+      return !c;
+    });
+  };
+  const location = useLocation();
+  const mainRef = React.useRef<HTMLElement>(null);
+  React.useEffect(() => {
+    mainRef.current?.focus({ preventScroll: true });
+  }, [location.pathname]);
+
+  return (
+    <div className="flex min-h-dvh">
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-surface focus:px-3 focus:py-2">
+        Skip to content
+      </a>
+      <aside
+        className={cn(
+          "sticky top-0 flex h-dvh shrink-0 flex-col border-r border-line bg-surface transition-[width] duration-150",
+          collapsed ? "w-14" : "w-60",
+        )}
+      >
+        <div className={cn("flex h-12 items-center border-b border-line", collapsed ? "justify-center" : "justify-between px-3")}>
+          <NavLink to="/" aria-label="Lanvex overview">
+            <Wordmark collapsed={collapsed} />
+          </NavLink>
+          {!collapsed && (
+            <button onClick={toggle} className="rounded p-1 text-faint hover:bg-surface-2 hover:text-ink" aria-label="Collapse sidebar">
+              <ChevronsLeft className="size-4" />
+            </button>
+          )}
+        </div>
+        <nav aria-label="Main" className="flex-1 overflow-y-auto px-2 py-3">
+          {NAV.map((group, gi) => (
+            <ul key={gi} className={cn("grid gap-px", gi > 0 && "mt-3 border-t border-line pt-3")}>
+              {group.map((item) => {
+                const link = (
+                  <NavLink
+                    to={item.to}
+                    end={item.to === "/"}
+                    className={({ isActive }) =>
+                      cn(
+                        "group relative flex h-8 items-center gap-2.5 rounded-[var(--radius-control)] px-2 text-[13px] transition-colors",
+                        isActive ? "bg-accent-soft font-medium text-accent" : "text-muted hover:bg-surface-2 hover:text-ink",
+                        collapsed && "justify-center px-0",
+                      )
+                    }
+                  >
+                    <item.icon className="size-4 shrink-0" />
+                    {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                    {!collapsed && item.later && <span className="text-2xs text-faint">Planned</span>}
+                    {collapsed && <span className="sr-only">{item.label}</span>}
+                  </NavLink>
+                );
+                return <li key={item.to}>{collapsed ? <Tooltip content={item.label} side="right">{link}</Tooltip> : link}</li>;
+              })}
+            </ul>
+          ))}
+        </nav>
+        <div className="grid gap-1 border-t border-line p-2">
+          <ConnectionIndicator collapsed={collapsed} />
+          <UserMenu collapsed={collapsed} />
+          {collapsed && (
+            <button onClick={toggle} className="mx-auto rounded p-1 text-faint hover:bg-surface-2 hover:text-ink" aria-label="Expand sidebar">
+              <ChevronsRight className="size-4" />
+            </button>
+          )}
+        </div>
+      </aside>
+      <main id="main" ref={mainRef} tabIndex={-1} className="min-w-0 flex-1 outline-none">
+        <div className="mx-auto max-w-[1280px] px-6 py-6 lg:px-8">
+          <Outlet />
+        </div>
+      </main>
+    </div>
+  );
+}
+
