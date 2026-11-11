@@ -14,6 +14,8 @@ All settings are environment variables prefixed `LANVEX_`. In Docker they come f
 | `LANVEX_LOG_JSON` | `false` | `true` in the Docker image |
 | `LANVEX_MIGRATE_ON_START` | `true` | Docker entrypoint only |
 | `LANVEX_WORKERS` | `2` | Docker entrypoint only |
+| `LANVEX_HTTP_PORT` | `8080` | Docker Compose only. Host port; prefix an address to limit it, e.g. `127.0.0.1:8080` behind a proxy on the same host |
+| `LANVEX_DOCKER_SUBNET` | `172.31.250.0/24` | Docker Compose only. Subnet of the `lanvex` network; its `.1` is the address a proxy on the host connects from. Change it if it overlaps a network you use |
 
 ## NetBox
 
@@ -35,7 +37,7 @@ Without URL and token Lanvex still starts; NetBox-backed pages show how to conne
 | `LANVEX_SESSION_IDLE_MINUTES` | `60` | |
 | `LANVEX_SESSION_ABSOLUTE_HOURS` | `12` | |
 | `LANVEX_COOKIE_SECURE` | `true` in production | When true, sign-in over plain HTTP is refused with an explanation |
-| `LANVEX_TRUSTED_PROXIES` | `[]` | JSON list of CIDRs whose `X-Forwarded-For` / `X-Forwarded-Proto` are believed |
+| `LANVEX_TRUSTED_PROXIES` | `[]` | JSON list of CIDRs whose `X-Forwarded-For` / `X-Forwarded-Proto` are believed. A proxy on the Docker host connects from the network gateway: `["172.31.250.1/32"]` with the default subnet |
 | `LANVEX_LOGIN_RATE_LIMIT` / `_WINDOW_SECONDS` | `10` / `300` | Per client IP and username |
 | `LANVEX_WRITE_RATE_LIMIT` / `_WINDOW_SECONDS` | `120` / `60` | Per user, all writes |
 

@@ -54,3 +54,8 @@ volumes:
 networks:
   lanvex:
     name: lanvex
+    # A fixed subnet gives a fixed gateway (.1). A reverse proxy on this host reaches Lanvex from that
+    # gateway, so LANVEX_TRUSTED_PROXIES can name it. Change it if it overlaps a network you use.
+    ipam:
+      config:
+        - subnet: ${LANVEX_DOCKER_SUBNET:-172.31.250.0/24}

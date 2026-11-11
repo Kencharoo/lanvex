@@ -22,3 +22,6 @@ frontend/playwright-report/
 .DS_Store
 .idea/
 .vscode/
+
+# Redis snapshot written when redis-server runs from the repo root
+dump.rdb

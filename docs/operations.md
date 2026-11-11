@@ -2,8 +2,8 @@
 
 ## Production checklist
 
-- Serve Lanvex over HTTPS through a reverse proxy, and set `LANVEX_TRUSTED_PROXIES` to the proxy's address
-  so audit entries and rate limits see real client IPs.
+- Serve Lanvex over HTTPS through a reverse proxy, and set `LANVEX_TRUSTED_PROXIES` to the address the
+  proxy connects from (see below), so Lanvex recognises HTTPS and logs real client IPs.
 - Use a dedicated NetBox user and token for Lanvex with only the permissions below.
 - Set strong values for `LANVEX_POSTGRES_PASSWORD` and the bootstrap admin password; remove the bootstrap
   variables after the first start.
@@ -11,7 +11,7 @@
 - Keep `LANVEX_AUTOMATION_ENABLED=false`.
 - Set `LANVEX_SECRET_KEY` and store it with your database backups. Consider `LANVEX_SERVER_ALLOWED_NETWORKS`.
 
-### Reverse proxy (Caddy example)
+### Reverse proxy (Caddy on the same host)
 
 ```
 lanvex.example.net {
@@ -19,8 +19,22 @@ lanvex.example.net {
 }
 ```
 
-With `LANVEX_TRUSTED_PROXIES=["127.0.0.1/32"]` (or your proxy's network) Lanvex honours
-`X-Forwarded-For` and `X-Forwarded-Proto`.
+In `.env`:
+
+```
+LANVEX_HTTP_PORT=127.0.0.1:8080
+LANVEX_TRUSTED_PROXIES=["172.31.250.1/32"]
+```
+
+The first line keeps port 8080 off the network, so only the proxy reaches Lanvex. The second is
+needed because a proxy on the host reaches the container from the Docker network's gateway, not from
+`127.0.0.1`; without it Lanvex does not see that the browser used HTTPS and refuses sign-in. The
+gateway is the `.1` of `LANVEX_DOCKER_SUBNET` (default `172.31.250.0/24`). For a proxy on another
+machine, trust that machine's address instead and leave the port reachable from it.
+
+For a name only used inside your network, add `tls internal` to the site block; Caddy then signs the
+certificate with its own CA, which browsers need to trust (its root certificate is in Caddy's data
+directory under `pki/authorities/local/root.crt`).
 
 ## NetBox token permissions
 
