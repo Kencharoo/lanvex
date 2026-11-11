@@ -87,7 +87,8 @@ class IPAddressService:
     async def _check_duplicate(self, address: str, vrf_id: int | None) -> None:
         host = addr.parse_interface(address).ip
         # Match the host regardless of mask: 10.0.0.5/24 and 10.0.0.5/32 are the same address.
-        existing = await self.nb.page(IPS, {"q": str(host), "vrf_id": vrf_filter(vrf_id)}, limit=50)
+        # NetBox's `address` filter matches a bare host under any mask.
+        existing = await self.nb.page(IPS, {"address": str(host), "vrf_id": vrf_filter(vrf_id)}, limit=50)
         for raw in existing.results:
             if addr.parse_interface(raw["address"]).ip == host:
                 scope = "the selected VRF" if vrf_id is not None else "the global table"

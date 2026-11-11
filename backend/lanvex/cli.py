@@ -36,6 +36,28 @@ async def _create_user(username: str, role: Role, password: str) -> None:
         await db.dispose()
 
 
+async def _rotate_credentials() -> int:
+    from sqlalchemy import select
+
+    from lanvex.core.secrets import Vault
+    from lanvex.servers.models import Server
+
+    settings = get_settings()
+    vault = Vault.from_settings(settings)
+    db = Database(settings.database_url.get_secret_value())
+    try:
+        async with db.sessionmaker() as session:
+            servers = (await session.scalars(select(Server))).all()
+            for s in servers:
+                s.credential_ciphertext = vault.rotate(s.credential_ciphertext)
+            await session.commit()
+    finally:
+        await db.dispose()
+    print(f"Re-encrypted credentials for {len(servers)} server(s) with the current LANVEX_SECRET_KEY.")
+    print("You can now remove the old key from LANVEX_SECRET_KEY_FALLBACKS.")
+    return 0
+
+
 async def _check_netbox() -> int:
     from lanvex.main import build_netbox
 
@@ -67,12 +89,27 @@ def main(argv: list[str] | None = None) -> int:
     cu.add_argument("--role", choices=[r.value for r in Role], default=Role.READONLY.value)
     cu.add_argument("--password-stdin", action="store_true", help="Read the password from stdin")
     sub.add_parser("check-netbox", help="Test the NetBox connection")
+    sub.add_parser("generate-secret-key", help="Print a new value for LANVEX_SECRET_KEY")
+    sub.add_parser(
+        "rotate-credentials", help="Re-encrypt stored credentials with the current LANVEX_SECRET_KEY"
+    )
     args = parser.parse_args(argv)
 
     if args.cmd == "migrate":
         return migrate()
     if args.cmd == "check-netbox":
         return asyncio.run(_check_netbox())
+    if args.cmd == "generate-secret-key":
+        from lanvex.core.secrets import generate_secret_key
+
+        print(generate_secret_key())
+        return 0
+    if args.cmd == "rotate-credentials":
+        try:
+            return asyncio.run(_rotate_credentials())
+        except LanvexError as e:
+            print(f"Error: {e.message}", file=sys.stderr)
+            return 1
     if args.cmd == "create-user":
         if args.password_stdin:
             password = sys.stdin.readline().rstrip("\n")

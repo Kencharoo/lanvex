@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: SecretStr | None = None
 
+    # Credentials at rest (server SSH keys and passwords)
+    secret_key: SecretStr | None = None
+    secret_key_fallbacks: list[SecretStr] = Field(default_factory=list)
+
+    # Server management (read-only SSH)
+    server_allowed_networks: list[str] = Field(
+        default_factory=list, description="If set, Lanvex only connects to servers inside these CIDRs."
+    )
+    ssh_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    ssh_command_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    server_snapshot_retention: int = Field(default=20, ge=1, le=500)
+
     # Phase 2 — infrastructure-changing automation. Off unless explicitly enabled.
     automation_enabled: bool = False
 
@@ -50,7 +62,14 @@ class Settings(BaseSettings):
     def _empty_url_is_none(cls, v: object) -> object:
         return None if v == "" else v
 
-    @field_validator("netbox_token", "bootstrap_admin_password", mode="before")
+    @field_validator("server_allowed_networks")
+    @classmethod
+    def _valid_networks(cls, v: list[str]) -> list[str]:
+        import ipaddress
+
+        return [str(ipaddress.ip_network(n, strict=False)) for n in v]
+
+    @field_validator("netbox_token", "bootstrap_admin_password", "secret_key", mode="before")
     @classmethod
     def _empty_secret_is_none(cls, v: object) -> object:
         return None if v == "" else v

@@ -1,0 +1,15 @@
+# /etc/network/interfaces (Lanvex lab target)
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    # Docker pre-assigns the same address; clear it so ifupdown owns the configuration.
+    pre-up ip addr flush dev eth0 || true
+    address 172.30.0.13/24
+    gateway 172.30.0.1
+
+auto br0
+iface br0 inet static
+    pre-up ip link add br0 type bridge || true
+    address 10.13.0.1/24

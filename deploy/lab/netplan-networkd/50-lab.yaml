@@ -1,0 +1,17 @@
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      addresses: [172.30.0.11/24]
+      routes:
+        - to: default
+          via: 172.30.0.1
+      nameservers:
+        addresses: [172.30.0.1, 9.9.9.9]
+        search: [lab.example.net]
+  bridges:
+    br0:
+      interfaces: []
+      addresses: [10.11.0.1/24]
+      ignore-carrier: true

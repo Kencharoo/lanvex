@@ -1,0 +1,66 @@
+{
+ "addresses": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "hostname": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "ifupdown_config": {
+  "exit_status": 1,
+  "stderr": "cat: /etc/network/interfaces: No such file or directory\n"
+ },
+ "ifupdown_includes": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "ip_version": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "kernel": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "netplan_files": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "networkctl_list": {
+  "exit_status": 0,
+  "stderr": "systemd-networkd is not running, output might be incomplete.\n"
+ },
+ "nmcli_devices": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "os_release": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "resolv_conf": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "resolvectl_dns": {
+  "exit_status": 127,
+  "stderr": "env: 'resolvectl': No such file or directory\n"
+ },
+ "resolvectl_domain": {
+  "exit_status": 127,
+  "stderr": "env: 'resolvectl': No such file or directory\n"
+ },
+ "routes_v4": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "routes_v6": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "unit_states": {
+  "exit_status": 0,
+  "stderr": ""
+ }
+}

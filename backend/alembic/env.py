@@ -8,6 +8,7 @@ from lanvex.audit.models import AuditEvent  # noqa: F401  (register models)
 from lanvex.auth.models import Session, User  # noqa: F401
 from lanvex.core.config import get_settings
 from lanvex.core.db import Base
+from lanvex.servers.models import Server, ServerSnapshot  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

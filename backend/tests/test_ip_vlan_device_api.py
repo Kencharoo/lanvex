@@ -22,7 +22,7 @@ async def test_create_ip_rejects_duplicate_host_any_mask(
     admin: httpx.AsyncClient, netbox_mock: respx.MockRouter
 ) -> None:
     netbox_mock.get("ipam/prefixes/", params={"contains": "10.0.0.5"}).respond(200, json=p.page([]))
-    netbox_mock.get("ipam/ip-addresses/", params={"q": "10.0.0.5"}).respond(
+    netbox_mock.get("ipam/ip-addresses/", params={"address": "10.0.0.5"}).respond(
         200, json=p.page([p.ip(3, "10.0.0.50/24"), p.ip(4, "10.0.0.5/32")])
     )
     r = await admin.post("/api/v1/ip-addresses", json={"address": "10.0.0.5/24"})
@@ -36,7 +36,7 @@ async def test_create_ip_assigned_to_interface(
     netbox_mock.get("ipam/prefixes/", params={"contains": "10.0.0.9"}).respond(
         200, json=p.page([p.prefix(2, "10.0.0.0/24")])
     )
-    netbox_mock.get("ipam/ip-addresses/", params={"q": "10.0.0.9"}).respond(200, json=p.page([]))
+    netbox_mock.get("ipam/ip-addresses/", params={"address": "10.0.0.9"}).respond(200, json=p.page([]))
     netbox_mock.get("dcim/interfaces/21/").respond(200, json=iface)
     post = netbox_mock.post("ipam/ip-addresses/").respond(201, json=p.ip(9, "10.0.0.9/24", interface=iface))
     r = await admin.post(

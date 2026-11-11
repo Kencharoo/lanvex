@@ -1,0 +1,3 @@
+eth0:ethernet:connected:lab-uplink
+eth1:ethernet:connected (externally):eth1
+lo:loopback:connected (externally):lo

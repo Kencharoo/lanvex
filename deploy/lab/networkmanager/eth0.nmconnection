@@ -1,0 +1,13 @@
+[connection]
+id=lab-uplink
+type=ethernet
+interface-name=eth0
+
+[ipv4]
+method=manual
+address1=172.30.0.12/24,172.30.0.1
+dns=172.30.0.1;1.1.1.1;
+dns-search=lab.example.net;
+
+[ipv6]
+method=disabled

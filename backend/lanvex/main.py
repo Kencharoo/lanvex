@@ -25,6 +25,7 @@ from lanvex.devices.router import router as devices_router
 from lanvex.ipam.router import router as ipam_router
 from lanvex.lookups.router import router as lookups_router
 from lanvex.netbox.client import NetBoxClient
+from lanvex.servers.router import router as servers_router
 from lanvex.system.router import router as system_router
 from lanvex.vlans.router import router as vlans_router
 
@@ -113,6 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lookups_router,
         dashboard_router,
         audit_router,
+        servers_router,
     ):
         api.include_router(r)
     app.include_router(api)

@@ -1,0 +1,13 @@
+[connection]
+id=storage
+type=ethernet
+interface-name=eth1
+
+[ipv4]
+method=manual
+address1=172.31.0.12/24
+route1=10.50.0.0/16,172.31.0.1,50
+never-default=true
+
+[ipv6]
+method=disabled

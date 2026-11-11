@@ -1,0 +1,1 @@
+[{"dst":"default","gateway":"172.30.0.1","dev":"eth0","flags":[]},{"dst":"default","gateway":"172.30.0.1","dev":"eth0","protocol":"static","flags":[]},{"dst":"10.11.0.0/24","dev":"br0","protocol":"kernel","scope":"link","prefsrc":"10.11.0.1","flags":["linkdown"]},{"dst":"172.30.0.0/24","dev":"eth0","protocol":"kernel","scope":"link","prefsrc":"172.30.0.11","flags":[]}]

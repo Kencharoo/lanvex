@@ -40,6 +40,8 @@ class SystemInfo(ApiModel):
     version: str
     environment: str
     automation_enabled: bool
+    credential_storage: bool
+    server_allowed_networks: list[str]
 
 
 @router.get("/health/live", response_model=Liveness)
@@ -107,4 +109,10 @@ async def netbox_status(request: Request, _: CurrentUser) -> NetBoxStatusOut:
 @router.get("/system/info", response_model=SystemInfo)
 async def info(_: CurrentUser) -> SystemInfo:
     s = get_settings()
-    return SystemInfo(version=__version__, environment=s.env, automation_enabled=s.automation_enabled)
+    return SystemInfo(
+        version=__version__,
+        environment=s.env,
+        automation_enabled=s.automation_enabled,
+        credential_storage=s.secret_key is not None,
+        server_allowed_networks=s.server_allowed_networks,
+    )
