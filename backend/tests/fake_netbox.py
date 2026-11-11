@@ -403,8 +403,10 @@ def matches(kind: str, o: dict[str, Any], qp: Any) -> bool:
             return False
         if (p := qp.get("parent")) and iface.ip not in ipaddress.ip_network(p, strict=False):
             return False
-        if (a := qp.get("address")) and o["address"] != a:
-            return False
+        if wanted := qp.getlist("address"):
+            # As in NetBox: a value with a mask matches exactly, a bare host matches any mask.
+            if not any(o["address"] == a if "/" in a else str(iface.ip) == a for a in wanted):
+                return False
         if (m := qp.get("mask_length")) and iface.network.prefixlen != int(m):
             return False
         if (t := qp.get("tag")) and not any(DB["tags"][x]["slug"] == t for x in o.get("tags", [])):
@@ -434,6 +436,8 @@ def matches(kind: str, o: dict[str, Any], qp: Any) -> bool:
             if (v := qp.get(f)) and o.get(key) != int(v):
                 return False
         if (s := qp.get("slug")) and o.get("slug") != s:
+            return False
+        if (names := qp.getlist("name")) and o.get("name") not in names:
             return False
     elif kind == "interfaces":
         if (dev := qp.get("device_id")) and o["device"] != int(dev):

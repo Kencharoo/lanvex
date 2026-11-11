@@ -39,7 +39,21 @@ Without URL and token Lanvex still starts; NetBox-backed pages show how to conne
 | `LANVEX_LOGIN_RATE_LIMIT` / `_WINDOW_SECONDS` | `10` / `300` | Per client IP and username |
 | `LANVEX_WRITE_RATE_LIMIT` / `_WINDOW_SECONDS` | `120` / `60` | Per user, all writes |
 
+## Server management
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LANVEX_SECRET_KEY` | — | Required to add servers. Encrypts stored SSH keys and passwords (32+ characters; `lanvex generate-secret-key`) |
+| `LANVEX_SECRET_KEY_FALLBACKS` | `[]` | Previous keys, as a JSON list, while rotating. Run `lanvex rotate-credentials`, then remove them |
+| `LANVEX_SERVER_ALLOWED_NETWORKS` | `[]` | JSON list of CIDRs. When set, Lanvex refuses to scan or connect to addresses outside them (names are resolved first) |
+| `LANVEX_SSH_CONNECT_TIMEOUT_SECONDS` | `10` | Connection and login |
+| `LANVEX_SSH_COMMAND_TIMEOUT_SECONDS` | `15` | Per command |
+| `LANVEX_SERVER_SNAPSHOT_RETENTION` | `20` | Reads kept per server |
+
+Back up `LANVEX_SECRET_KEY` with the database. Without it, stored credentials cannot be decrypted
+and every server has to be given new credentials.
+
 ## Automation (phase 2)
 
-`LANVEX_AUTOMATION_ENABLED` defaults to `false`. No feature in 0.1 reads it as permission to change
+`LANVEX_AUTOMATION_ENABLED` defaults to `false`. No feature yet reads it as permission to change
 infrastructure; it exists so that the future switch is explicit and off by default.

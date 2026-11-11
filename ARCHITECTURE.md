@@ -24,7 +24,8 @@ inventory and IPAM; Lanvex adds an independent UI, workflows, access control, au
 | `backend/lanvex/ipam`, `vlans`, `devices`, `dashboard` | Domain services: validation, overlap checks, utilization, mapping NetBox payloads to Lanvex models | Raw HTTP |
 | `backend/lanvex/auth` | Local users, Argon2 hashing, server-side sessions, roles, CSRF | — |
 | `backend/lanvex/audit` | Append-only audit trail of every write Lanvex performs | — |
-| `backend/lanvex/integrations` (phase 2+) | Pluggable adapters (Linux/SSH, OPNsense, …) declaring explicit capabilities | Run arbitrary commands |
+| `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH, read-only) exists; others plug in the same way | Run arbitrary commands |
+| `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state, comparison with NetBox | Write to servers |
 
 ## Three states, kept separate
 
@@ -34,6 +35,33 @@ inventory and IPAM; Lanvex adds an independent UI, workflows, access control, au
 
 The UI labels MVP writes as "Recorded in NetBox", never "deployed". No adapter exists yet,
 so no deployment state can be shown as succeeded.
+
+## Server management (phase 2a, read-only)
+
+```
+ Lanvex API ──SSH (pinned host key, one stored credential, fixed commands)──▶ Linux server
+     │                                                                      (unprivileged user)
+     ├── servers            registry; credentials encrypted with LANVEX_SECRET_KEY (Fernet via HKDF)
+     ├── server_snapshots   immutable reads of *actual* state (facts JSON + raw output, pruned)
+     └── NetBox             *documented* state for the linked device/VM, compared address by address
+```
+
+- **Adapters and capabilities.** `integrations/base.py` defines capabilities (`read.interfaces`,
+  `read.routes`, …). The `linux-ssh` adapter declares only read capabilities; the UI and API offer
+  only what the server's adapter declares. Write capabilities will be added per adapter, each behind
+  validation → preview → approval → checkpoint → execution → verification → rollback.
+- **Commands.** `integrations/linux/commands.py` is the entire set Lanvex can run: constants, with
+  a fixed `LC_ALL=C` and `PATH`. Callers pass an enum, never a string. Stack-specific tools run only
+  when that stack's service is active.
+- **Trust.** Host keys are fetched without logging in, shown as SHA-256 fingerprints, and pinned only
+  after an administrator confirms them; the server re-checks that the confirmed fingerprint matches
+  the key. Connections use only the pinned key and the server's own credential (no agent, no
+  `~/.ssh`). A changed key stops all access until re-verified.
+- **Parsing.** Pure functions over command output (`parsers.py`, `assemble.py`), tested against
+  output captured from real hosts running netplan/networkd, NetworkManager and ifupdown.
+- **Execution.** Reads run in the request (typically 150–300 ms) with per-server locking and
+  timeouts. A background job runner arrives with write operations, which need it for
+  checkpoint/rollback windows.
 
 ## Data flow: create a prefix
 
@@ -59,7 +87,9 @@ so no deployment state can be shown as succeeded.
 
 `users` (id, username, password_hash, role, is_active, timestamps) ·
 `sessions` (token hash, user, csrf token, expiry, IP, user agent) ·
-`audit_events` (actor, action, target type/id/repr, outcome, detail JSON, IP, request id, time).
+`audit_events` (actor, action, target type/id/repr, outcome, detail JSON, IP, request id, time) ·
+`servers` (address, user, auth method, encrypted credential, public key, pinned host key, NetBox link, last status, summary) ·
+`server_snapshots` (server, time, status, facts JSON, raw output, duration, requested by).
 Migrations: Alembic in `backend/alembic`.
 
 ## Security model
@@ -71,8 +101,10 @@ Migrations: Alembic in `backend/alembic`.
 - CSRF: per-session token, required in `X-CSRF-Token` for every non-GET request.
 - Rate limits (Redis, in-memory fallback in dev/tests): login attempts and write operations.
 - Secrets only from environment; never in responses, logs (structlog redaction), or the bundle.
-- No shell execution in the MVP. Phase 2 automation uses narrowly scoped, typed operations
-  behind adapters, disabled by default (`LANVEX_AUTOMATION_ENABLED=false`).
+- No user input reaches a shell. Server reads use a fixed command set; future write operations will
+  be narrowly scoped, typed operations behind adapters, disabled by default (`LANVEX_AUTOMATION_ENABLED=false`).
+- Credentials at rest: Fernet with a key derived from `LANVEX_SECRET_KEY`; never returned by the API,
+  logged, or audited. Optional `LANVEX_SERVER_ALLOWED_NETWORKS` limits where Lanvex may connect.
 
 ## Directory layout
 

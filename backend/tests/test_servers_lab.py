@@ -2,7 +2,7 @@
 
 Uses `docker exec` to play the server administrator's part (installing the authorized key,
 regenerating host keys). The comparison test also needs the live NetBox variables from
-test_integration_netbox.py.
+test_integration_netbox.py, and removes any NetBox IP records for 172.30.0.11, 172.30.0.50 and 10.11.0.1.
 """
 
 import os
@@ -32,6 +32,7 @@ pytestmark = [
 ]
 
 HOSTS = {"lab-netplan": "172.30.0.11", "lab-nm": "172.30.0.12", "lab-ifup": "172.30.0.13"}
+OWNED_ADDRESSES = ("172.30.0.11", "172.30.0.50", "10.11.0.1")
 
 
 def sh(host: str, script: str) -> str:
@@ -190,6 +191,9 @@ async def test_documented_vs_actual_comparison(api: httpx.AsyncClient) -> None:
     nb = NetBoxClient(NB_URL, NB_ADMIN)
     tag = secrets.token_hex(3)
     made: list[str] = []
+    # This test owns these lab addresses in the (disposable) NetBox, as the NetBox suite owns 198.51.100.0/24.
+    for ip in await nb.list_all("ipam/ip-addresses/", {"address": list(OWNED_ADDRESSES)}):
+        await nb.delete(f"ipam/ip-addresses/{ip['id']}/")
     try:
         site = await nb.post("dcim/sites/", {"name": f"lanvex-it lab {tag}", "slug": f"lanvex-it-lab-{tag}"})
         made.append(f"dcim/sites/{site['id']}/")

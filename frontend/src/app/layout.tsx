@@ -36,7 +36,7 @@ const NAV: NavItem[][] = [
     { to: "/ip-addresses", label: "IP Addresses", icon: Waypoints },
     { to: "/vlans", label: "VLANs", icon: Tags },
     { to: "/devices", label: "Devices", icon: Cpu },
-    { to: "/servers", label: "Servers", icon: Server, later: true },
+    { to: "/servers", label: "Servers", icon: Server },
   ],
   [
     { to: "/topology", label: "Topology", icon: Share2, later: true },

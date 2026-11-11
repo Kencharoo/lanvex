@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Server, Share2, Workflow } from "lucide-react";
+import { Share2, Workflow } from "lucide-react";
 import { PageHeader } from "@/components/page";
 
 /** Honest placeholders for phase-2+ areas: what it will do and what it needs. No fake controls. */
@@ -26,19 +26,6 @@ function Planned({ title, icon: Icon, summary, needs }: { title: string; icon: L
     </>
   );
 }
-
-export const ServersPage = () => (
-  <Planned
-    title="Servers"
-    icon={Server}
-    summary="Register Linux servers (Ubuntu, Debian, Fedora) and read their interfaces, addresses, routes and DNS over SSH, next to what NetBox documents."
-    needs={[
-      "Read-only SSH adapter with OS and network-stack detection (NetworkManager, Netplan, systemd-networkd).",
-      "Encrypted storage for SSH credentials, scoped per server.",
-      "Changes to servers stay disabled until preview, approval, checkpoint and rollback are in place.",
-    ]}
-  />
-);
 
 export const TopologyPage = () => (
   <Planned

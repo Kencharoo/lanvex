@@ -9,6 +9,7 @@
   variables after the first start.
 - Back up the `lanvex-db` volume. It holds Lanvex users and the audit log. Network data lives in NetBox.
 - Keep `LANVEX_AUTOMATION_ENABLED=false`.
+- Set `LANVEX_SECRET_KEY` and store it with your database backups. Consider `LANVEX_SERVER_ALLOWED_NETWORKS`.
 
 ### Reverse proxy (Caddy example)
 
@@ -32,9 +33,30 @@ Create a NetBox user (for example `lanvex`) and grant object permissions:
 | Extras: tags | view, add (Lanvex creates the `lanvex-gateway` tag once) |
 | IPAM: VRFs, roles, VLAN groups, IP ranges; DCIM: devices, sites, device roles, manufacturers; Tenancy: tenants | view |
 | Core: object changes | view (optional, for the overview's change feed) |
+| Virtualization: virtual machines | view (optional, to link servers to VMs) |
 
 A read-only token works too; write actions then fail with NetBox's permission message, and Lanvex
 records the failure in its audit log.
+
+## Adding a server
+
+Lanvex reads servers over SSH and never changes them. On each server:
+
+1. Create an unprivileged account for Lanvex (no sudo needed): `sudo useradd -m -s /bin/sh lanvex`.
+2. In Lanvex, choose **Servers → Add server**. Lanvex fetches the server's SSH host key and shows its
+   fingerprint. Compare it with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on the server
+   through a console you already trust, then confirm.
+3. Let Lanvex create a key (recommended). It shows a `restrict ssh-ed25519 …` line; add it to
+   `~lanvex/.ssh/authorized_keys`. `restrict` disables forwarding and terminals for that key.
+4. Test the connection, then read the network state.
+
+If a server's host key changes (after a reinstall, or if something intercepts the connection),
+Lanvex stops connecting and says so. Verify the new fingerprint the same way before trusting it.
+
+The commands Lanvex runs are fixed and read-only: `ip -json` (addresses, routes), `cat` of
+`/etc/os-release`, `/etc/resolv.conf` and `/etc/network/interfaces[.d]`, `systemctl is-active`,
+`ls /etc/netplan`, and `nmcli`/`networkctl`/`resolvectl` status when those services run. The
+contents of `/etc/network/interfaces` are parsed but not stored, since they can contain secrets.
 
 ## Users
 
@@ -64,4 +86,8 @@ NetBox outage does not take Lanvex down.
 | NetBox unreachable from the container | Use a URL that resolves inside Docker (not `localhost`); see deploy/netbox |
 | "The change may or may not have been applied" | NetBox did not answer a write in time. Refresh and check before retrying; Lanvex never retries writes |
 | Utilization differs slightly from NetBox | Duplicate IP records for the same host are counted once by NetBox and per record by Lanvex |
+| "Set LANVEX_SECRET_KEY to store server credentials" | Generate one with `lanvex generate-secret-key`, set it, restart |
+| Server shows "Host key changed" | Reinstalled server, or interception. Verify the new fingerprint on the server, then *Verify a new host key* |
+| Server shows "Sign-in failed" | Key not in `authorized_keys`, wrong user, or `AllowUsers`/`PubkeyAuthentication` in sshd_config |
+| "Stored credentials could not be decrypted" | `LANVEX_SECRET_KEY` changed. Put the old key in `LANVEX_SECRET_KEY_FALLBACKS` |
 | TLS errors to NetBox | Install the CA in the image, or `LANVEX_NETBOX_VERIFY_TLS=false` for lab instances only |

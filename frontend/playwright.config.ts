@@ -17,6 +17,7 @@ const api = {
   LANVEX_BOOTSTRAP_ADMIN_USERNAME: "e2e-admin",
   LANVEX_BOOTSTRAP_ADMIN_PASSWORD: "e2e-admin-password",
   LANVEX_LOGIN_RATE_LIMIT: "1000",
+  LANVEX_SECRET_KEY: "e2e-only-secret-key-not-for-production-use",
 };
 
 export default defineConfig({

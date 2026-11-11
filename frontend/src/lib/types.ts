@@ -234,3 +234,152 @@ export interface AuditEvent {
   ip_address: string | null;
   request_id: string | null;
 }
+
+// ---- Servers (live state read over SSH; never NetBox's documented state) ----------------------
+
+export type AuthMethod = "generated_key" | "private_key" | "password";
+export type ConnectionStatus = "ok" | "unreachable" | "auth_failed" | "host_key_mismatch" | "not_allowed" | "error";
+
+export interface NetBoxRef {
+  object_type: "dcim.device" | "virtualization.virtualmachine" | string;
+  object_id: number;
+  name: string | null;
+  url: string | null;
+}
+
+export interface Server {
+  id: string;
+  name: string;
+  description: string;
+  address: string;
+  port: number;
+  username: string;
+  adapter: string;
+  capabilities: string[];
+  auth_method: AuthMethod;
+  public_key: string | null;
+  authorized_keys_line: string | null;
+  host_key_fingerprint: string;
+  host_key_algorithm: string | null;
+  host_key_pinned_at: string;
+  netbox: NetBoxRef | null;
+  last_status: ConnectionStatus | null;
+  last_status_message: string | null;
+  last_checked_at: string | null;
+  last_collected_at: string | null;
+  os_pretty_name: string | null;
+  os_supported: boolean | null;
+  network_stack: string | null;
+  created_at: string;
+}
+
+export interface HostKeyScan {
+  algorithm: string;
+  fingerprint_sha256: string;
+  public_key: string;
+  resolved_addresses: string[];
+}
+
+export interface HostAddress {
+  address: string;
+  family: 4 | 6;
+  scope: string | null;
+  dynamic: boolean;
+  secondary: boolean;
+  deprecated: boolean;
+  tentative: boolean;
+}
+
+export interface HostInterface {
+  name: string;
+  index: number;
+  kind: string;
+  mac: string | null;
+  mtu: number | null;
+  oper_state: string;
+  admin_up: boolean;
+  carrier: boolean;
+  parent: string | null;
+  master: string | null;
+  vlan_id: number | null;
+  addresses: HostAddress[];
+  managed_by: string | null;
+  manager_state: string | null;
+  manager_profile: string | null;
+}
+
+export interface HostRoute {
+  destination: string;
+  family: 4 | 6;
+  gateway: string | null;
+  interface: string | null;
+  metric: number | null;
+  protocol: string | null;
+  scope: string | null;
+  source: string | null;
+  type: string | null;
+  flags: string[];
+}
+
+export interface HostFacts {
+  collected_at: string;
+  system: {
+    hostname: string | null;
+    kernel: string | null;
+    iproute2_version: string | null;
+    os: { id: string | null; pretty_name: string | null; version_id: string | null; supported: boolean; support_note: string };
+  };
+  interfaces: HostInterface[];
+  routes: HostRoute[];
+  dns: {
+    resolv_conf_servers: string[];
+    resolv_conf_search: string[];
+    uses_resolved_stub: boolean;
+    resolved: { scope: string; servers: string[]; domains: string[] }[] | null;
+    effective_servers: string[];
+    source: string;
+  };
+  stack: { primary: string; key: string; units: Record<string, string>; netplan_files: string[]; ifupdown_interfaces: string[]; evidence: string[] };
+  warnings: string[];
+}
+
+export interface SnapshotMeta {
+  id: string;
+  taken_at: string;
+  status: ConnectionStatus;
+  message: string | null;
+  duration_ms: number | null;
+  requested_by: string | null;
+}
+
+export interface Snapshot extends SnapshotMeta {
+  facts: HostFacts | null;
+}
+
+export interface ComparisonRow {
+  address: string;
+  status: "match" | "mask_differs" | "interface_differs" | "only_on_server" | "only_in_netbox";
+  server_address: string | null;
+  server_interface: string | null;
+  netbox_address: string | null;
+  netbox_interface: string | null;
+  netbox_ip_id: number | null;
+  recorded_elsewhere: string | null;
+}
+
+export interface Comparison {
+  linked: boolean;
+  netbox: NetBoxRef | null;
+  suggestions: NetBoxRef[];
+  snapshot_taken_at: string | null;
+  rows: ComparisonRow[];
+  counts: Record<string, number>;
+}
+
+export interface SystemInfo {
+  version: string;
+  environment: string;
+  automation_enabled: boolean;
+  credential_storage: boolean;
+  server_allowed_networks: string[];
+}
