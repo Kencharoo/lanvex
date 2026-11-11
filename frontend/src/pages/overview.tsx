@@ -147,6 +147,28 @@ function Inventory({ o }: { o: Overview | undefined }) {
   );
 }
 
+const OBJECT_LABELS: Record<string, string> = {
+  "ipam.prefix": "prefix",
+  "ipam.ipaddress": "IP address",
+  "ipam.iprange": "IP range",
+  "ipam.vlan": "VLAN",
+  "ipam.vlangroup": "VLAN group",
+  "ipam.vrf": "VRF",
+  "ipam.role": "prefix role",
+  "dcim.device": "device",
+  "dcim.devicetype": "device type",
+  "dcim.devicerole": "device role",
+  "dcim.interface": "interface",
+  "dcim.site": "site",
+  "dcim.manufacturer": "manufacturer",
+  "extras.tag": "tag",
+  "tenancy.tenant": "tenant",
+};
+
+function objectLabel(type: string): string {
+  return OBJECT_LABELS[type] ?? type.split(".").pop() ?? type;
+}
+
 function RecentChanges({ o }: { o: Overview | undefined }) {
   const source = o?.recent_changes[0]?.source;
   return (
@@ -178,7 +200,7 @@ function RecentChanges({ o }: { o: Overview | undefined }) {
                 <span className="w-16 shrink-0 text-xs capitalize text-muted">{c.action}</span>
                 <span className="min-w-0 flex-1 truncate">
                   <span className="addr">{c.object_repr}</span>
-                  <span className="text-muted"> {c.object_type.split(".").pop()}</span>
+                  <span className="text-muted"> {objectLabel(c.object_type)}</span>
                 </span>
                 <span className="shrink-0 text-xs text-faint" title={new Date(c.time).toLocaleString()}>
                   {c.user ? `${c.user}, ` : ""}

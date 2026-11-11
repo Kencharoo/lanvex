@@ -58,6 +58,17 @@ def to_prefix(raw: dict[str, Any]) -> Prefix:
     )
 
 
+def _range_in(r: dict[str, Any], net: addr.IPNetwork, vrf_id: int | None) -> bool:
+    if ((r.get("vrf") or {}).get("id")) != vrf_id:
+        return False
+    try:
+        start = ipaddress.ip_interface(r["start_address"]).ip
+        end = ipaddress.ip_interface(r["end_address"]).ip
+    except (KeyError, ValueError):
+        return False
+    return start.version == net.version and start in net and end in net
+
+
 class PrefixService:
     def __init__(self, nb: NetBoxClient):
         self.nb = nb
@@ -90,14 +101,30 @@ class PrefixService:
         page = await self.nb.page(PREFIXES, params, limit=limit, offset=offset)
         items = [to_prefix(r) for r in page.results]
         if include_utilization and items:
+            ranges = await self.utilized_ranges(items)
             sem = asyncio.Semaphore(UTILIZATION_CONCURRENCY)
 
             async def fill(p: Prefix) -> None:
                 async with sem:
-                    p.utilization = await self.utilization(p)
+                    p.utilization = await self.utilization(p, ranges=ranges)
 
             await asyncio.gather(*(fill(p) for p in items))
         return Page(count=page.count, limit=limit, offset=offset, results=items)
+
+    async def utilized_ranges(self, prefixes: list[Prefix]) -> list[dict[str, Any]]:
+        """All IP ranges marked utilized inside any of these leaf prefixes, in one NetBox call.
+
+        NetBox's `parent` filter on ip-ranges is multi-valued, so a page of prefixes costs one
+        request here instead of one per prefix. Each prefix then picks its own ranges (same VRF).
+        """
+        leaves = [
+            p.prefix for p in prefixes if p.status.value != PrefixStatus.CONTAINER and not p.mark_utilized
+        ]
+        if not leaves:
+            return []
+        return await self.nb.list_all(
+            "ipam/ip-ranges/", {"parent": sorted(set(leaves)), "mark_utilized": True}, cap=5000
+        )
 
     async def get(self, prefix_id: int) -> Prefix:
         raw = await self.nb.get(f"{PREFIXES}{prefix_id}/")
@@ -105,7 +132,7 @@ class PrefixService:
         p.utilization, p.gateway = await asyncio.gather(self.utilization(p), self.find_gateway(p))
         return p
 
-    async def utilization(self, p: Prefix) -> UtilizationOut:
+    async def utilization(self, p: Prefix, ranges: list[dict[str, Any]] | None = None) -> UtilizationOut:
         net = addr.parse_network(p.prefix)
         if p.mark_utilized:
             return UtilizationOut.model_validate(addr.marked_utilized(net, p.is_pool), from_attributes=True)
@@ -120,11 +147,15 @@ class PrefixService:
             u = addr.container_utilization(net, nets)
         else:
             ip_params: dict[str, Any] = {"parent": str(net), "vrf_id": vrf_filter(vrf_id)}
-            range_params = {"parent": str(net), "vrf_id": vrf_filter(vrf_id), "mark_utilized": True}
-            ip_count, ranges = await asyncio.gather(
-                self.nb.count(IPS, ip_params), self.nb.list_all("ipam/ip-ranges/", range_params, cap=1000)
-            )
-            range_size = sum(int(r.get("size") or 0) for r in ranges)
+            if ranges is None:
+                range_params = {"parent": str(net), "vrf_id": vrf_filter(vrf_id), "mark_utilized": True}
+                ip_count, mine = await asyncio.gather(
+                    self.nb.count(IPS, ip_params), self.nb.list_all("ipam/ip-ranges/", range_params, cap=1000)
+                )
+            else:
+                ip_count = await self.nb.count(IPS, ip_params)
+                mine = [r for r in ranges if _range_in(r, net, vrf_id)]
+            range_size = sum(int(r.get("size") or 0) for r in mine)
             u = addr.address_utilization(net, p.is_pool, ip_count, range_size)
         return UtilizationOut.model_validate(u, from_attributes=True)
 
