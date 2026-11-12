@@ -39,7 +39,10 @@ test("add a server, verify its host key, read it, and refuse a changed key", asy
   await page.getByRole("button", { name: "Read network state" }).click();
 
   await expect(page.getByRole("heading", { name: name })).toBeVisible();
-  await expect(page.getByText("ifupdown (/etc/network/interfaces)")).toBeVisible();
+  await expect(page.getByText("ifupdown (/etc/network/interfaces)", { exact: true })).toBeVisible();
+  // Read-only for this stack: the changes section says so and offers nothing to change.
+  await expect(page.getByText("This server uses ifupdown (/etc/network/interfaces). Lanvex cannot change this kind of setup yet.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Change IP settings" })).toHaveCount(0);
   await expect(page.getByRole("row", { name: /eth0.*172\.30\.0\.13\/24.*ifupdown/ })).toBeVisible();
   await expect(page.getByRole("row", { name: /172\.30\.0\.13.*Not in NetBox/ })).toBeVisible();
 

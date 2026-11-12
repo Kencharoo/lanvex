@@ -14,6 +14,8 @@ from lanvex.audit.router import router as audit_router
 from lanvex.auth.models import Role, User
 from lanvex.auth.router import router as auth_router
 from lanvex.auth.service import create_user
+from lanvex.changes.router import router as changes_router
+from lanvex.changes.runner import ChangeRunner
 from lanvex.core.config import Settings, get_settings
 from lanvex.core.db import Database
 from lanvex.core.errors import install_error_handlers
@@ -77,6 +79,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if getattr(app.state, "netbox", None) is None:
             app.state.netbox = build_netbox(settings)
         await bootstrap_admin(app.state.db, settings)
+        app.state.change_runner = None
+        if settings.change_runner_enabled:
+            app.state.change_runner = ChangeRunner(app.state.db, settings, lambda: app.state.netbox)
+            app.state.change_runner.start()
         log.info(
             "lanvex_started",
             version=__version__,
@@ -85,6 +91,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             automation_enabled=settings.automation_enabled,
         )
         yield
+        if app.state.change_runner is not None:
+            await app.state.change_runner.stop()
         if app.state.netbox is not None:
             await app.state.netbox.aclose()
         if app.state.redis is not None:
@@ -115,6 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dashboard_router,
         audit_router,
         servers_router,
+        changes_router,
     ):
         api.include_router(r)
     app.include_router(api)

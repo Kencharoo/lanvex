@@ -1,0 +1,459 @@
+"""Unit tests for the server-side helper's pure functions (lanvex_netapply.py).
+
+These cover how the helper validates requests and rewrites netplan files and NetworkManager keyfiles.
+The lab tests (test_changes_lab.py) run the same helper for real on netplan and NetworkManager hosts.
+"""
+
+import difflib
+
+import pytest
+import yaml
+
+from lanvex.integrations.linux import lanvex_netapply as h
+
+
+def change(**kw):
+    base = {
+        "method": "static",
+        "addresses": ["10.0.0.5/24"],
+        "gateway": "10.0.0.1",
+        "dns_servers": ["10.0.0.53"],
+        "dns_search": ["example.net"],
+    }
+    return base | kw
+
+
+def diff(before: str, after: str) -> list[str]:
+    return [
+        line
+        for line in difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=0)
+        if line[:1] in "+-" and not line.startswith(("+++", "---"))
+    ]
+
+
+# ---- request validation ---------------------------------------------------------------------------------
+
+
+def test_validate_static_and_dhcp():
+    req = {
+        "interface": "eth0",
+        "ipv4": {"method": "static", "addresses": ["10.0.0.5/24", "10.0.0.6/24"], "gateway": "10.0.0.1"},
+        "dns": {"servers": ["1.1.1.1"], "search": ["example.net."]},
+    }
+    assert h.validate_change(req) == {
+        "interface": "eth0",
+        "method": "static",
+        "addresses": ["10.0.0.5/24", "10.0.0.6/24"],
+        "gateway": "10.0.0.1",
+        "dns_servers": ["1.1.1.1"],
+        "dns_search": ["example.net"],
+    }
+    dhcp = h.validate_change({"interface": "ens3", "ipv4": {"method": "dhcp"}})
+    assert dhcp["method"] == "dhcp" and dhcp["addresses"] == [] and dhcp["gateway"] is None
+
+
+@pytest.mark.parametrize(
+    ("ipv4", "message"),
+    [
+        ({"method": "static", "addresses": []}, "at least one address"),
+        ({"method": "static", "addresses": ["10.0.0.0/24"]}, "network or broadcast"),
+        ({"method": "static", "addresses": ["10.0.0.255/24"]}, "network or broadcast"),
+        ({"method": "static", "addresses": ["10.0.0.5"]}, "prefix length"),
+        ({"method": "static", "addresses": ["127.0.0.2/8"]}, "cannot be assigned"),
+        ({"method": "static", "addresses": ["fd00::5/64"]}, "only IPv4"),
+        ({"method": "static", "addresses": ["10.0.0.5/24", "10.0.0.5/16"]}, "same address twice"),
+        ({"method": "static", "addresses": ["10.0.0.5/24"], "gateway": "10.1.0.1"}, "not inside"),
+        ({"method": "static", "addresses": ["10.0.0.5/24"], "gateway": "10.0.0.5"}, "own addresses"),
+        ({"method": "dhcp", "addresses": ["10.0.0.5/24"]}, "come from the DHCP server"),
+        ({"method": "manual"}, "must be 'static' or 'dhcp'"),
+    ],
+)
+def test_validate_rejects(ipv4, message):
+    with pytest.raises(h.Refused) as e:
+        h.validate_change({"interface": "eth0", "ipv4": ipv4})
+    assert message in e.value.message
+
+
+@pytest.mark.parametrize("name", ["lo", "eth0; rm -rf /", "../etc", "a" * 16, "", None, "eth 0"])
+def test_validate_rejects_interface_names(name):
+    with pytest.raises(h.Refused):
+        h.validate_change({"interface": name, "ipv4": {"method": "dhcp"}})
+
+
+def test_validate_rejects_bad_dns():
+    with pytest.raises(h.Refused, match="not a valid domain"):
+        h.validate_change({"interface": "eth0", "ipv4": {"method": "dhcp"}, "dns": {"search": ["a b"]}})
+    with pytest.raises(h.Refused, match="not an IPv4 address"):
+        h.validate_change(
+            {"interface": "eth0", "ipv4": {"method": "dhcp"}, "dns": {"servers": ["dns.example"]}}
+        )
+
+
+def test_check_id():
+    assert h.check_id("0" * 32) == "0" * 32
+    for bad in ("0" * 31, "G" * 32, "../" + "0" * 29, None):
+        with pytest.raises(h.Refused):
+            h.check_id(bad)
+
+
+# ---- netplan ----------------------------------------------------------------------------------------------
+
+
+def test_edit_definition_keeps_ipv6_and_other_routes():
+    old = {
+        "dhcp4": True,
+        "addresses": ["192.0.2.10/24", "2001:db8::10/64", {"192.0.2.11/24": {"label": "eth0:1"}}],
+        "gateway4": "192.0.2.1",
+        "routes": [
+            {"to": "default", "via": "192.0.2.1"},
+            {"to": "default", "via": "2001:db8::1"},
+            {"to": "10.50.0.0/16", "via": "192.0.2.254"},
+        ],
+        "nameservers": {"addresses": ["192.0.2.53", "2001:db8::53"], "search": ["old.example"]},
+        "mtu": 9000,
+    }
+    new = h.edit_netplan_definition(old, change())
+    assert new == {
+        "dhcp4": False,
+        "addresses": ["10.0.0.5/24", "2001:db8::10/64"],
+        "routes": [
+            {"to": "default", "via": "2001:db8::1"},
+            {"to": "10.50.0.0/16", "via": "192.0.2.254"},
+            {"to": "default", "via": "10.0.0.1"},
+        ],
+        "nameservers": {"addresses": ["10.0.0.53", "2001:db8::53"], "search": ["example.net"]},
+        "mtu": 9000,
+    }
+    assert old["gateway4"] == "192.0.2.1"  # the input is not modified
+
+
+def test_edit_definition_to_dhcp_and_without_dns():
+    old = {
+        "addresses": ["192.0.2.10/24"],
+        "routes": [{"to": "default", "via": "192.0.2.1"}],
+        "nameservers": {"addresses": ["192.0.2.53"]},
+    }
+    new = h.edit_netplan_definition(
+        old, change(method="dhcp", addresses=[], gateway=None, dns_servers=[], dns_search=[])
+    )
+    assert new == {"dhcp4": True}
+
+
+def test_edit_definition_clears_networkmanager_passthrough_overrides():
+    old = {
+        "renderer": "NetworkManager",
+        "match": {"name": "eth1"},
+        "addresses": ["172.31.0.12/24"],
+        "networkmanager": {
+            "uuid": "u",
+            "passthrough": {"ipv4.never-default": "true", "ipv4.dns-search": "x;", "ipv6.method": "disabled"},
+        },
+    }
+    new = h.edit_netplan_definition(old, change(addresses=["172.31.0.12/24"], gateway="172.31.0.1"))
+    assert new["networkmanager"]["passthrough"] == {"ipv6.method": "disabled"}
+
+
+NETPLAN = """\
+# Managed by the platform team
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      addresses: [172.30.0.11/24]
+      routes:
+        - to: default
+          via: 172.30.0.1
+      nameservers:
+        addresses: [172.30.0.1, 9.9.9.9]
+        search: [lab.example.net]
+
+  # storage network
+  bridges:
+    br0:
+      interfaces: []
+      addresses: [10.11.0.1/24]
+      ignore-carrier: true
+"""
+
+
+def render(text, section, key, ch):
+    doc = yaml.safe_load(text)
+    old = doc["network"][section][key]
+    new = h.edit_netplan_definition(old, ch)
+    doc["network"][section][key] = new
+    after, rewritten = h.render_netplan(text, ("network", section, key), old, new, doc)
+    assert yaml.safe_load(after) == doc
+    return after, rewritten
+
+
+def test_render_changes_only_the_changed_keys():
+    after, rewritten = render(
+        NETPLAN,
+        "bridges",
+        "br0",
+        change(addresses=["10.11.0.1/24", "10.11.0.2/24"], gateway=None, dns_servers=[], dns_search=[]),
+    )
+    assert not rewritten
+    assert diff(NETPLAN, after) == [
+        "-      addresses: [10.11.0.1/24]",
+        "+      addresses: [10.11.0.1/24, 10.11.0.2/24]",
+    ]
+    after, _ = render(
+        NETPLAN,
+        "ethernets",
+        "eth0",
+        change(
+            addresses=["172.30.0.11/24"],
+            gateway="172.30.0.1",
+            dns_servers=["172.30.0.1", "1.1.1.1"],
+            dns_search=["lab.example.net"],
+        ),
+    )
+    # The routes did not change, so their block style and the comments around the block survive.
+    assert diff(NETPLAN, after) == [
+        "-        addresses: [172.30.0.1, 9.9.9.9]",
+        "+        addresses: [172.30.0.1, 1.1.1.1]",
+    ]
+    assert "# storage network" in after and "# Managed by the platform team" in after
+
+
+def test_render_new_keys_use_block_style():
+    after, _ = render(
+        NETPLAN,
+        "bridges",
+        "br0",
+        change(addresses=["10.11.0.1/24"], gateway="10.11.0.254", dns_servers=["10.11.0.53"], dns_search=[]),
+    )
+    assert diff(NETPLAN, after) == [
+        "+      routes:",
+        "+      - to: default",
+        "+        via: 10.11.0.254",
+        "+      nameservers:",
+        "+        addresses: [10.11.0.53]",
+    ]
+
+
+def test_render_flow_style_definition():
+    text = "network:\n  version: 2\n  ethernets:\n    eth0: {addresses: [192.0.2.10/24], dhcp4: false}\n"
+    after, rewritten = render(text, "ethernets", "eth0", change(gateway=None, dns_servers=[], dns_search=[]))
+    assert not rewritten
+    assert diff(text, after) == [
+        "-    eth0: {addresses: [192.0.2.10/24], dhcp4: false}",
+        "+    eth0: {addresses: [10.0.0.5/24], dhcp4: false}",
+    ]
+
+
+def test_render_falls_back_to_a_full_rewrite_when_it_cannot_splice():
+    text = "network:\n  version: 2\n  ethernets:\n    eth0:\n"  # an empty definition
+    doc = yaml.safe_load(text)
+    new = h.edit_netplan_definition(doc["network"]["ethernets"]["eth0"], change())
+    doc["network"]["ethernets"]["eth0"] = new
+    after, rewritten = h.render_netplan(text, ("network", "ethernets", "eth0"), None, new, doc)
+    assert rewritten and yaml.safe_load(after) == doc
+
+
+FACTS = {"mac": "52:54:00:12:34:56", "driver": "virtio_net"}
+
+
+def test_definitions_by_name_set_name_and_exact_match():
+    docs = {
+        "/etc/netplan/50.yaml": {"network": {"ethernets": {"eth0": {"dhcp4": True}}}},
+        "/etc/netplan/60.yaml": {
+            "network": {
+                "ethernets": {"nic": {"match": {"macaddress": "52:54:00:aa:bb:cc"}, "set-name": "eth9"}}
+            }
+        },
+        "/etc/netplan/90-NM-x.yaml": {"network": {"ethernets": {"NM-x": {"match": {"name": "eth1"}}}}},
+        "/etc/netplan/91.yaml": {
+            "network": {"ethernets": {"by-mac": {"match": {"macaddress": "52:54:00:12:34:56"}}}}
+        },
+    }
+    assert h.netplan_definitions("eth0", docs, FACTS) == [("/etc/netplan/50.yaml", "ethernets", "eth0")] + [
+        ("/etc/netplan/91.yaml", "ethernets", "by-mac")  # same MAC: also eth0
+    ]
+    assert h.netplan_definitions("eth9", docs, {"mac": "x"}) == [("/etc/netplan/60.yaml", "ethernets", "nic")]
+    assert h.netplan_definitions("eth1", docs, {"mac": "y"}) == [
+        ("/etc/netplan/90-NM-x.yaml", "ethernets", "NM-x")
+    ]
+
+
+def test_definitions_refuse_broad_match_rules_but_ignore_unrelated_ones():
+    glob = {"/etc/netplan/50.yaml": {"network": {"ethernets": {"all": {"match": {"name": "en*"}}}}}}
+    with pytest.raises(h.Refused, match="also covers"):
+        h.netplan_definitions("ens3", glob, FACTS)
+    assert h.netplan_definitions("eth0", glob, FACTS) == []  # en* cannot select eth0
+    by_driver = {"/etc/netplan/50.yaml": {"network": {"ethernets": {"d": {"match": {"driver": "virtio*"}}}}}}
+    with pytest.raises(h.Refused):
+        h.netplan_definitions("eth0", by_driver, FACTS)
+
+
+# ---- NetworkManager keyfiles -------------------------------------------------------------------------------
+
+KEYFILE = """\
+[connection]
+id=storage
+type=ethernet
+interface-name=eth1
+
+[ipv4]
+# keep this comment
+method=manual
+address1=172.31.0.12/24,172.31.0.1
+dns=172.31.0.53;
+route1=10.50.0.0/16,172.31.0.1,50
+never-default=true
+
+[ipv6]
+method=disabled
+"""
+
+
+def test_keyfile_static_with_gateway():
+    after = h.edit_keyfile(
+        KEYFILE,
+        change(addresses=["172.31.0.12/24", "172.31.0.13/24"], gateway="172.31.0.1", dns_search=[]),
+    )
+    assert after.split("[ipv4]")[1].split("[ipv6]")[0].strip().splitlines() == [
+        "# keep this comment",
+        "method=manual",
+        "address1=172.31.0.12/24",
+        "address2=172.31.0.13/24",
+        "gateway=172.31.0.1",
+        "dns=10.0.0.53;",
+        "route1=10.50.0.0/16,172.31.0.1,50",
+    ]
+    assert after.startswith("[connection]\nid=storage") and after.endswith("[ipv6]\nmethod=disabled\n")
+
+
+def test_keyfile_without_gateway_keeps_never_default():
+    after = h.edit_keyfile(
+        KEYFILE, change(addresses=["172.31.0.12/24"], gateway=None, dns_servers=[], dns_search=[])
+    )
+    assert "never-default=true" in after and "gateway" not in after and "dns=" not in after
+    assert "address1=172.31.0.12/24\n" in after
+
+
+def test_keyfile_dhcp_and_missing_ipv4_section():
+    after = h.edit_keyfile(
+        KEYFILE, change(method="dhcp", addresses=[], gateway=None, dns_servers=[], dns_search=[])
+    )
+    ipv4 = after.split("[ipv4]")[1].split("[ipv6]")[0]
+    assert "method=auto" in ipv4 and "address" not in ipv4
+    bare = "[connection]\nid=x\ntype=ethernet\n"
+    assert h.edit_keyfile(bare, change(gateway=None, dns_servers=[], dns_search=[])).endswith(
+        "\n\n[ipv4]\nmethod=manual\naddress1=10.0.0.5/24\n"
+    )
+
+
+def test_nm_split_unescapes():
+    assert h.nm_split(r"uuid:eth0:/etc/x\:y.nmconnection:My\\Name") == [
+        "uuid",
+        "eth0",
+        "/etc/x:y.nmconnection",
+        "My\\Name",
+    ]
+
+
+def test_usage_is_json(capsys):
+    assert h.main(["lanvex-netapply"]) == 2
+    assert '"code": "usage"' in capsys.readouterr().out
+
+
+# ---- leaving DNS alone ------------------------------------------------------------------------------------
+
+
+def test_dns_null_keeps_dns_settings_untouched():
+    kept = h.validate_change(
+        {"interface": "eth0", "ipv4": {"method": "static", "addresses": ["10.0.0.5/24"]}, "dns": None}
+    )
+    assert kept["dns_servers"] is None and kept["dns_search"] is None
+    old = {
+        "addresses": ["10.0.0.4/24"],
+        "nameservers": {"addresses": ["10.0.0.53"], "search": ["example.net"]},
+        "networkmanager": {"passthrough": {"ipv4.dns-search": "x;", "ipv4.method": "manual"}},
+    }
+    new = h.edit_netplan_definition(old, change(gateway=None, dns_servers=None, dns_search=None))
+    assert new["nameservers"] == old["nameservers"] and new["addresses"] == ["10.0.0.5/24"]
+    assert new["networkmanager"]["passthrough"] == {"ipv4.dns-search": "x;"}
+    after = h.edit_keyfile(
+        KEYFILE, change(addresses=["172.31.0.14/24"], gateway=None, dns_servers=None, dns_search=None)
+    )
+    assert "dns=172.31.0.53;" in after and "address1=172.31.0.14/24" in after
+    assert diff(KEYFILE, after) == ["-address1=172.31.0.12/24,172.31.0.1", "+address1=172.31.0.14/24"]
+
+
+def test_keyfile_section_without_managed_keys_gets_them_at_its_end():
+    text = "[connection]\nid=x\n\n[ipv4]\nroute1=10.0.0.0/8,10.0.0.1\n\n[ipv6]\nmethod=auto\n"
+    after = h.edit_keyfile(text, change(gateway=None, dns_servers=None, dns_search=None))
+    assert "[ipv4]\nroute1=10.0.0.0/8,10.0.0.1\nmethod=manual\naddress1=10.0.0.5/24\n\n[ipv6]" in after
+
+
+def test_redact_hides_secret_values_only():
+    text = 'password: "s3cret"\npsk=hunter2\nkey-mgmt=wpa-psk\npinned=yes\nprivate-key-password=abc\n'
+    assert (
+        h.redact(text)
+        == "password: [redacted]\npsk=[redacted]\nkey-mgmt=wpa-psk\npinned=yes\nprivate-key-password=[redacted]\n"
+    )
+
+
+# ---- verification: is the gateway there? ------------------------------------------------------------
+
+
+class _Done:
+    def __init__(self, returncode: int, stdout: str = ""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, ""
+
+
+def fake_tools(monkeypatch, ping_ok: bool | None, neigh: str):
+    """ping_ok None: ping is not installed. neigh: `ip -json neighbour show` output."""
+    calls = []
+
+    def run(argv, timeout=60, check=False):
+        calls.append(argv[0])
+        if argv[0] == "ping":
+            return _Done(0 if ping_ok else 1, f"3 packets transmitted, {3 if ping_ok else 0} received")
+        assert argv[:5] == ["ip", "-json", "-4", "neighbour", "show"]
+        return _Done(0, neigh)
+
+    monkeypatch.setattr(h, "run", run)
+    monkeypatch.setattr(
+        h, "which", lambda name: None if ping_ok is None and name == "ping" else "/usr/bin/" + name
+    )
+    return calls
+
+
+REACHABLE = '[{"dst":"10.0.0.1","dev":"eth0","lladdr":"52:54:00:12:34:56","state":["REACHABLE"]}]'
+STALE = '[{"dst":"10.0.0.1","dev":"eth0","lladdr":"52:54:00:12:34:56","state":["STALE"]}]'
+UNRESOLVED = '[{"dst":"10.0.0.1","dev":"eth0","state":["FAILED"]}]'
+
+
+def test_gateway_that_answers_ping(monkeypatch):
+    calls = fake_tools(monkeypatch, True, UNRESOLVED)
+    c = h.gateway_check("eth0", "10.0.0.1")
+    assert c["ok"] is True and c["label"] == "Gateway 10.0.0.1 answers" and calls == ["ping"]
+
+
+@pytest.mark.parametrize("neigh", [REACHABLE, STALE])
+def test_gateway_that_drops_ping_but_answers_arp_passes(monkeypatch, neigh):
+    fake_tools(monkeypatch, False, neigh)
+    c = h.gateway_check("eth0", "10.0.0.1")
+    assert c["ok"] is True
+    assert c["detail"] == "Does not answer ping, but is reachable on the link (52:54:00:12:34:56)."
+
+
+@pytest.mark.parametrize(
+    "neigh", [UNRESOLVED, "[]", '[{"dst":"10.0.0.1","dev":"eth0","state":["INCOMPLETE"]}]']
+)
+def test_absent_or_mistyped_gateway_fails(monkeypatch, neigh):
+    fake_tools(monkeypatch, False, neigh)
+    c = h.gateway_check("eth0", "10.0.0.1")
+    assert c["ok"] is False and "0 received" in c["detail"]
+
+
+def test_without_ping_the_arp_table_decides_or_the_check_is_skipped(monkeypatch):
+    fake_tools(monkeypatch, None, REACHABLE)
+    assert h.gateway_check("eth0", "10.0.0.1")["ok"] is True
+    fake_tools(monkeypatch, None, "[]")
+    c = h.gateway_check("eth0", "10.0.0.1")
+    assert c["ok"] is None and "not checked" not in c["detail"] and "ARP table" in c["detail"]

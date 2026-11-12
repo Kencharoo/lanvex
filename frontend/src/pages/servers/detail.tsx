@@ -11,6 +11,7 @@ import { Dialog, DialogBody, DialogContent, DialogFooter } from "@/components/ui
 import { Field, Input, Select } from "@/components/ui/form";
 import { Badge, EmptyState, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Notice, Skeleton, type Tone } from "@/components/ui/misc";
 import { useSession } from "@/app/session";
+import { ChangesSection } from "./changes-section";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
 import type { Comparison, ComparisonRow, HostFacts, HostInterface, HostKeyScan, HostRoute, NetBoxRef, Server, Snapshot, SnapshotMeta } from "@/lib/types";
@@ -164,6 +165,12 @@ export function ServerDetailPage() {
             <DnsSection facts={facts} />
           </div>
           {s && <ComparisonSection server={s} q={comparison} isAdmin={isAdmin} onLinked={refreshAll} />}
+        </div>
+      )}
+
+      {s && (
+        <div className="mt-8">
+          <ChangesSection server={s} facts={facts} isAdmin={isAdmin} />
         </div>
       )}
 
@@ -562,7 +569,16 @@ function AccessSection({ server: s }: { server: Server }) {
           items={[
             ["Sign-in", `${AUTH_LABEL[s.auth_method]} as ${s.username}`],
             ["Host key", <span key="hk" className="grid"><span className="addr break-all">{s.host_key_fingerprint}</span><span className="text-xs text-muted">{s.host_key_algorithm}, pinned {relativeTime(s.host_key_pinned_at)}</span></span>],
-            ["Capabilities", <span key="cap" className="grid"><span>Read system, interfaces, addresses, routes, DNS and network stack</span><span className="text-xs text-muted">Read-only. This adapter cannot change the server.</span></span>],
+            [
+              "Capabilities",
+              <span key="cap" className="grid">
+                <span>Read system, interfaces, addresses, routes, DNS and network stack</span>
+                <span>Change an interface's IPv4 addresses, gateway and DNS (netplan, NetworkManager)</span>
+                <span className="text-xs text-muted">
+                  {s.changes_enabled ? "Changes are enabled for this server; each one needs an administrator's approval." : "Read-only until changes are enabled for this server."}
+                </span>
+              </span>,
+            ],
           ]}
         />
         {s.authorized_keys_line && (

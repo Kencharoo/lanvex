@@ -68,6 +68,9 @@ backend/lanvex/
   auth/ audit/ users, sessions, roles; audit trail
   ipam/        prefixes, IP addresses, address arithmetic (pure, heavily tested)
   vlans/ devices/ lookups/ dashboard/ system/
+  integrations/ adapters; linux/ = SSH transport, fixed commands, parsers, the change helper
+  servers/     server registry, credentials, host keys, snapshots, NetBox comparison
+  changes/     server changes: preparation, approval, the runner
 frontend/src/
   app/         session, theme, layout
   components/  ui primitives, data table, address-space strip and map
@@ -80,3 +83,7 @@ frontend/src/
 - The browser talks only to `/api/v1`. Components consume Lanvex models (`lib/types.ts`), never raw NetBox JSON.
 - Every write goes through `audit.track(...)` and returns `state: "documented"`.
 - Do not invent NetBox endpoints or fields. Check the serializers and filtersets of the target NetBox version.
+- `integrations/linux/lanvex_netapply.py` runs **on servers, as root**. Keep it one file, standard
+  library plus PyYAML, Python 3.7+ (`uvx vermin -t=3.7- lanvex/integrations/linux/lanvex_netapply.py`),
+  with fixed argument lists and no shell. Raise `HELPER_VERSION` whenever its requests or answers
+  change, so servers with the old file show *Outdated version*.

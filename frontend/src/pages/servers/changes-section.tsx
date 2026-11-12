@@ -1,0 +1,512 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CheckCircle2, CircleDashed, Download, Plus, Settings2, Upload, X, XCircle } from "lucide-react";
+import * as React from "react";
+import { Link, useNavigate } from "react-router";
+import { toast } from "sonner";
+import { CodeBlock } from "@/components/copy";
+import { Section } from "@/components/page";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogBody, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { Checkbox, Field, Input, Select } from "@/components/ui/form";
+import { Notice, Skeleton } from "@/components/ui/misc";
+import { api, errorMessage } from "@/lib/api";
+import { fieldError } from "@/lib/hooks";
+import type { ChangeDetail, ChangeOut, ChangeReadiness, ChangeRequestBody, HelperInstall, HelperState, HostFacts, Server } from "@/lib/types";
+import { cn, relativeTime } from "@/lib/utils";
+import { ChangeStatusBadge } from "../changes/shared";
+
+const HELPER_LABEL: Record<HelperState, string> = {
+  unknown: "Not checked yet",
+  ok: "Installed",
+  outdated: "Outdated version",
+  missing: "Not installed",
+  no_sudo: "Not allowed through sudo",
+  no_python: "Python 3 missing",
+  timeout: "No answer",
+  error: "Not usable",
+};
+
+export function ChangesSection({ server: s, facts, isAdmin }: { server: Server; facts: HostFacts | null; isAdmin: boolean }) {
+  const qc = useQueryClient();
+  const [dialog, setDialog] = React.useState<null | "install" | "change">(null);
+  const readiness = useQuery({
+    queryKey: ["servers", s.id, "changes", "readiness"],
+    queryFn: () => api<ChangeReadiness>(`/servers/${s.id}/changes/readiness`),
+  });
+  const recent = useQuery({
+    queryKey: ["changes", { server_id: s.id }],
+    queryFn: () => api<ChangeOut[]>("/changes", { query: { server_id: s.id, limit: 5 } }),
+  });
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ["servers", s.id] });
+    void qc.invalidateQueries({ queryKey: ["changes"] });
+  };
+  const check = useMutation({
+    mutationFn: () => api<ChangeReadiness>(`/servers/${s.id}/changes/helper/check`, { method: "POST" }),
+    onSuccess: (r) => {
+      (r.helper.state === "ok" ? toast.success : toast.error)(r.helper.message ?? HELPER_LABEL[r.helper.state]);
+      refresh();
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => api<ChangeReadiness>(`/servers/${s.id}/changes/enabled`, { method: "PUT", body: { enabled } }),
+    onSuccess: (_, enabled) => {
+      toast.success(enabled ? `Changes enabled for ${s.name}.` : `Changes disabled for ${s.name}.`);
+      refresh();
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+
+  const r = readiness.data;
+  return (
+    <Section
+      title="Configuration changes"
+      description="Change an interface's IPv4 addresses, gateway and DNS. Every change is previewed, approved, verified, and undone automatically if it fails."
+      actions={
+        isAdmin &&
+        r?.ready &&
+        !r.open_change && (
+          <Button variant="primary" onClick={() => setDialog("change")} disabled={!facts}>
+            <Settings2 /> Change IP settings
+          </Button>
+        )
+      }
+    >
+      {!r ? (
+        <Skeleton className="h-32 w-full" />
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="grid content-start gap-3 rounded-[var(--radius-panel)] border border-line bg-surface p-4">
+            <p className="text-[13px] font-medium">Before Lanvex can change {s.name}</p>
+            <ul className="grid gap-2.5">
+              <Requirement ok={r.automation_enabled} label="Changes allowed for this Lanvex installation">
+                {r.automation_enabled ? (
+                  <>Approved changes are verified and confirmed within {r.rollback_seconds} seconds{r.second_admin_required ? "; a second administrator must approve" : ""}.</>
+                ) : (
+                  <>
+                    Off by default. An administrator of the Lanvex server sets <span className="addr">LANVEX_AUTOMATION_ENABLED=true</span>.
+                  </>
+                )}
+              </Requirement>
+              <Requirement ok={r.stack_supported} label="Network managed by netplan or NetworkManager">
+                {r.stack_label ? `This server uses ${r.stack_label}.` : "Read the server first."}
+                {r.stack_supported === false && " Lanvex cannot change this kind of setup yet."}
+              </Requirement>
+              <Requirement ok={r.helper.state === "ok" ? true : r.helper.state === "unknown" ? null : false} label={`Change helper: ${HELPER_LABEL[r.helper.state]}`}>
+                <span className="grid gap-1.5">
+                  <span>
+                    {r.helper.message ??
+                      "A small program you install once; the only thing Lanvex runs as root."}
+                    {r.helper.checked_at && <> Checked {relativeTime(r.helper.checked_at)}.</>}
+                  </span>
+                  {isAdmin && (
+                    <span className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => setDialog("install")}>
+                        {r.helper.state === "ok" ? "Install steps" : "Install the helper"}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => check.mutate()} loading={check.isPending}>
+                        Check again
+                      </Button>
+                    </span>
+                  )}
+                </span>
+              </Requirement>
+              <Requirement ok={r.changes_enabled} label="Changes enabled for this server">
+                <span className="grid gap-1.5">
+                  <span>{r.changes_enabled ? "Administrators can prepare changes for this server." : "Off until an administrator turns it on."}</span>
+                  {isAdmin && (
+                    <span>
+                      <Button
+                        size="sm"
+                        variant={r.changes_enabled ? "ghost" : "secondary"}
+                        onClick={() => toggle.mutate(!r.changes_enabled)}
+                        loading={toggle.isPending}
+                        disabled={!r.changes_enabled && !r.automation_enabled}
+                      >
+                        {r.changes_enabled ? "Turn off" : "Turn on"}
+                      </Button>
+                    </span>
+                  )}
+                </span>
+              </Requirement>
+            </ul>
+          </div>
+
+          <div className="grid content-start gap-3">
+            {r.open_change && (
+              <Notice
+                tone="info"
+                title={`Change #${r.open_change.number} is open`}
+                action={
+                  <Button asChild size="sm" variant="secondary">
+                    <Link to={`/changes/${r.open_change.id}`}>Open</Link>
+                  </Button>
+                }
+              >
+                {r.open_change.summary}
+              </Notice>
+            )}
+            <div className="rounded-[var(--radius-panel)] border border-line bg-surface">
+              <p className="border-b border-line px-4 py-2.5 text-[13px] font-medium">Recent changes</p>
+              {recent.data && recent.data.length > 0 ? (
+                <ul>
+                  {recent.data.map((c) => (
+                    <li key={c.id} className="border-b border-line last:border-0">
+                      <Link to={`/changes/${c.id}`} className="grid gap-1 px-4 py-2.5 hover:bg-surface-2/60">
+                        <span className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[13px] font-medium">#{c.number} · {c.interface}</span>
+                          <ChangeStatusBadge status={c.status} />
+                        </span>
+                        <span className="text-xs text-muted">
+                          {c.summary.replace(`${c.interface}: `, "")} · {relativeTime(c.created_at)}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="px-4 py-6 text-center text-[13px] text-muted">No changes yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {r && <InstallHelperDialog server={s} readiness={r} open={dialog === "install"} onClose={() => setDialog(null)} onChecked={refresh} />}
+      {r && facts && <ChangeDialog server={s} facts={facts} readiness={r} open={dialog === "change"} onClose={() => setDialog(null)} />}
+    </Section>
+  );
+}
+
+function Requirement({ ok, label, children }: { ok: boolean | null; label: string; children: React.ReactNode }) {
+  const Icon = ok === true ? CheckCircle2 : ok === false ? XCircle : CircleDashed;
+  return (
+    <li className="flex gap-2.5 text-[13px]">
+      <Icon className={cn("mt-0.5 size-4 shrink-0", ok === true ? "text-ok" : ok === false ? "text-danger" : "text-faint")} aria-hidden />
+      <span className="grid gap-0.5">
+        <span className="font-medium">
+          {label}
+          <span className="sr-only">{ok === true ? " (done)" : ok === false ? " (missing)" : " (unknown)"}</span>
+        </span>
+        <span className="text-xs text-muted">{children}</span>
+      </span>
+    </li>
+  );
+}
+
+function InstallHelperDialog({
+  server: s,
+  readiness: r,
+  open,
+  onClose,
+  onChecked,
+}: {
+  server: Server;
+  readiness: ChangeReadiness;
+  open: boolean;
+  onClose: () => void;
+  onChecked: () => void;
+}) {
+  const upload = useMutation({
+    mutationFn: () => api<HelperInstall>(`/servers/${s.id}/changes/helper/upload`, { method: "POST" }),
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+  const check = useMutation({
+    mutationFn: () => api<ChangeReadiness>(`/servers/${s.id}/changes/helper/check`, { method: "POST" }),
+    onSuccess: (res) => {
+      onChecked();
+      if (res.helper.state === "ok") {
+        toast.success("The helper is installed and allowed.");
+        onClose();
+      }
+    },
+  });
+  React.useEffect(() => {
+    if (open) {
+      upload.reset();
+      check.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const path = upload.data?.path ?? "./lanvex-netapply";
+  const commands = upload.data?.commands ?? [
+    `echo '${r.helper_sha256}  ${path}' | sha256sum -c -`,
+    `sudo install -D -m 0755 -o root -g root ${path} ${r.helper_path}`,
+    `echo '${s.username} ALL=(root) NOPASSWD: ${r.helper_path}' | sudo tee /etc/sudoers.d/lanvex >/dev/null`,
+    "sudo chmod 0440 /etc/sudoers.d/lanvex && sudo visudo -cf /etc/sudoers.d/lanvex",
+  ];
+  const result = check.data?.helper;
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        title="Install the change helper"
+        description={`Lanvex changes ${s.name}'s network settings through a small program that runs as root. Installing it needs root, so you do it once, on the server.`}
+        width="max-w-2xl"
+      >
+        <DialogBody>
+          <ol className="grid gap-4 text-[13px]">
+            <li className="grid gap-2">
+              <p>
+                <span className="font-medium">1. Put the helper on the server.</span>{" "}
+                <span className="text-muted">Lanvex can copy it into the home directory of {s.username}, or you download it and copy it yourself.</span>
+              </p>
+              <span className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => upload.mutate()} loading={upload.isPending}>
+                  <Upload /> Copy to the server
+                </Button>
+                <Button asChild size="sm" variant="ghost">
+                  <a href="/api/v1/changes/helper" download="lanvex-netapply">
+                    <Download /> Download
+                  </a>
+                </Button>
+              </span>
+              {upload.data && <Notice title={`Copied to ${upload.data.path}`}>The commands below now use that path.</Notice>}
+            </li>
+            <li className="grid gap-2">
+              <p>
+                <span className="font-medium">2. On the server, as an administrator, run:</span>{" "}
+                <span className="text-muted">
+                  The first line checks the file is exactly the one this Lanvex ships; stop if it does not say OK. The rest installs it for root and allows {s.username} to
+                  run only this program with sudo.
+                </span>
+              </p>
+              <CodeBlock text={commands.join("\n")} label="Copy commands" />
+              <p className="text-xs text-muted">Needs Python 3.8 or newer and systemd. On netplan systems python3-yaml is already installed with netplan.</p>
+            </li>
+            <li className="grid gap-2">
+              <p>
+                <span className="font-medium">3. Check it.</span> <span className="text-muted">Lanvex asks the helper for its version through sudo.</span>
+              </p>
+              <span>
+                <Button size="sm" variant="secondary" onClick={() => check.mutate()} loading={check.isPending}>
+                  Check now
+                </Button>
+              </span>
+              {result && result.state !== "ok" && (
+                <Notice tone="danger" title={HELPER_LABEL[result.state]}>
+                  {result.message}
+                </Notice>
+              )}
+              {check.error && <Notice tone="danger">{errorMessage(check.error)}</Notice>}
+            </li>
+          </ol>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="secondary" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface Draft {
+  iface: string;
+  method: "static" | "dhcp";
+  addresses: string[];
+  gateway: string;
+  changeDns: boolean;
+  dns: string;
+  search: string;
+  verifyName: string;
+}
+
+/** What the interface has now, as last read: the starting point of the form. */
+function draftFor(facts: HostFacts, iface: string): Draft {
+  const i = facts.interfaces.find((x) => x.name === iface);
+  const v4 = (i?.addresses ?? []).filter((a) => a.family === 4);
+  const statics = v4.filter((a) => !a.dynamic).map((a) => a.address);
+  const gateway = facts.routes.find((rt) => rt.family === 4 && rt.interface === iface && (rt.destination === "0.0.0.0/0" || rt.destination === "default"))?.gateway ?? "";
+  const scope = facts.dns.resolved?.find((x) => x.scope === iface);
+  return {
+    iface,
+    method: statics.length === 0 && v4.some((a) => a.dynamic) ? "dhcp" : "static",
+    addresses: statics.length ? statics : [""],
+    gateway,
+    changeDns: false,
+    dns: (scope?.servers ?? []).filter((x) => !x.includes(":")).join(", "),
+    search: (scope?.domains ?? []).filter((d) => d !== "~.").join(", "),
+    verifyName: "",
+  };
+}
+
+const split = (v: string) =>
+  v
+    .split(/[\s,;]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+function ChangeDialog({
+  server: s,
+  facts,
+  readiness: r,
+  open,
+  onClose,
+}: {
+  server: Server;
+  facts: HostFacts;
+  readiness: ChangeReadiness;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const candidates = facts.interfaces.filter((i) => i.kind !== "loopback" && !i.master);
+  const [d, setD] = React.useState<Draft>(() => draftFor(facts, candidates[0]?.name ?? ""));
+  const dnsKnown = !!facts.dns.resolved?.some((x) => x.scope === d.iface);
+  const prepare = useMutation({
+    mutationFn: (body: ChangeRequestBody) => api<ChangeDetail>(`/servers/${s.id}/changes`, { method: "POST", body }),
+    onSuccess: (c) => {
+      void qc.invalidateQueries({ queryKey: ["changes"] });
+      void qc.invalidateQueries({ queryKey: ["servers", s.id] });
+      onClose();
+      navigate(`/changes/${c.id}`);
+    },
+  });
+  React.useEffect(() => {
+    if (open) {
+      setD(draftFor(facts, candidates[0]?.name ?? ""));
+      prepare.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const set = (patch: Partial<Draft>) => setD((prev) => ({ ...prev, ...patch }));
+  const err = (...names: string[]) => fieldError(prepare.error, ...names);
+  const generalError = prepare.error && !err("addresses", "gateway", "interface", "dns_servers", "dns_search", "verify_dns_name") ? errorMessage(prepare.error) : null;
+
+  const submit = () =>
+    prepare.mutate({
+      interface: d.iface,
+      method: d.method,
+      addresses: d.method === "static" ? d.addresses.map((a) => a.trim()).filter(Boolean) : [],
+      gateway: d.method === "static" && d.gateway.trim() ? d.gateway.trim() : null,
+      dns_servers: d.changeDns ? split(d.dns) : null,
+      dns_search: d.changeDns ? split(d.search) : null,
+      verify_dns_name: d.verifyName.trim() || null,
+    });
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        title={`Change IP settings on ${s.name}`}
+        description="Describe how the interface should be set up. Next, Lanvex reads the server again and shows exactly what would change. Nothing changes until it is approved."
+        width="max-w-xl"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <DialogBody>
+            {generalError && <Notice tone="danger">{generalError}</Notice>}
+            <Field label="Interface" htmlFor="chg-iface" error={err("interface")}>
+              <Select id="chg-iface" value={d.iface} onChange={(e) => setD(draftFor(facts, e.target.value))}>
+                {candidates.map((i) => (
+                  <option key={i.name} value={i.name}>
+                    {i.name}
+                    {i.addresses.some((a) => a.family === 4) ? ` (${i.addresses.filter((a) => a.family === 4).map((a) => a.address).join(", ")})` : ""}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
+            <fieldset className="grid gap-1.5">
+              <legend className="mb-1.5 text-[13px] font-medium">IPv4 addresses</legend>
+              <div className="flex gap-4 text-[13px]">
+                {(["static", "dhcp"] as const).map((m) => (
+                  <label key={m} className="flex items-center gap-2">
+                    <input type="radio" name="chg-method" value={m} checked={d.method === m} onChange={() => set({ method: m })} className="accent-[var(--color-accent)]" />
+                    {m === "static" ? "Static" : "From DHCP"}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            {d.method === "static" && (
+              <>
+                <div className="grid gap-1.5">
+                  {d.addresses.map((a, idx) => (
+                    <div key={idx} className="flex gap-2">
+                      <Input
+                        aria-label={`Address ${idx + 1}`}
+                        className="addr"
+                        value={a}
+                        placeholder="192.0.2.10/24"
+                        onChange={(e) => set({ addresses: d.addresses.map((x, j) => (j === idx ? e.target.value : x)) })}
+                        aria-invalid={!!err("addresses")}
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        aria-label={`Remove address ${idx + 1}`}
+                        disabled={d.addresses.length === 1}
+                        onClick={() => set({ addresses: d.addresses.filter((_, j) => j !== idx) })}
+                      >
+                        <X />
+                      </Button>
+                    </div>
+                  ))}
+                  {err("addresses") && (
+                    <p role="alert" className="text-xs text-danger">
+                      {err("addresses")}
+                    </p>
+                  )}
+                  <span>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => set({ addresses: [...d.addresses, ""] })}>
+                      <Plus /> Add address
+                    </Button>
+                  </span>
+                </div>
+                <Field label="Default gateway" htmlFor="chg-gw" optional error={err("gateway")} hint="Leave empty if this interface should not have a default route.">
+                  <Input id="chg-gw" className="addr" value={d.gateway} placeholder="192.0.2.1" onChange={(e) => set({ gateway: e.target.value })} />
+                </Field>
+              </>
+            )}
+
+            <div className="grid gap-2 rounded-[var(--radius-control)] border border-line p-3">
+              <Checkbox id="chg-dns" label="Also change DNS for this interface" checked={d.changeDns} onChange={(e) => set({ changeDns: e.target.checked })} />
+              {!d.changeDns ? (
+                <p className="text-xs text-muted">The interface's DNS servers and search domains stay exactly as they are.</p>
+              ) : (
+                <>
+                  {!dnsKnown && <Notice tone="warn">Lanvex could not read this interface's DNS settings. Whatever you enter replaces them; leave both fields empty to remove them.</Notice>}
+                  <Field label="DNS servers" htmlFor="chg-dns-servers" error={err("dns_servers")} hint="IPv4 addresses, separated by commas.">
+                    <Input id="chg-dns-servers" className="addr" value={d.dns} placeholder="192.0.2.53, 192.0.2.54" onChange={(e) => set({ dns: e.target.value })} />
+                  </Field>
+                  <Field label="Search domains" htmlFor="chg-dns-search" optional error={err("dns_search")}>
+                    <Input id="chg-dns-search" value={d.search} placeholder="example.net" onChange={(e) => set({ search: e.target.value })} />
+                  </Field>
+                </>
+              )}
+            </div>
+
+            <Field
+              label="Check that this name resolves afterwards"
+              htmlFor="chg-verify"
+              optional
+              error={err("verify_dns_name")}
+              hint="A host name the server must still be able to look up, e.g. your NetBox. Part of the verification."
+            >
+              <Input id="chg-verify" value={d.verifyName} placeholder="netbox.example.net" onChange={(e) => set({ verifyName: e.target.value })} />
+            </Field>
+            <p className="text-xs text-muted">
+              IPv6 settings, routes other than the default route, and everything else on the interface stay as they are. If the change fails or cuts the connection,
+              the server restores its previous configuration after {r.rollback_seconds} seconds.
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={prepare.isPending} disabled={!d.iface}>
+              Prepare change
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}

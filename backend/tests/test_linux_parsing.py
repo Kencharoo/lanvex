@@ -12,15 +12,19 @@ import pytest
 
 from lanvex.integrations.linux import parsers as P
 from lanvex.integrations.linux.assemble import CommandResult, Results, assemble
-from lanvex.integrations.linux.commands import COMMANDS, Cmd
+from lanvex.integrations.linux.commands import COMMANDS, HELPER_PATH, STDIN_COMMANDS, Cmd
 
 FIXTURES = Path(__file__).parent / "fixtures" / "linux"
+
+
+HELPER_COMMANDS = {c for c in Cmd if c.value.startswith("helper_")}
+READ_COMMANDS = [c for c in Cmd if c not in HELPER_COMMANDS]
 
 
 def load(host: str) -> Results:
     meta = json.loads((FIXTURES / host / "_meta.json").read_text())
     out: Results = {}
-    for cmd in Cmd:
+    for cmd in READ_COMMANDS:
         m = meta[cmd.value]
         out[cmd] = CommandResult(
             stdout=(FIXTURES / host / f"{cmd.value}.stdout").read_text(),
@@ -49,9 +53,19 @@ def test_commands_are_constant_read_only_strings() -> None:
         "$(",
         "`",
     )
-    for line in COMMANDS.values():
-        body = line.replace("2>/dev/null", "")
-        assert not any(f in body for f in forbidden), line
+    for cmd in READ_COMMANDS:
+        body = COMMANDS[cmd].replace("2>/dev/null", "")
+        assert not any(f in body for f in forbidden), COMMANDS[cmd]
+
+
+def test_only_the_helper_runs_with_sudo() -> None:
+    """sudo appears in exactly one form: the fixed helper path and a fixed subcommand, nothing else."""
+    prefix = "env LC_ALL=C LANG=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sudo -n "
+    for cmd in HELPER_COMMANDS:
+        sub = cmd.value.removeprefix("helper_")
+        assert COMMANDS[cmd] == f"{prefix}{HELPER_PATH} {sub}"
+    assert {c for c in Cmd if "sudo" in COMMANDS[c]} == HELPER_COMMANDS
+    assert STDIN_COMMANDS == HELPER_COMMANDS - {Cmd.HELPER_VERSION}
 
 
 # ---- real captures ------------------------------------------------------------------------

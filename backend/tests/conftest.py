@@ -12,6 +12,9 @@ os.environ["LANVEX_NETBOX_TOKEN"] = ""
 os.environ["LANVEX_LOG_LEVEL"] = "WARNING"
 os.environ["LANVEX_SECRET_KEY"] = "test-only-secret-key-0123456789-abcdefghij"
 os.environ["LANVEX_SERVER_ALLOWED_NETWORKS"] = "[]"
+os.environ["LANVEX_AUTOMATION_ENABLED"] = "false"
+# Tests drive the change runner themselves instead of a background task.
+os.environ["LANVEX_CHANGE_RUNNER_ENABLED"] = "false"
 
 from collections.abc import AsyncIterator  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -63,7 +66,9 @@ async def database() -> AsyncIterator[Database]:
 @pytest.fixture(autouse=True)
 async def clean_tables(database: Database) -> None:
     async with database.engine.begin() as conn:
-        await conn.execute(text("TRUNCATE audit_events, sessions, users, servers, server_snapshots CASCADE"))
+        await conn.execute(
+            text("TRUNCATE audit_events, sessions, users, servers, server_snapshots, server_changes CASCADE")
+        )
     clear_cache()
 
 

@@ -18,6 +18,9 @@ const api = {
   LANVEX_BOOTSTRAP_ADMIN_PASSWORD: "e2e-admin-password",
   LANVEX_LOGIN_RATE_LIMIT: "1000",
   LANVEX_SECRET_KEY: "e2e-only-secret-key-not-for-production-use",
+  // Configuration changes are only ever exercised against the lab containers (servers.lab / changes.lab specs).
+  LANVEX_AUTOMATION_ENABLED: process.env.LANVEX_E2E_LAB === "1" ? "true" : "false",
+  LANVEX_CHANGE_ROLLBACK_SECONDS: "60",
 };
 
 export default defineConfig({

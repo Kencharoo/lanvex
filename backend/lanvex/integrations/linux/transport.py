@@ -18,7 +18,7 @@ import asyncssh
 
 from lanvex.core.errors import LanvexError
 from lanvex.integrations.linux.assemble import CommandResult
-from lanvex.integrations.linux.commands import COMMANDS, Cmd
+from lanvex.integrations.linux.commands import COMMANDS, STDIN_COMMANDS, Cmd
 
 MAX_OUTPUT = 4 * 1024 * 1024
 HOST_KEY_ALGS = (
@@ -173,10 +173,17 @@ async def connect(t: Target, timeout: float) -> AsyncIterator[asyncssh.SSHClient
         await conn.wait_closed()
 
 
-async def run(conn: asyncssh.SSHClientConnection, cmd: Cmd, timeout: float) -> CommandResult:
+async def run(
+    conn: asyncssh.SSHClientConnection, cmd: Cmd, timeout: float, stdin: str | None = None
+) -> CommandResult:
     line = COMMANDS[cmd]  # KeyError for anything not in the allow-list
+    if stdin is not None and cmd not in STDIN_COMMANDS:
+        raise ValueError(f"{cmd} does not take input")
     try:
-        r = await conn.run(line, check=False, timeout=timeout, stdin=asyncssh.DEVNULL)
+        if stdin is None:
+            r = await conn.run(line, check=False, timeout=timeout, stdin=asyncssh.DEVNULL)
+        else:
+            r = await conn.run(line, check=False, timeout=timeout, input=stdin)
     except (asyncssh.TimeoutError, TimeoutError):
         return CommandResult(stdout="", stderr=f"timed out after {timeout:g}s", exit_status=None)
     except asyncssh.ChannelOpenError as e:
@@ -184,3 +191,22 @@ async def run(conn: asyncssh.SSHClientConnection, cmd: Cmd, timeout: float) -> C
     out = r.stdout if isinstance(r.stdout, str) else (r.stdout or b"").decode("utf-8", "replace")
     err = r.stderr if isinstance(r.stderr, str) else (r.stderr or b"").decode("utf-8", "replace")
     return CommandResult(stdout=out[:MAX_OUTPUT], stderr=err[:4096], exit_status=r.exit_status)
+
+
+async def upload(conn: asyncssh.SSHClientConnection, filename: str, data: bytes, timeout: float) -> str:
+    """Write a file into the SSH user's home directory over SFTP. Returns the remote path.
+
+    Only used to hand the change helper to an administrator, who installs it with sudo after checking
+    its checksum. `filename` is a constant chosen by Lanvex, never user input.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            async with conn.start_sftp_client() as sftp:
+                home = await sftp.realpath(".")
+                path = f"{home.rstrip('/')}/{filename}"
+                async with sftp.open(path, "wb", attrs=asyncssh.SFTPAttrs(permissions=0o644)) as f:
+                    await f.write(data)
+                await sftp.chmod(path, 0o644)
+                return path
+    except (TimeoutError, asyncssh.Error, OSError) as e:
+        raise SSHError(f"Could not copy {filename} to the server: {e}", code="error") from e

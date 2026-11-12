@@ -133,10 +133,9 @@ async def test_password_login_on_networkmanager_host(api: httpx.AsyncClient) -> 
     assert snap["status"] == "ok", snap
     ifs = {i["name"]: i for i in snap["facts"]["interfaces"]}
     assert snap["facts"]["stack"]["key"] == "networkmanager"
-    assert (
-        ifs["eth0"]["manager_profile"] == "lab-uplink"
-        and ifs["eth1"]["manager_state"] == "connected (externally)"
-    )
+    assert ifs["eth0"]["manager_profile"] == "lab-uplink"
+    # "connected (externally)" as the lab starts; plain "connected" once a change test re-activated it.
+    assert ifs["eth1"]["manager_state"] in ("connected (externally)", "connected")
 
     bad = await register(
         api, "lab-nm", username="ops", credentials={"method": "password", "password": "wrong-password"}

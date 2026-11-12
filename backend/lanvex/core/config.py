@@ -52,8 +52,13 @@ class Settings(BaseSettings):
     ssh_command_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     server_snapshot_retention: int = Field(default=20, ge=1, le=500)
 
-    # Phase 2 — infrastructure-changing automation. Off unless explicitly enabled.
+    # Changing server configuration. Off unless explicitly enabled; each server must also be opted in.
     automation_enabled: bool = False
+    change_rollback_seconds: int = Field(default=120, ge=30, le=900)
+    changes_require_second_admin: bool = False
+    change_runner_enabled: bool = (
+        True  # run approved changes in this process; tests drive the runner directly
+    )
 
     trusted_proxies: list[str] = Field(default_factory=list)
 

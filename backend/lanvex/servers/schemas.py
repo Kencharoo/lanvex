@@ -151,6 +151,7 @@ class ServerOut(ApiModel):
     os_pretty_name: str | None
     os_supported: bool | None
     network_stack: str | None
+    changes_enabled: bool
     created_at: datetime
 
 

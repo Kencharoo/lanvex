@@ -55,7 +55,15 @@ Without URL and token Lanvex still starts; NetBox-backed pages show how to conne
 Back up `LANVEX_SECRET_KEY` with the database. Without it, stored credentials cannot be decrypted
 and every server has to be given new credentials.
 
-## Automation (phase 2)
+## Server configuration changes
 
-`LANVEX_AUTOMATION_ENABLED` defaults to `false`. No feature yet reads it as permission to change
-infrastructure; it exists so that the future switch is explicit and off by default.
+See [changes.md](changes.md) for how changes work and how to set up a server for them.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LANVEX_AUTOMATION_ENABLED` | `false` | Master switch. While `false`, Lanvex only reads servers and NetBox: no change can be prepared, approved or run, and approved changes that have not started end as *Not applied* |
+| `LANVEX_CHANGE_ROLLBACK_SECONDS` | `120` | 30–900. How long the server waits for Lanvex to confirm a change before restoring its previous configuration on its own. Verification must finish within this time |
+| `LANVEX_CHANGES_REQUIRE_SECOND_ADMIN` | `false` | When `true`, the administrator who prepared a change cannot approve it |
+| `LANVEX_CHANGE_RUNNER_ENABLED` | `true` | Run approved changes in this Lanvex process. Leave on; it exists so tests can drive the runner themselves |
+
+Each server must also have changes turned on (on its page) and the change helper installed.

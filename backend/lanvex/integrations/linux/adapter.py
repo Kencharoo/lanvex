@@ -1,4 +1,8 @@
-"""Read-only Linux server adapter (Ubuntu Server, Debian, Fedora Server)."""
+"""Linux server adapter (Ubuntu Server, Debian, Fedora Server).
+
+Reads run as the SSH user with a fixed command set. The one change capability goes through the helper
+(lanvex_netapply.py), which an administrator installs on the server.
+"""
 
 import asyncio
 import time
@@ -24,6 +28,7 @@ CAPABILITIES = {
     Capability.READ_ROUTES,
     Capability.READ_DNS,
     Capability.READ_NETWORK_STACK,
+    Capability.CHANGE_INTERFACE_IPV4,
 }
 register(NAME, CAPABILITIES)
 

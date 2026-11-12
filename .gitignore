@@ -25,3 +25,4 @@ frontend/playwright-report/
 
 # Redis snapshot written when redis-server runs from the repo root
 dump.rdb
+*.tsbuildinfo

@@ -2,7 +2,7 @@
 
 Lanvex is a self-hosted network infrastructure console. NetBox is the source of truth for
 inventory and IPAM; Lanvex adds an independent UI, workflows, access control, audit, and
-(later) controlled automation.
+controlled changes to servers.
 
 ## Components
 
@@ -10,8 +10,8 @@ inventory and IPAM; Lanvex adds an independent UI, workflows, access control, au
  Browser (React SPA)
      │  same-origin /api/*  (session cookie + CSRF header)
      ▼
- Lanvex API (FastAPI)  ── PostgreSQL (Lanvex-only data: users, sessions, audit, jobs)
-     │                 ── Redis (rate limiting; job queue in phase 2)
+ Lanvex API (FastAPI)  ── PostgreSQL (Lanvex-only data: users, sessions, audit, servers, changes)
+     │                 ── Redis (rate limiting)
      │  REST, server-side token
      ▼
  NetBox (separate service, unmodified, its own database)
@@ -24,19 +24,21 @@ inventory and IPAM; Lanvex adds an independent UI, workflows, access control, au
 | `backend/lanvex/ipam`, `vlans`, `devices`, `dashboard` | Domain services: validation, overlap checks, utilization, mapping NetBox payloads to Lanvex models | Raw HTTP |
 | `backend/lanvex/auth` | Local users, Argon2 hashing, server-side sessions, roles, CSRF | — |
 | `backend/lanvex/audit` | Append-only audit trail of every write Lanvex performs | — |
-| `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH, read-only) exists; others plug in the same way | Run arbitrary commands |
+| `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; others plug in the same way | Run arbitrary commands |
 | `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state, comparison with NetBox | Write to servers |
+| `backend/lanvex/changes` | Server changes: preparation and safety rules, approval, the runner that applies, verifies, confirms or rolls back | Change anything without an approved, previewed change |
 
 ## Three states, kept separate
 
-1. **Documented (desired)** — objects in NetBox. Every write in the MVP lands here only.
-2. **Actual (running)** — what devices really run. Read via adapters in phase 2.
-3. **Pending** — deployment jobs awaiting approval/execution (phase 2, `jobs` table).
+1. **Documented (desired)** — objects in NetBox. Every IPAM, VLAN and device write lands here only.
+2. **Actual (running)** — what servers really run: snapshots read over SSH (`server_snapshots`).
+3. **Pending** — server changes awaiting approval or being applied (`server_changes`).
 
-The UI labels MVP writes as "Recorded in NetBox", never "deployed". No adapter exists yet,
-so no deployment state can be shown as succeeded.
+The UI labels NetBox writes as "Recorded in NetBox", never "deployed". A server change is shown as
+applied only after the server confirmed it and Lanvex verified it; it never updates NetBox by itself,
+so the comparison on the server page shows any difference that remains.
 
-## Server management (phase 2a, read-only)
+## Server management: reading
 
 ```
  Lanvex API ──SSH (pinned host key, one stored credential, fixed commands)──▶ Linux server
@@ -47,9 +49,8 @@ so no deployment state can be shown as succeeded.
 ```
 
 - **Adapters and capabilities.** `integrations/base.py` defines capabilities (`read.interfaces`,
-  `read.routes`, …). The `linux-ssh` adapter declares only read capabilities; the UI and API offer
-  only what the server's adapter declares. Write capabilities will be added per adapter, each behind
-  validation → preview → approval → checkpoint → execution → verification → rollback.
+  `read.routes`, …, `change.interface_ipv4`). The UI and API offer only what the server's adapter
+  declares.
 - **Commands.** `integrations/linux/commands.py` is the entire set Lanvex can run: constants, with
   a fixed `LC_ALL=C` and `PATH`. Callers pass an enum, never a string. Stack-specific tools run only
   when that stack's service is active.
@@ -60,8 +61,38 @@ so no deployment state can be shown as succeeded.
 - **Parsing.** Pure functions over command output (`parsers.py`, `assemble.py`), tested against
   output captured from real hosts running netplan/networkd, NetworkManager and ifupdown.
 - **Execution.** Reads run in the request (typically 150–300 ms) with per-server locking and
-  timeouts. A background job runner arrives with write operations, which need it for
-  checkpoint/rollback windows.
+  timeouts.
+
+## Server management: changes
+
+```
+ UI ── prepare ──▶ API: fresh read, safety rules ──SSH──▶ helper plan   (files before/after, commands)
+ UI ── approve ──▶ server_changes: approved (typed name; optionally a second admin)
+                     │
+ ChangeRunner ◀──────┘  (in-process loop; SELECT … FOR UPDATE SKIP LOCKED; heartbeat)
+   ├─SSH─▶ helper apply   drift check → backup → arm systemd timer → write → netplan/nmcli apply
+   ├─SSH─▶ helper verify  (new connection) addresses, default route, gateway, DNS, name lookup
+   ├─SSH─▶ helper confirm (cancel timer)  or  helper rollback (restore backup now)
+   └─SSH─▶ read the server again → snapshot
+```
+
+- **The helper.** `integrations/linux/lanvex_netapply.py` is installed by an administrator at
+  `/usr/local/libexec/lanvex/lanvex-netapply`; a sudoers rule lets the Lanvex user run exactly that
+  file as root. It takes typed JSON on stdin, validates it independently of Lanvex, and supports
+  netplan (networkd or NetworkManager renderer) and NetworkManager keyfiles. netplan files are edited
+  key by key, so unrelated lines stay byte-identical; NetworkManager keyfiles are edited directly
+  rather than through `nmcli modify`, which on netplan-integrated systems migrates profiles.
+- **The rollback lives on the server.** Before writing anything the helper arms a transient systemd
+  timer (`lanvex-rollback-<id>`) that restores the backup unless confirmed. Losing Lanvex, the network
+  or the SSH session therefore cannot leave a half-applied change: the server undoes it alone.
+- **Lanvex's own rules** on top of the helper's: the address Lanvex connects to must stay on the
+  interface as a static address; warnings for gateway changes and the management interface; one
+  open change per server (a partial unique index); the helper's plan is the preview, and the helper
+  refuses to apply if the file changed since (sha256).
+- **Status is what Lanvex knows.** If verification cannot reach the server, Lanvex waits until after
+  the server's deadline and asks it what happened. If it still cannot find out (or Lanvex restarted
+  mid-change; stale heartbeats are picked up after 120 s), the change is `needs_attention`, never
+  "succeeded". Every outcome is audited (`server.change.execute`).
 
 ## Data flow: create a prefix
 
@@ -89,7 +120,9 @@ so no deployment state can be shown as succeeded.
 `sessions` (token hash, user, csrf token, expiry, IP, user agent) ·
 `audit_events` (actor, action, target type/id/repr, outcome, detail JSON, IP, request id, time) ·
 `servers` (address, user, auth method, encrypted credential, public key, pinned host key, NetBox link, last status, summary) ·
-`server_snapshots` (server, time, status, facts JSON, raw output, duration, requested by).
+`server_snapshots` (server, time, status, facts JSON, raw output, duration, requested by) ·
+`server_changes` (number, server, interface, request, state before, helper preview, status, approvals,
+deadline, checks, log, outcome; one open change per server).
 Migrations: Alembic in `backend/alembic`.
 
 ## Security model
@@ -101,8 +134,10 @@ Migrations: Alembic in `backend/alembic`.
 - CSRF: per-session token, required in `X-CSRF-Token` for every non-GET request.
 - Rate limits (Redis, in-memory fallback in dev/tests): login attempts and write operations.
 - Secrets only from environment; never in responses, logs (structlog redaction), or the bundle.
-- No user input reaches a shell. Server reads use a fixed command set; future write operations will
-  be narrowly scoped, typed operations behind adapters, disabled by default (`LANVEX_AUTOMATION_ENABLED=false`).
+- No user input reaches a shell. Server reads use a fixed command set. The only privileged command is
+  the change helper, given typed JSON on stdin; it runs its own tools with fixed argument lists.
+  Changes are disabled by default (`LANVEX_AUTOMATION_ENABLED=false`) and per server, need an
+  administrator's typed approval, and are rolled back by the server itself unless verified.
 - Credentials at rest: Fernet with a key derived from `LANVEX_SECRET_KEY`; never returned by the API,
   logged, or audited. Optional `LANVEX_SERVER_ALLOWED_NETWORKS` limits where Lanvex may connect.
 

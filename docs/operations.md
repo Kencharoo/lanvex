@@ -8,7 +8,8 @@
 - Set strong values for `LANVEX_POSTGRES_PASSWORD` and the bootstrap admin password; remove the bootstrap
   variables after the first start.
 - Back up the `lanvex-db` volume. It holds Lanvex users and the audit log. Network data lives in NetBox.
-- Keep `LANVEX_AUTOMATION_ENABLED=false`.
+- Keep `LANVEX_AUTOMATION_ENABLED=false` unless you change servers through Lanvex. If you do, read
+  [changes.md](changes.md) first and turn changes on only for the servers that need them.
 - Set `LANVEX_SECRET_KEY` and store it with your database backups. Consider `LANVEX_SERVER_ALLOWED_NETWORKS`.
 
 ### Reverse proxy (Caddy on the same host)
@@ -54,7 +55,8 @@ records the failure in its audit log.
 
 ## Adding a server
 
-Lanvex reads servers over SSH and never changes them. On each server:
+Reading a server needs no privileges. Changing its network configuration (optional, off by default)
+additionally needs a small helper installed as root; see [changes.md](changes.md). On each server:
 
 1. Create an unprivileged account for Lanvex (no sudo needed): `sudo useradd -m -s /bin/sh lanvex`.
 2. In Lanvex, choose **Servers → Add server**. Lanvex fetches the server's SSH host key and shows its
@@ -67,10 +69,12 @@ Lanvex reads servers over SSH and never changes them. On each server:
 If a server's host key changes (after a reinstall, or if something intercepts the connection),
 Lanvex stops connecting and says so. Verify the new fingerprint the same way before trusting it.
 
-The commands Lanvex runs are fixed and read-only: `ip -json` (addresses, routes), `cat` of
+The commands Lanvex runs to read a server are fixed and read-only: `ip -json` (addresses, routes), `cat` of
 `/etc/os-release`, `/etc/resolv.conf` and `/etc/network/interfaces[.d]`, `systemctl is-active`,
 `ls /etc/netplan`, and `nmcli`/`networkctl`/`resolvectl` status when those services run. The
 contents of `/etc/network/interfaces` are parsed but not stored, since they can contain secrets.
+For changes, the only other command is `sudo -n /usr/local/libexec/lanvex/lanvex-netapply
+<plan|apply|verify|confirm|rollback|status|version>`, with a JSON request on standard input.
 
 ## Users
 
@@ -105,3 +109,4 @@ NetBox outage does not take Lanvex down.
 | Server shows "Sign-in failed" | Key not in `authorized_keys`, wrong user, or `AllowUsers`/`PubkeyAuthentication` in sshd_config |
 | "Stored credentials could not be decrypted" | `LANVEX_SECRET_KEY` changed. Put the old key in `LANVEX_SECRET_KEY_FALLBACKS` |
 | TLS errors to NetBox | Install the CA in the image, or `LANVEX_NETBOX_VERIFY_TLS=false` for lab instances only |
+| Server changes: helper *Not allowed through sudo*, *Python 3 missing*, *Outdated version*; a change *Needs attention* | See the troubleshooting table in [changes.md](changes.md) |

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from lanvex.audit.models import AuditEvent  # noqa: F401  (register models)
 from lanvex.auth.models import Session, User  # noqa: F401
+from lanvex.changes.models import ServerChange  # noqa: F401
 from lanvex.core.config import get_settings
 from lanvex.core.db import Base
 from lanvex.servers.models import Server, ServerSnapshot  # noqa: F401

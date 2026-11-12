@@ -72,6 +72,15 @@ class Server(TimestampMixin, Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
 
+    # Configuration changes: off until an administrator opts this server in (and automation is on).
+    changes_enabled: Mapped[bool] = mapped_column(default=False, server_default=text("false"), nullable=False)
+    helper_state: Mapped[str | None] = mapped_column(
+        String(32)
+    )  # ok, outdated, missing, no_sudo, no_python, …
+    helper_version: Mapped[int | None] = mapped_column(Integer)
+    helper_message: Mapped[str | None] = mapped_column(String(500))
+    helper_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     snapshots: Mapped[list["ServerSnapshot"]] = relationship(
         back_populates="server", cascade="all, delete-orphan", passive_deletes=True
     )

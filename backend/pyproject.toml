@@ -1,6 +1,6 @@
 [project]
 name = "lanvex"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lanvex — Network Infrastructure, Simplified. Backend API."
 requires-python = ">=3.12"
 dependencies = [
@@ -61,3 +61,5 @@ known-first-party = ["lanvex"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "S603", "S607"]
+# Runs on the managed server under Python 3.8+: no 3.10+ syntax; calls fixed programs without a shell.
+"lanvex/integrations/linux/lanvex_netapply.py" = ["UP", "S603", "S607", "S108", "E501"]

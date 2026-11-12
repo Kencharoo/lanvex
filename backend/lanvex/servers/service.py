@@ -1,6 +1,6 @@
 """Server registration, credentials, connection tests, collection, and NetBox comparison.
 
-Everything here reads from servers. Nothing changes a server's configuration.
+Everything here reads from servers. Changing a server's configuration lives in lanvex.changes.
 """
 
 import asyncio
@@ -81,6 +81,7 @@ def to_out(s: Server, netbox: NetBoxRef | None = None) -> ServerOut:
         os_pretty_name=s.os_pretty_name,
         os_supported=s.os_supported,
         network_stack=s.network_stack,
+        changes_enabled=s.changes_enabled,
         created_at=s.created_at,
     )
 
@@ -270,6 +271,11 @@ class ServerService:
         return s
 
     # ---- connecting ------------------------------------------------------------
+
+    async def target_for(self, s: Server) -> transport.Target:
+        """Connection details for a server, after checking it is inside the allowed networks."""
+        await self._check_target(s.address)
+        return self._target(s)
 
     def _target(self, s: Server) -> transport.Target:
         secret = Vault.from_settings(self.settings).decrypt(s.credential_ciphertext)

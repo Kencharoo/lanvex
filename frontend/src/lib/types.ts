@@ -270,6 +270,7 @@ export interface Server {
   os_pretty_name: string | null;
   os_supported: boolean | null;
   network_stack: string | null;
+  changes_enabled: boolean;
   created_at: string;
 }
 
@@ -382,4 +383,104 @@ export interface SystemInfo {
   automation_enabled: boolean;
   credential_storage: boolean;
   server_allowed_networks: string[];
+}
+
+// ---- configuration changes ----------------------------------------------------------------------------
+
+export type ChangeStatus =
+  | "pending_approval"
+  | "approved"
+  | "running"
+  | "verifying"
+  | "succeeded"
+  | "rolled_back"
+  | "failed"
+  | "cancelled"
+  | "needs_attention";
+
+export interface ChangeRequestBody {
+  interface: string;
+  method: "static" | "dhcp";
+  addresses: string[];
+  gateway: string | null;
+  /** null keeps the interface's DNS settings exactly as they are. */
+  dns_servers: string[] | null;
+  dns_search: string[] | null;
+  verify_dns_name?: string | null;
+}
+
+export interface ChangeOut {
+  id: string;
+  number: number;
+  server_id: string;
+  server_name: string;
+  interface: string;
+  summary: string;
+  status: ChangeStatus;
+  requested_by: string;
+  created_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  outcome: string | null;
+}
+
+export interface ChangeCheck {
+  id: string;
+  label: string;
+  ok: boolean | null;
+  detail: string;
+}
+
+export interface ChangeDetail extends ChangeOut {
+  request: ChangeRequestBody;
+  before: {
+    method: "static" | "dhcp";
+    addresses: string[];
+    dynamic_addresses: string[];
+    gateway: string | null;
+    dns_servers: string[];
+    dns_search: string[];
+    dns_known: boolean;
+    managed_by: string | null;
+  } | null;
+  preview: {
+    backend: string;
+    files: { path: string; label: string; diff: string; before: string; after: string }[];
+    commands: string[];
+    warnings: string[];
+  } | null;
+  rollback_seconds: number;
+  deadline_at: string | null;
+  checks: ChangeCheck[];
+  log: { at: string; level: "info" | "warning" | "error"; message: string }[];
+  can_approve: boolean;
+  approve_blocker: string | null;
+  can_cancel: boolean;
+  can_recheck: boolean;
+}
+
+export type HelperState = "unknown" | "ok" | "outdated" | "missing" | "no_sudo" | "no_python" | "timeout" | "error";
+
+export interface ChangeReadiness {
+  automation_enabled: boolean;
+  changes_enabled: boolean;
+  stack_key: string | null;
+  stack_label: string | null;
+  stack_supported: boolean | null;
+  helper: { state: HelperState; version: number | null; expected_version: number; message: string | null; checked_at: string | null };
+  helper_path: string;
+  helper_sha256: string;
+  ready: boolean;
+  blockers: string[];
+  rollback_seconds: number;
+  second_admin_required: boolean;
+  open_change: ChangeOut | null;
+}
+
+export interface HelperInstall {
+  path: string;
+  sha256: string;
+  commands: string[];
 }

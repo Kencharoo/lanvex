@@ -21,8 +21,13 @@ Then run the tests that use them:
 
 ```bash
 cd backend && LANVEX_TEST_LAB=1 uv run pytest -m lab
-cd frontend && LANVEX_E2E_LAB=1 npx playwright test e2e/servers.lab.spec.ts
+cd frontend && LANVEX_E2E_LAB=1 npx playwright test e2e/servers.lab.spec.ts e2e/changes.lab.spec.ts
 ```
+
+The change tests (`test_changes_lab.py`, `changes.lab.spec.ts`) **really change** `lab-netplan` and
+`lab-nm`: they install the change helper and a sudoers rule for `lanvex`, apply, verify and roll back
+changes, and put the shipped network configuration back afterwards. One test briefly attaches
+`lab-ifup` to `lanvex-lab-b` as a gateway that ignores ping. Point them only at these containers.
 
 To refresh the parser fixtures in `backend/tests/fixtures/linux`, run every command from
 `lanvex/integrations/linux/commands.py` as `lanvex` on each host (`docker exec -u lanvex <host> sh -c '<command>'`).

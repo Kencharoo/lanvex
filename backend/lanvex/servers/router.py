@@ -2,8 +2,10 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request, status
+from sqlalchemy import select
 
-from lanvex.core.errors import NotFound
+from lanvex.changes.models import IN_PROGRESS, ServerChange
+from lanvex.core.errors import Conflict, NotFound
 from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
 from lanvex.netbox.client import NetBoxClient
 from lanvex.schemas import ApiModel
@@ -284,5 +286,12 @@ async def delete_server(
     svc = _svc(request, db, settings)
     s = await svc.get(server_id)
     async with audit.track("server.delete", "server", target_id=s.id, target_repr=s.name):
+        busy = await db.scalar(
+            select(ServerChange.number).where(
+                ServerChange.server_id == s.id, ServerChange.status.in_(IN_PROGRESS)
+            )
+        )
+        if busy:
+            raise Conflict(f"Change #{busy} is being applied to this server. Wait for its outcome first.")
         await db.delete(s)
         await db.commit()

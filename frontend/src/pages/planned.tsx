@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Share2, Workflow } from "lucide-react";
+import { Share2 } from "lucide-react";
 import { PageHeader } from "@/components/page";
 
 /** Honest placeholders for phase-2+ areas: what it will do and what it needs. No fake controls. */
@@ -33,18 +33,5 @@ export const TopologyPage = () => (
     icon={Share2}
     summary="An interactive map of routers, switches and servers, drawn from cables and interface connections documented in NetBox."
     needs={["Cable and link traces from NetBox's dcim API.", "Layout that stays readable beyond a few hundred devices."]}
-  />
-);
-
-export const AutomationPage = () => (
-  <Planned
-    title="Automation"
-    icon={Workflow}
-    summary="Deployment jobs that turn documented changes into device configuration, with drift detection between NetBox and what devices actually run."
-    needs={[
-      "At least one tested infrastructure adapter. Until then nothing here can change a device.",
-      "Job queue with preview, approval, pre-change checkpoint, verification and rollback.",
-      "Automation is off by default and must be enabled by an administrator (LANVEX_AUTOMATION_ENABLED).",
-    ]}
   />
 );

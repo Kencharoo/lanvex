@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { useSession } from "./session";
 import { type ThemePref, useTheme } from "./theme";
 
-type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }>; later?: boolean };
+type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }>; later?: boolean; also?: string };
 
 const NAV: NavItem[][] = [
   [{ to: "/", label: "Overview", icon: LayoutGrid }],
@@ -40,7 +40,7 @@ const NAV: NavItem[][] = [
   ],
   [
     { to: "/topology", label: "Topology", icon: Share2, later: true },
-    { to: "/automation", label: "Automation", icon: Workflow, later: true },
+    { to: "/automation", label: "Automation", icon: Workflow, also: "/changes/" },
     { to: "/activity", label: "Activity & Audit Logs", icon: Activity },
   ],
   [{ to: "/settings", label: "Settings", icon: Settings }],
@@ -175,7 +175,7 @@ export function AppLayout() {
                     className={({ isActive }) =>
                       cn(
                         "group relative flex h-8 items-center gap-2.5 rounded-[var(--radius-control)] px-2 text-[13px] transition-colors",
-                        isActive ? "bg-accent-soft font-medium text-accent" : "text-muted hover:bg-surface-2 hover:text-ink",
+                        isActive || (item.also && location.pathname.startsWith(item.also)) ? "bg-accent-soft font-medium text-accent" : "text-muted hover:bg-surface-2 hover:text-ink",
                         collapsed && "justify-center px-0",
                       )
                     }

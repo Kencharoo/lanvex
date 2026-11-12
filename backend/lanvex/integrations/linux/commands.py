@@ -1,7 +1,9 @@
 """The complete set of commands Lanvex may run on a Linux server.
 
 Every command is a constant. Nothing from user input, NetBox, or a previous command's output is
-ever interpolated into them. All are read-only and work as an unprivileged user.
+ever interpolated into them. The read commands work as an unprivileged user. The HELPER_* commands
+run the change helper (lanvex_netapply.py) through sudo; their request travels as JSON on stdin,
+never in the command line, and the helper validates it again.
 """
 
 from enum import StrEnum
@@ -28,6 +30,18 @@ class Cmd(StrEnum):
     NETWORKCTL_LIST = "networkctl_list"
     RESOLVECTL_DNS = "resolvectl_dns"
     RESOLVECTL_DOMAIN = "resolvectl_domain"
+    HELPER_VERSION = "helper_version"
+    HELPER_PLAN = "helper_plan"
+    HELPER_APPLY = "helper_apply"
+    HELPER_VERIFY = "helper_verify"
+    HELPER_CONFIRM = "helper_confirm"
+    HELPER_ROLLBACK = "helper_rollback"
+    HELPER_STATUS = "helper_status"
+
+
+# Where an administrator installs the change helper. Fixed: Lanvex never runs anything else with sudo.
+HELPER_PATH = "/usr/local/libexec/lanvex/lanvex-netapply"
+_HELPER = _ENV + "sudo -n " + HELPER_PATH + " "
 
 
 # Units whose state decides which network stack is in charge. Order matters: parsers read lines by position.
@@ -51,7 +65,26 @@ COMMANDS: dict[Cmd, str] = {
     Cmd.NETWORKCTL_LIST: _ENV + "networkctl list --no-legend --no-pager",
     Cmd.RESOLVECTL_DNS: _ENV + "resolvectl dns",
     Cmd.RESOLVECTL_DOMAIN: _ENV + "resolvectl domain",
+    Cmd.HELPER_VERSION: _HELPER + "version",
+    Cmd.HELPER_PLAN: _HELPER + "plan",
+    Cmd.HELPER_APPLY: _HELPER + "apply",
+    Cmd.HELPER_VERIFY: _HELPER + "verify",
+    Cmd.HELPER_CONFIRM: _HELPER + "confirm",
+    Cmd.HELPER_ROLLBACK: _HELPER + "rollback",
+    Cmd.HELPER_STATUS: _HELPER + "status",
 }
+
+# Commands that receive a JSON request on stdin. Every other command gets an empty stdin.
+STDIN_COMMANDS = frozenset(
+    {
+        Cmd.HELPER_PLAN,
+        Cmd.HELPER_APPLY,
+        Cmd.HELPER_VERIFY,
+        Cmd.HELPER_CONFIRM,
+        Cmd.HELPER_ROLLBACK,
+        Cmd.HELPER_STATUS,
+    }
+)
 
 # Always collected. The stack-specific ones below run only when that stack is active.
 BASE_COMMANDS = (

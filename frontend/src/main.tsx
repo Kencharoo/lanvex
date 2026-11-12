@@ -16,7 +16,9 @@ import { DeviceDetailPage, DevicesPage } from "@/pages/devices";
 import { IPAddressesPage } from "@/pages/ip-addresses";
 import { LoginPage } from "@/pages/login";
 import { NetworksPage } from "@/pages/networks";
-import { AutomationPage, TopologyPage } from "@/pages/planned";
+import { AutomationPage } from "@/pages/changes";
+import { ChangeDetailPage } from "@/pages/changes/detail";
+import { TopologyPage } from "@/pages/planned";
 import { ServersPage } from "@/pages/servers";
 import { ServerDetailPage } from "@/pages/servers/detail";
 import { SettingsPage } from "@/pages/settings";
@@ -54,6 +56,7 @@ const router = createBrowserRouter([
       { path: "servers/:id", element: <ServerDetailPage /> },
       { path: "topology", element: <TopologyPage /> },
       { path: "automation", element: <AutomationPage /> },
+      { path: "changes/:id", element: <ChangeDetailPage /> },
       { path: "activity", element: <ActivityPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "*", element: <NotFound /> },

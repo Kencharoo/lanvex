@@ -57,11 +57,14 @@ export function Section({
   children: React.ReactNode;
   description?: React.ReactNode;
 }) {
+  const id = React.useId();
   return (
-    <section className="grid content-start gap-2.5">
+    <section className="grid content-start gap-2.5" aria-labelledby={id}>
       <div className="flex items-end justify-between gap-2">
         <div>
-          <h2 className="text-[15px] font-semibold">{title}</h2>
+          <h2 id={id} className="text-[15px] font-semibold">
+            {title}
+          </h2>
           {description && <p className="text-xs text-muted">{description}</p>}
         </div>
         {actions}
