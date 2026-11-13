@@ -18,6 +18,7 @@ as the containers are wired, but outside Docker (see *Not verified yet*).
 | Service account | `lanvex_init` creates the account, its four permissions and its token; repeated runs change nothing; a changed token or pepper replaces the old token; the account cannot sign in |
 | Container roles | The image's entrypoint (`core`, `worker`, `manage`) run outside Docker against the same services |
 | Installer | Both modes with `--no-start`: `.env` contents and permissions, `docker compose config` for both profiles; Lanvex Core's own secrets reach only its containers; shellcheck clean |
+| NetBox's own test suite | All 14,725 NetBox tests on the fork (`lanvex/scripts/test.sh --full`): 14,723 pass, 22 skipped as upstream intends. Two did not pass in the full parallel run, and both pass on their own: one checks that the settings file sits in NetBox's folder (the test run used one from elsewhere), the other uses a database ID as an IP address octet and breaks once earlier tests push IDs past 255 (NetBox's test, unchanged in the fork) |
 | Fork hygiene | `check-fork.sh`: every changed NetBox file listed in FORK.md and marked; ruff clean |
 | Look | Light and dark themes checked in the browser: Lanvex colours, typeface and logo, no NetBox Labs links or news feed |
 
