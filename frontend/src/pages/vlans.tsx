@@ -12,11 +12,13 @@ import { api, errorMessage } from "@/lib/api";
 import { fieldError, useLookup, useNetBoxWrite, useUrlState } from "@/lib/hooks";
 import type { Page, VLAN, WriteResult } from "@/lib/types";
 import { NotConfigured, isNotConfigured } from "./networks";
+import { useNetBoxLabel } from "@/lib/system";
 
 const LIMIT = 50;
 type VLANWrite = WriteResult & { vlan: VLAN };
 
 export function VLANsPage() {
+  const nbName = useNetBoxLabel();
   const { isAdmin } = useSession();
   const { values, set, offset } = useUrlState(["q", "site", "group", "status"] as const);
   const [editing, setEditing] = React.useState<VLAN | "new" | null>(null);
@@ -70,7 +72,7 @@ export function VLANsPage() {
     <>
       <PageHeader
         title="VLANs"
-        description="802.1Q VLANs documented in NetBox. Assign them to networks and interfaces from their detail views."
+        description={`802.1Q VLANs documented in ${nbName}. Assign them to networks and interfaces from their detail views.`}
         actions={
           isAdmin && (
             <Button variant="primary" onClick={() => setEditing("new")}>
@@ -147,6 +149,7 @@ export function VLANsPage() {
 }
 
 function VLANDialog({ vlan, onClose }: { vlan: VLAN | "new" | null; onClose: () => void }) {
+  const nbName = useNetBoxLabel();
   const open = vlan !== null;
   const isNew = vlan === "new";
   const sites = useLookup("sites", undefined, open);
@@ -190,7 +193,7 @@ function VLANDialog({ vlan, onClose }: { vlan: VLAN | "new" | null; onClose: () 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       {open && (
-        <DialogContent title={isNew ? "New VLAN" : `Edit VLAN ${(vlan as VLAN).vid}`} description="Saved as a VLAN record in NetBox. Switches are not configured.">
+        <DialogContent title={isNew ? "New VLAN" : `Edit VLAN ${(vlan as VLAN).vid}`} description={`Saved as a VLAN record in ${nbName}. Switches are not configured.`}>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -256,6 +259,7 @@ function VLANDialog({ vlan, onClose }: { vlan: VLAN | "new" | null; onClose: () 
 }
 
 function DeleteVLANDialog({ vlan, onClose }: { vlan: VLAN | null; onClose: () => void }) {
+  const nbName = useNetBoxLabel();
   const del = useNetBoxWrite({
     fn: () => api<WriteResult>(`/vlans/${vlan!.id}`, { method: "DELETE" }),
     success: () => `Deleted VLAN ${vlan?.vid}`,
@@ -265,14 +269,14 @@ function DeleteVLANDialog({ vlan, onClose }: { vlan: VLAN | null; onClose: () =>
   return (
     <Dialog open={!!vlan} onOpenChange={(o) => !o && onClose()}>
       {vlan && (
-        <DialogContent title={`Delete VLAN ${vlan.vid} ${vlan.name}?`} description="The VLAN record is removed from NetBox." role="alertdialog">
+        <DialogContent title={`Delete VLAN ${vlan.vid} ${vlan.name}?`} description={`The VLAN record is removed from ${nbName}.`} role="alertdialog">
           <DialogBody>
             {vlan.prefix_count > 0 && (
               <Notice tone="warn">
-                {vlan.prefix_count} prefix{vlan.prefix_count === 1 ? " references" : "es reference"} this VLAN. NetBox will clear that link.
+                {vlan.prefix_count} prefix{vlan.prefix_count === 1 ? " references" : "es reference"} this VLAN. {nbName} will clear that link.
               </Notice>
             )}
-            <p className="text-[13px] text-muted">Interfaces that carry this VLAN in NetBox lose the association. No switch is reconfigured.</p>
+            <p className="text-[13px] text-muted">Interfaces that carry this VLAN in {nbName} lose the association. No switch is reconfigured.</p>
             {del.error && <Notice tone="danger">{errorMessage(del.error)}</Notice>}
           </DialogBody>
           <DialogFooter>

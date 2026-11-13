@@ -15,6 +15,7 @@ import { useLookup, useUrlState } from "@/lib/hooks";
 import type { Page, Prefix } from "@/lib/types";
 import { PrefixSheet } from "./prefix-sheet";
 import { PrefixWizard } from "./prefix-wizard";
+import { useNetBoxLabel } from "@/lib/system";
 
 const LIMIT = 50;
 
@@ -39,6 +40,7 @@ export function isNotConfigured(e: unknown) {
 }
 
 export function NetworksPage() {
+  const nbName = useNetBoxLabel();
   const { isAdmin } = useSession();
   const { values, set, offset } = useUrlState(["q", "family", "status", "vrf", "prefix"] as const);
   const [creating, setCreating] = React.useState(false);
@@ -86,7 +88,7 @@ export function NetworksPage() {
     <>
       <PageHeader
         title="Networks"
-        description="IP prefixes documented in NetBox, organised by VRF and hierarchy."
+        description={`IP prefixes documented in ${nbName}, organised by VRF and hierarchy.`}
         actions={
           isAdmin && (
             <Button variant="primary" onClick={() => setCreating(true)}>
@@ -155,7 +157,7 @@ export function NetworksPage() {
                     )
                   }
                 >
-                  Document your first prefix. It is recorded in NetBox; no device is configured.
+                  Document your first prefix. It is recorded in {nbName}; no device is configured.
                 </EmptyState>
               )
             }

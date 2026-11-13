@@ -271,3 +271,20 @@ async def test_container_has_no_gateway_and_child_gateways_are_ignored(
     r = await admin.get("/api/v1/prefixes/30")
     assert r.json()["gateway"] is None
     assert gw_lookup.calls.last.request.url.params["mask_length"] == "16"
+
+
+async def test_prefix_detail_works_before_the_gateway_tag_exists(
+    admin: httpx.AsyncClient, netbox_mock: respx.MockRouter
+) -> None:
+    """Regression: on a fresh NetBox the lanvex-gateway tag does not exist, and NetBox rejects the filter."""
+    netbox_mock.get("ipam/prefixes/31/").respond(200, json=p.prefix(31, "10.31.0.0/24", status="active"))
+    netbox_mock.get("ipam/ip-addresses/", params={"tag": "lanvex-gateway"}).respond(
+        400, json={"tag": ["Select a valid choice. lanvex-gateway is not one of the available choices."]}
+    )
+    netbox_mock.get("ipam/ip-addresses/", params={"limit": "1", "brief": "true"}).respond(
+        200, json=p.page([], count=0)
+    )
+    netbox_mock.get("ipam/ip-ranges/").respond(200, json=p.page([]))
+    r = await admin.get("/api/v1/prefixes/31")
+    assert r.status_code == 200, r.text
+    assert r.json()["gateway"] is None

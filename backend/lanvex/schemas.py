@@ -83,6 +83,10 @@ def tags(items: list[dict[str, Any]] | None) -> list[Tag]:
 
 
 def meta(obj: dict[str, Any]) -> Meta:
+    from lanvex.core.config import get_settings
+
     return Meta(
-        created=obj.get("created"), last_updated=obj.get("last_updated"), netbox_url=obj.get("display_url")
+        created=obj.get("created"),
+        last_updated=obj.get("last_updated"),
+        netbox_url=get_settings().public_netbox_url(obj.get("display_url")),
     )

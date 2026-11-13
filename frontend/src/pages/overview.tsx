@@ -10,8 +10,10 @@ import { api, errorMessage } from "@/lib/api";
 import type { NetBoxStatus, Overview } from "@/lib/types";
 import { formatCount, relativeTime } from "@/lib/utils";
 import { NotConfigured, isNotConfigured } from "./networks";
+import { useNetBoxLabel } from "@/lib/system";
 
 export function OverviewPage() {
+  const nbName = useNetBoxLabel();
   const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api<Overview>("/dashboard/overview"), staleTime: 30_000 });
   const nb = useQuery({ queryKey: ["netbox-status"], queryFn: () => api<NetBoxStatus>("/system/netbox"), staleTime: 30_000 });
   const o = q.data;
@@ -20,7 +22,7 @@ export function OverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        description={nb.data?.reachable ? `Documented state from NetBox ${nb.data.version} at ${nb.data.url}.` : "Documented state from NetBox."}
+        description={nb.data?.reachable ? `Documented state from ${nbName} ${nb.data.version} at ${nb.data.url}.` : `Documented state from ${nbName}.`}
         actions={
           <Button
             variant="ghost"
@@ -35,7 +37,7 @@ export function OverviewPage() {
       {isNotConfigured(q.error) ? (
         <NotConfigured />
       ) : q.error ? (
-        <Notice tone="danger" title="NetBox data is unavailable">
+        <Notice tone="danger" title={`${nbName} data is unavailable`}>
           {errorMessage(q.error)}
         </Notice>
       ) : (
@@ -45,14 +47,14 @@ export function OverviewPage() {
             <div className="rounded-[var(--radius-panel)] border border-line bg-surface">
               <EmptyState
                 icon={Network}
-                title="NetBox has no network data yet"
+                title={`${nbName} has no network data yet`}
                 action={
                   <Button asChild variant="primary">
                     <Link to="/networks">Go to networks</Link>
                   </Button>
                 }
               >
-                Start by documenting a network. Devices and VLANs appear here as soon as they exist in NetBox.
+                Start by documenting a network. Devices and VLANs appear here as soon as they exist in {nbName}.
               </EmptyState>
             </div>
           ) : (
@@ -170,11 +172,12 @@ function objectLabel(type: string): string {
 }
 
 function RecentChanges({ o }: { o: Overview | undefined }) {
+  const nbName = useNetBoxLabel();
   const source = o?.recent_changes[0]?.source;
   return (
     <Section
       title="Recent changes"
-      description={source === "lanvex" ? "From the Lanvex audit log." : source === "netbox" ? "From the NetBox change log, including changes made outside Lanvex." : undefined}
+      description={source === "lanvex" ? "From the Lanvex audit log." : source === "netbox" ? `From the ${nbName} change log, including changes made outside Lanvex.` : undefined}
       actions={
         <Link to="/activity" className="text-xs text-accent hover:underline">
           Activity log

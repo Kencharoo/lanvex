@@ -1,6 +1,10 @@
-# Lanvex — self-hosted stack. NetBox runs separately (yours, or the local one in deploy/netbox).
-#   cp .env.example .env   # then edit secrets and the NetBox URL/token
-#   docker compose up -d --build
+# Lanvex — self-hosted stack.
+#   ./install.sh                 # asks a few questions, writes .env, builds and starts everything
+#
+# Two ways to keep network documentation:
+#   Lanvex Core (profile "core"): the NetBox-based application bundled with Lanvex, built from ./core,
+#     reachable only through Lanvex at /core/. COMPOSE_PROFILES=core in .env switches it on.
+#   An existing NetBox: set LANVEX_NETBOX_URL and LANVEX_NETBOX_TOKEN in .env instead.
 name: lanvex
 
 services:
@@ -12,14 +16,22 @@ services:
     environment:
       LANVEX_DATABASE_URL: postgresql+asyncpg://lanvex:${LANVEX_POSTGRES_PASSWORD:?set LANVEX_POSTGRES_PASSWORD in .env}@lanvex-db:5432/lanvex
       LANVEX_REDIS_URL: redis://lanvex-redis:6379/0
+      # Lanvex Core's own secrets stay with Lanvex Core; Lanvex needs only the proxy secret and token.
+      LANVEX_CORE_DB_PASSWORD: ""
+      LANVEX_CORE_SECRET_KEY: ""
+      LANVEX_CORE_API_TOKEN_PEPPER: ""
+      LANVEX_CORE_SERVICE_TOKEN: ""
     ports:
       - "${LANVEX_HTTP_PORT:-8080}:8000"
+    volumes:
+      # Lanvex Core's static files (CSS, JavaScript), served by Lanvex under /core/static/.
+      - core-static:/srv/core-static:ro
     depends_on:
       lanvex-db:
         condition: service_healthy
       lanvex-redis:
         condition: service_healthy
-    networks: [lanvex]
+    networks: [lanvex, core]
 
   lanvex-db:
     image: postgres:16-alpine
@@ -48,8 +60,88 @@ services:
       retries: 20
     networks: [lanvex]
 
+  # ---- Lanvex Core (profile "core") ------------------------------------------------------------
+  # Not published on any port and on an internal network without internet access: the only way in
+  # is through Lanvex, which signs users in. Each container gets only the settings it needs.
+
+  core:
+    build:
+      context: ./core
+      dockerfile: lanvex/Dockerfile
+    image: lanvex-core:local
+    profiles: [core]
+    restart: unless-stopped
+    command: ["core"]
+    environment: &core-env
+      LANVEX_CORE_DB_HOST: core-db
+      LANVEX_CORE_DB_PASSWORD: ${LANVEX_CORE_DB_PASSWORD:-}
+      LANVEX_CORE_REDIS_HOST: core-redis
+      LANVEX_CORE_SECRET_KEY: ${LANVEX_CORE_SECRET_KEY:-}
+      LANVEX_CORE_API_TOKEN_PEPPER: ${LANVEX_CORE_API_TOKEN_PEPPER:-}
+      LANVEX_CORE_PROXY_SECRET: ${LANVEX_CORE_PROXY_SECRET:-}
+      LANVEX_CORE_SERVICE_TOKEN: ${LANVEX_CORE_SERVICE_TOKEN:-}
+      LANVEX_CORE_TIME_ZONE: ${LANVEX_CORE_TIME_ZONE:-UTC}
+    volumes:
+      - core-media:/opt/lanvex-core/netbox/media
+      - core-static:/opt/lanvex-core/netbox/static
+    depends_on:
+      core-db:
+        condition: service_healthy
+      core-redis:
+        condition: service_healthy
+    networks: [core]
+
+  core-worker:
+    image: lanvex-core:local
+    profiles: [core]
+    restart: unless-stopped
+    command: ["worker"]
+    environment: *core-env
+    volumes:
+      - core-media:/opt/lanvex-core/netbox/media
+    depends_on:
+      core:
+        condition: service_started
+    networks: [core]
+
+  core-db:
+    image: postgres:16-alpine
+    profiles: [core]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lanvex_core
+      POSTGRES_USER: lanvex_core
+      POSTGRES_PASSWORD: ${LANVEX_CORE_DB_PASSWORD:-}
+    volumes:
+      - core-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lanvex_core -d lanvex_core"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [core]
+
+  core-redis:
+    image: redis:7-alpine
+    profiles: [core]
+    restart: unless-stopped
+    # Background jobs are queued here, so keep them across restarts.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - core-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [core]
+
 volumes:
   lanvex-db:
+  core-db:
+  core-redis:
+  core-media:
+  core-static:
 
 networks:
   lanvex:
@@ -59,3 +151,6 @@ networks:
     ipam:
       config:
         - subnet: ${LANVEX_DOCKER_SUBNET:-172.31.250.0/24}
+  core:
+    name: lanvex-core
+    internal: true

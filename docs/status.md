@@ -1,8 +1,25 @@
-# Status of Lanvex 0.3
+# Status of Lanvex 0.4
 
-Last updated 2026-11-12. "Verified" means it was run, not just written.
+Last updated 2026-11-13. "Verified" means it was run, not just written.
 
 ## Verified
+
+### Lanvex Core (new in 0.4)
+
+Lanvex Core ran from its source (gunicorn, PostgreSQL 16, Redis), with Lanvex in front of it exactly
+as the containers are wired, but outside Docker (see *Not verified yet*).
+
+| What | How |
+|---|---|
+| Lanvex on Lanvex Core | The 8 live tests (`pytest -m netbox`) pass against Lanvex Core with the `lanvex-service` token and only the permissions Lanvex Core gives it |
+| Single sign-on | Browser test (`core.live.spec.ts`): Lanvex Core while signed out → Lanvex's sign-in → back to the page asked for, as the same user; a prefix created through Lanvex Core's own form appears in Lanvex with a working *Open in Lanvex Core* link; logging out of Lanvex Core signs out of Lanvex; a read-only user sees the data and is refused (403) on add |
+| Who gets in | Requests without the proxy secret, with a wrong one, or as the service account are not signed in, and a failed sign-in through Lanvex says so; a session replayed without Lanvex is ended; a role changed in Lanvex applies on the next page; read-only users cannot see users or permissions (17 Lanvex Core tests and manual checks with curl) |
+| The proxy | 14 tests: signed-out browsers and API calls, header stripping and replacement, display names outside ASCII, form posts with their length, cookies both ways, static files and path traversal, Lanvex Core not answering |
+| Service account | `lanvex_init` creates the account, its four permissions and its token; repeated runs change nothing; a changed token or pepper replaces the old token; the account cannot sign in |
+| Container roles | The image's entrypoint (`core`, `worker`, `manage`) run outside Docker against the same services |
+| Installer | Both modes with `--no-start`: `.env` contents and permissions, `docker compose config` for both profiles; Lanvex Core's own secrets reach only its containers; shellcheck clean |
+| Fork hygiene | `check-fork.sh`: every changed NetBox file listed in FORK.md and marked; ruff clean |
+| Look | Light and dark themes checked in the browser: Lanvex colours, typeface and logo, no NetBox Labs links or news feed |
 
 ### Against a real NetBox 4.7.4
 
@@ -46,8 +63,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 232 tests: 212 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 12 SSH lab (5 reading, 7 changes) |
-| Frontend | Type check, 16 unit tests, production build; 7 Playwright tests in Chrome (2 against the lab) |
+| Backend | 247 tests: 227 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 12 SSH lab (5 reading, 7 changes). The lab tests were last run for 0.3; 0.4 changes server code only where links to NetBox are built, which unit tests cover |
+| Frontend | Type check, 16 unit tests, production build; 8 Playwright tests in Chrome (2 against the lab, 1 against Lanvex Core) |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
 ## Not verified yet
@@ -59,8 +76,10 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Changes on real hardware and real routers | The lab is containers on one bridge; DHCP was not tested (no DHCP server in the lab) | Try on a non-critical server first, with console access at hand |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
 | IPv6, VLAN and bond interfaces on servers | The lab kernel has no IPv6, 8021q or bonding | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
-| Docker image build and Compose stack | No Docker Hub access from the build environment | `docker compose up -d --build` |
-| NetBox versions other than 4.7.4 | | Run the live suite against each supported version (4.2+) |
+| Docker images and the Compose stack, including `install.sh` from start to finish | No access to Docker Hub or any other image registry from the build environment, so neither image was built and no container was started. Everything inside them was run directly instead (see above) | `sudo ./install.sh` on a test server; both containers must turn *healthy* |
+| Upgrading an installation from 0.3 | Same reason | Back up, unpack 0.4 over 0.3 keeping `.env`, `docker compose up -d --build`. 0.3 installations keep their NetBox; Lanvex Core is only added by a new installation or by hand (`.env.example`) |
+| NetBox versions other than 4.7.4 and 4.7.5 | | Run the live suite against each supported version (4.2+) |
+| Moving data from an existing NetBox into Lanvex Core | Not built | NetBox's own backup and restore, by hand; see docs/core.md |
 
 ## Not built yet
 
@@ -71,6 +90,10 @@ with the helper installed through sudo exactly as documented. Only lab container
 - Editing prefix tenant/scope and IP tenant/role/NAT; device and interface creation.
 
 ## Known limitations
+
+- Lanvex Core's API can be used only from a signed-in Lanvex browser session and by Lanvex itself; other
+  tools cannot use tokens against it. It has no outbound network access (webhooks, remote data
+  sources). Permissions inside it follow Lanvex's two roles. Details in docs/core.md.
 
 - Utilization counts IP records; NetBox counts distinct hosts. They differ only when the same host
   is recorded twice in one VRF, or an IP sits inside a utilized range.

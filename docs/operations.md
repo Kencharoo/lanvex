@@ -2,12 +2,16 @@
 
 ## Production checklist
 
+`install.sh` takes care of the passwords, keys and port settings below; the rest is up to you.
+
 - Serve Lanvex over HTTPS through a reverse proxy, and set `LANVEX_TRUSTED_PROXIES` to the address the
   proxy connects from (see below), so Lanvex recognises HTTPS and logs real client IPs.
 - Use a dedicated NetBox user and token for Lanvex with only the permissions below.
 - Set strong values for `LANVEX_POSTGRES_PASSWORD` and the bootstrap admin password; remove the bootstrap
   variables after the first start.
-- Back up the `lanvex-db` volume. It holds Lanvex users and the audit log. Network data lives in NetBox.
+- Back up the `lanvex-db` volume. It holds Lanvex users and the audit log. Network data lives in NetBox
+  or, with Lanvex Core, in the `core-db` and `core-media` volumes ([core.md](core.md#backups)).
+  Keep `.env` with the backups.
 - Keep `LANVEX_AUTOMATION_ENABLED=false` unless you change servers through Lanvex. If you do, read
   [changes.md](changes.md) first and turn changes on only for the servers that need them.
 - Set `LANVEX_SECRET_KEY` and store it with your database backups. Consider `LANVEX_SERVER_ALLOWED_NETWORKS`.
@@ -39,7 +43,8 @@ directory under `pki/authorities/local/root.crt`).
 
 ## NetBox token permissions
 
-Create a NetBox user (for example `lanvex`) and grant object permissions:
+With Lanvex Core nothing needs doing: its `lanvex-service` account gets exactly these permissions on
+every start. For your own NetBox, create a user (for example `lanvex`) and grant object permissions:
 
 | Objects | Actions |
 |---|---|
@@ -108,5 +113,6 @@ NetBox outage does not take Lanvex down.
 | Server shows "Host key changed" | Reinstalled server, or interception. Verify the new fingerprint on the server, then *Verify a new host key* |
 | Server shows "Sign-in failed" | Key not in `authorized_keys`, wrong user, or `AllowUsers`/`PubkeyAuthentication` in sshd_config |
 | "Stored credentials could not be decrypted" | `LANVEX_SECRET_KEY` changed. Put the old key in `LANVEX_SECRET_KEY_FALLBACKS` |
+| Lanvex Core: not answering, could not sign you in, pages without styling | See the troubleshooting table in [core.md](core.md#troubleshooting) |
 | TLS errors to NetBox | Install the CA in the image, or `LANVEX_NETBOX_VERIFY_TLS=false` for lab instances only |
 | Server changes: helper *Not allowed through sudo*, *Python 3 missing*, *Outdated version*; a change *Needs attention* | See the troubleshooting table in [changes.md](changes.md) |

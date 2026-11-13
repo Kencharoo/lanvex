@@ -167,16 +167,23 @@ class PrefixService:
         if p.status.value == PrefixStatus.CONTAINER:
             return None
         net = addr.parse_network(p.prefix)
-        page = await self.nb.page(
-            IPS,
-            {
-                "parent": p.prefix,
-                "mask_length": net.prefixlen,
-                "vrf_id": vrf_filter(p.vrf.id if p.vrf else None),
-                "tag": GATEWAY_TAG_SLUG,
-            },
-            limit=50,
-        )
+        try:
+            page = await self.nb.page(
+                IPS,
+                {
+                    "parent": p.prefix,
+                    "mask_length": net.prefixlen,
+                    "vrf_id": vrf_filter(p.vrf.id if p.vrf else None),
+                    "tag": GATEWAY_TAG_SLUG,
+                },
+                limit=50,
+            )
+        except ValidationFailed as e:
+            # NetBox rejects a filter on a tag that does not exist yet. Until Lanvex records its first
+            # gateway (and creates the tag), no address can carry it.
+            if "tag" in e.fields:
+                return None
+            raise
         for ip in page.results:
             if addr.parse_interface(ip["address"]).network == net:
                 return Gateway(ip_address_id=ip["id"], address=ip["address"])
@@ -473,4 +480,4 @@ async def require_prefix(nb: NetBoxClient, prefix_id: int) -> dict[str, Any]:
     try:
         return await nb.get(f"{PREFIXES}{prefix_id}/")
     except NotFound as e:
-        raise NotFound(f"Prefix {prefix_id} was not found in NetBox.") from e
+        raise NotFound(f"Prefix {prefix_id} was not found in {nb.name}.") from e

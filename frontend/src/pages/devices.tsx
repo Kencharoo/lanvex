@@ -14,10 +14,12 @@ import { useLookup, useNetBoxWrite, useUrlState } from "@/lib/hooks";
 import type { Device, DeviceDetail, Interface, Page, WriteResult } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
 import { NotConfigured, isNotConfigured } from "./networks";
+import { useNetBoxLabel } from "@/lib/system";
 
 const LIMIT = 50;
 
 export function DevicesPage() {
+  const nbName = useNetBoxLabel();
   const navigate = useNavigate();
   const { values, set, offset } = useUrlState(["q", "site", "role", "status"] as const);
   const sites = useLookup("sites");
@@ -54,7 +56,7 @@ export function DevicesPage() {
 
   return (
     <>
-      <PageHeader title="Devices" description="Device inventory documented in NetBox. Live operational data is not shown here yet." />
+      <PageHeader title="Devices" description={`Device inventory documented in ${nbName}. Live operational data is not shown here yet.`} />
       {isNotConfigured(list.error) ? (
         <NotConfigured />
       ) : (
@@ -101,8 +103,8 @@ export function DevicesPage() {
             onRowClick={(d) => navigate(`/devices/${d.id}`)}
             rowLabel={(d) => `Open ${d.name}`}
             empty={
-              <EmptyState icon={Cpu} title={filtered ? "No devices match these filters" : "No devices in NetBox yet"}>
-                {filtered ? "Try a broader search." : "Devices are added in NetBox (or imported later through discovery). They appear here automatically."}
+              <EmptyState icon={Cpu} title={filtered ? "No devices match these filters" : `No devices in ${nbName} yet`}>
+                {filtered ? "Try a broader search." : `Devices are added in ${nbName} (or imported later through discovery). They appear here automatically.`}
               </EmptyState>
             }
             footer={list.data && <Pagination count={list.data.count} limit={LIMIT} offset={offset} onChange={(o) => set({ offset: o })} noun="devices" />}
@@ -114,6 +116,7 @@ export function DevicesPage() {
 }
 
 export function DeviceDetailPage() {
+  const nbName = useNetBoxLabel();
   const { id } = useParams();
   const { isAdmin } = useSession();
   const [vlanEdit, setVlanEdit] = React.useState<Interface | null>(null);
@@ -190,7 +193,7 @@ export function DeviceDetailPage() {
           d?.meta.netbox_url && (
             <Button asChild variant="secondary">
               <a href={d.meta.netbox_url} target="_blank" rel="noreferrer">
-                <ExternalLink /> Open in NetBox
+                <ExternalLink /> Open in {nbName}
               </a>
             </Button>
           )
@@ -205,7 +208,7 @@ export function DeviceDetailPage() {
       {d && (
         <div className="grid gap-8">
           <div className="grid gap-8 lg:grid-cols-[1fr_320px]">
-            <Section title="Inventory" description="As documented in NetBox.">
+            <Section title="Inventory" description={`As documented in ${nbName}.`}>
               <div className="rounded-[var(--radius-panel)] border border-line bg-surface p-4">
                 <Facts
                   items={[
@@ -250,7 +253,7 @@ export function DeviceDetailPage() {
               columns={ifaceColumns}
               rows={d.interfaces}
               rowKey={(i) => i.id}
-              empty={<EmptyState icon={Cpu} title="No interfaces documented">Interfaces come from the device type in NetBox, or can be added there.</EmptyState>}
+              empty={<EmptyState icon={Cpu} title="No interfaces documented">Interfaces come from the device type in {nbName}, or can be added there.</EmptyState>}
             />
           </Section>
           {d.comments && (
@@ -266,6 +269,7 @@ export function DeviceDetailPage() {
 }
 
 function InterfaceVlanDialog({ iface, onClose }: { iface: Interface | null; onClose: () => void }) {
+  const nbName = useNetBoxLabel();
   const vlans = useLookup("vlans", undefined, !!iface);
   const [mode, setMode] = React.useState("");
   const [untagged, setUntagged] = React.useState("");
@@ -292,7 +296,7 @@ function InterfaceVlanDialog({ iface, onClose }: { iface: Interface | null; onCl
   return (
     <Dialog open={!!iface} onOpenChange={(o) => !o && onClose()}>
       {iface && (
-        <DialogContent title={`VLANs on ${iface.name}`} description="Documents the interface's 802.1Q mode in NetBox. The switch port is not changed.">
+        <DialogContent title={`VLANs on ${iface.name}`} description={`Documents the interface's 802.1Q mode in ${nbName}. The switch port is not changed.`}>
           <form
             onSubmit={(e) => {
               e.preventDefault();

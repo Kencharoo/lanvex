@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
+  Boxes,
   ChevronsLeft,
   ChevronsRight,
   Cpu,
@@ -23,11 +24,22 @@ import { Wordmark } from "@/components/logo";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Tooltip } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { NetBoxStatus } from "@/lib/types";
+import { useNetBoxLabel, useSystemInfo } from "@/lib/system";
 import { cn } from "@/lib/utils";
 import { useSession } from "./session";
 import { type ThemePref, useTheme } from "./theme";
 
-type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }>; later?: boolean; also?: string };
+type NavItem = {
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  later?: boolean;
+  also?: string;
+  /** Not part of this app: a full page load (Lanvex Core under /core/). */
+  page?: boolean;
+  /** Shown only when Lanvex Core is part of this installation. */
+  core?: boolean;
+};
 
 const NAV: NavItem[][] = [
   [{ to: "/", label: "Overview", icon: LayoutGrid }],
@@ -37,6 +49,7 @@ const NAV: NavItem[][] = [
     { to: "/vlans", label: "VLANs", icon: Tags },
     { to: "/devices", label: "Devices", icon: Cpu },
     { to: "/servers", label: "Servers", icon: Server },
+    { to: "/core/", label: "Lanvex Core", icon: Boxes, page: true, core: true },
   ],
   [
     { to: "/topology", label: "Topology", icon: Share2, later: true },
@@ -59,17 +72,18 @@ function useNetBoxStatus() {
 
 function ConnectionIndicator({ collapsed }: { collapsed: boolean }) {
   const { data, isPending } = useNetBoxStatus();
+  const nbName = useNetBoxLabel();
   const state = isPending
-    ? { tone: "bg-faint", text: "Checking NetBox…" }
+    ? { tone: "bg-faint", text: `Checking ${nbName}…` }
     : !data?.configured
-      ? { tone: "bg-faint", text: "NetBox not configured" }
+      ? { tone: "bg-faint", text: `${nbName} not configured` }
       : !data.reachable
-        ? { tone: "bg-danger", text: "NetBox unreachable" }
+        ? { tone: "bg-danger", text: `${nbName} unreachable` }
         : !data.authenticated
-          ? { tone: "bg-warn", text: "NetBox token rejected" }
+          ? { tone: "bg-warn", text: `${nbName} token rejected` }
           : data.supported === false
             ? { tone: "bg-warn", text: `NetBox ${data.version} unsupported` }
-            : { tone: "bg-ok", text: `NetBox ${data.version}` };
+            : { tone: "bg-ok", text: nbName === "NetBox" ? `NetBox ${data.version}` : `${nbName} · NetBox ${data.version}` };
   const content = (
     <NavLink
       to="/settings"
@@ -138,6 +152,7 @@ export function AppLayout() {
     });
   };
   const location = useLocation();
+  const systemInfo = useSystemInfo();
   const mainRef = React.useRef<HTMLElement>(null);
   React.useEffect(() => {
     mainRef.current?.focus({ preventScroll: true });
@@ -167,8 +182,20 @@ export function AppLayout() {
         <nav aria-label="Main" className="flex-1 overflow-y-auto px-2 py-3">
           {NAV.map((group, gi) => (
             <ul key={gi} className={cn("grid gap-px", gi > 0 && "mt-3 border-t border-line pt-3")}>
-              {group.map((item) => {
-                const link = (
+              {group.filter((item) => !item.core || systemInfo.data?.core_enabled).map((item) => {
+                const link = item.page ? (
+                  <a
+                    href={item.to}
+                    className={cn(
+                      "group relative flex h-8 items-center gap-2.5 rounded-[var(--radius-control)] px-2 text-[13px] text-muted transition-colors hover:bg-surface-2 hover:text-ink",
+                      collapsed && "justify-center px-0",
+                    )}
+                  >
+                    <item.icon className="size-4 shrink-0" />
+                    {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                    {collapsed && <span className="sr-only">{item.label}</span>}
+                  </a>
+                ) : (
                   <NavLink
                     to={item.to}
                     end={item.to === "/"}

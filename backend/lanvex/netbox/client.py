@@ -106,8 +106,11 @@ class NetBoxClient:
         verify_tls: bool = True,
         max_retries: int = 2,
         transport: httpx.AsyncBaseTransport | None = None,
+        name: str = "NetBox",
     ):
         self.base_url = base_url.rstrip("/")
+        # What users call it in messages: "Lanvex Core" when Lanvex runs its own, otherwise "NetBox".
+        self.name = name
         self.max_retries = max_retries
         self._http = httpx.AsyncClient(
             base_url=f"{self.base_url}/api/",
@@ -156,15 +159,15 @@ class NetBoxClient:
                     continue
                 if isinstance(e, httpx.ReadTimeout) and method.upper() not in IDEMPOTENT:
                     raise UpstreamUnavailable(
-                        "NetBox did not respond in time. The change may or may not have been applied — "
+                        f"{self.name} did not respond in time. The change may or may not have been applied — "
                         "refresh to check before retrying.",
                         code="netbox_timeout_unknown_outcome",
                     ) from e
                 raise UpstreamUnavailable(
-                    f"NetBox could not be reached ({type(e).__name__}).", code="netbox_unreachable"
+                    f"{self.name} could not be reached ({type(e).__name__}).", code="netbox_unreachable"
                 ) from e
             except httpx.HTTPError as e:
-                raise UpstreamUnavailable(f"NetBox request failed ({type(e).__name__}).") from e
+                raise UpstreamUnavailable(f"{self.name} request failed ({type(e).__name__}).") from e
 
             if response.status_code in RETRY_STATUSES and attempt < attempts:
                 log.warning(
@@ -173,14 +176,13 @@ class NetBoxClient:
                 await asyncio.sleep(self._backoff(attempt))
                 continue
             return self._handle(response, method, path)
-        raise UpstreamUnavailable("NetBox request failed.") from last_exc  # pragma: no cover
+        raise UpstreamUnavailable(f"{self.name} request failed.") from last_exc  # pragma: no cover
 
     @staticmethod
     def _backoff(attempt: int) -> float:
         return min(0.25 * (2 ** (attempt - 1)), 2.0) + random.uniform(0, 0.1)  # noqa: S311
 
-    @staticmethod
-    def _handle(response: httpx.Response, method: str, path: str) -> Any:
+    def _handle(self, response: httpx.Response, method: str, path: str) -> Any:
         status = response.status_code
         if 200 <= status < 300:
             if status == 204 or not response.content:
@@ -188,10 +190,10 @@ class NetBoxClient:
             try:
                 return response.json()
             except ValueError as e:
-                raise UpstreamUnavailable("NetBox returned a response that is not valid JSON.") from e
+                raise UpstreamUnavailable(f"{self.name} returned a response that is not valid JSON.") from e
         if 300 <= status < 400:
             raise UpstreamUnavailable(
-                "NetBox redirected the request. Check LANVEX_NETBOX_URL (scheme, host, and path prefix).",
+                f"{self.name} redirected the request. Check LANVEX_NETBOX_URL (scheme, host, and path prefix).",
                 code="netbox_redirect",
             )
         try:
@@ -206,22 +208,22 @@ class NetBoxClient:
                 f"{k}: {' '.join(v)}" if k != "__all__" else " ".join(v) for k, v in fields.items()
             )
             raise ValidationFailed(
-                message or "NetBox rejected the request.", fields=fields, code="netbox_validation"
+                message or f"{self.name} rejected the request.", fields=fields, code="netbox_validation"
             )
         if status in (401, 403):
             raise PermissionDenied(
-                f"NetBox denied the request: {detail or 'insufficient permissions for the configured token'}.",
+                f"{self.name} denied the request: {detail or 'insufficient permissions for the configured token'}.",
                 code="netbox_permission_denied",
             )
         if status == 404:
-            raise NotFound(detail or "The object was not found in NetBox.")
+            raise NotFound(detail or f"The object was not found in {self.name}.")
         if status == 409:
-            raise Conflict(detail or "NetBox reported a conflict.")
+            raise Conflict(detail or f"{self.name} reported a conflict.")
         if status >= 500:
             raise UpstreamUnavailable(
-                f"NetBox returned an error (HTTP {status}).", code="netbox_server_error"
+                f"{self.name} returned an error (HTTP {status}).", code="netbox_server_error"
             )
-        raise LanvexError(detail or f"Unexpected NetBox response (HTTP {status}).", code="netbox_error")
+        raise LanvexError(detail or f"Unexpected {self.name} response (HTTP {status}).", code="netbox_error")
 
     # ---- helpers ------------------------------------------------------
 

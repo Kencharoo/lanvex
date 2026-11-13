@@ -59,6 +59,42 @@ Integration tests against a real NetBox are opt-in and destructive to their own 
 LANVEX_TEST_NETBOX_URL=http://localhost:8000 LANVEX_TEST_NETBOX_TOKEN=nbt_... uv run pytest -m netbox
 ```
 
+## Lanvex Core
+
+Lanvex Core is a separate repository (a NetBox fork; see its `FORK.md`), expected next to this one
+as `../lanvex-core`. Its tests: `lanvex/scripts/test.sh` there (PostgreSQL and Redis on localhost).
+
+To run Lanvex against a local Lanvex Core without Docker, start Lanvex Core like NetBox, from its
+`netbox/` directory, with its configuration module and the variables the installer would write:
+
+```bash
+export NETBOX_CONFIGURATION=lanvex_configuration
+export LANVEX_CORE_DB_HOST=localhost LANVEX_CORE_DB_PASSWORD=… LANVEX_CORE_REDIS_HOST=localhost
+export LANVEX_CORE_SECRET_KEY=… LANVEX_CORE_API_TOKEN_PEPPER=… LANVEX_CORE_PROXY_SECRET=…   # 32+ characters
+export LANVEX_CORE_SERVICE_TOKEN=nbt_aaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+python manage.py migrate && python manage.py collectstatic --no-input && python manage.py lanvex_init
+gunicorn --bind 127.0.0.1:8200 netbox.wsgi
+```
+
+and point Lanvex at it:
+
+```bash
+export LANVEX_NETBOX_URL=http://127.0.0.1:8200/core LANVEX_NETBOX_TOKEN=$LANVEX_CORE_SERVICE_TOKEN
+export LANVEX_NETBOX_PUBLIC_URL=/core LANVEX_CORE_UPSTREAM_URL=http://127.0.0.1:8200
+export LANVEX_CORE_STATIC_DIR=/path/to/lanvex-core/netbox/static   # plus the same LANVEX_CORE_PROXY_SECRET
+```
+
+Then, with Lanvex running on port 8000 (the Vite dev server also forwards `/core`):
+
+```bash
+LANVEX_TEST_NETBOX_URL=http://127.0.0.1:8200/core LANVEX_TEST_NETBOX_TOKEN=$LANVEX_CORE_SERVICE_TOKEN uv run pytest -m netbox
+LANVEX_E2E_CORE_URL=http://127.0.0.1:8000 LANVEX_E2E_CORE_PASSWORD=… npx playwright test core.live
+```
+
+`core.lock` pins the Lanvex Core commit a Lanvex release ships with. `scripts/fetch-core.sh` puts it
+into `./core` for `docker compose`; `scripts/release.sh` builds the release archive (Lanvex at HEAD
+plus `./core`). Steps for a new Lanvex Core version are in [core.md](core.md#for-developers).
+
 ## Layout
 
 ```
@@ -71,6 +107,7 @@ backend/lanvex/
   integrations/ adapters; linux/ = SSH transport, fixed commands, parsers, the change helper
   servers/     server registry, credentials, host keys, snapshots, NetBox comparison
   changes/     server changes: preparation, approval, the runner
+  core_proxy.py  /core/ proxy to Lanvex Core
 frontend/src/
   app/         session, theme, layout
   components/  ui primitives, data table, address-space strip and map
@@ -80,7 +117,9 @@ frontend/src/
 
 ## Conventions
 
-- The browser talks only to `/api/v1`. Components consume Lanvex models (`lib/types.ts`), never raw NetBox JSON.
+- The browser talks only to `/api/v1` (and to Lanvex Core's own pages under `/core/`). Components consume
+  Lanvex models (`lib/types.ts`), never raw NetBox JSON.
+- Say "NetBox" in the UI through `useNetBoxLabel()`, which gives "Lanvex Core" when Lanvex Core is installed.
 - Every write goes through `audit.track(...)` and returns `state: "documented"`.
 - Do not invent NetBox endpoints or fields. Check the serializers and filtersets of the target NetBox version.
 - `integrations/linux/lanvex_netapply.py` runs **on servers, as root**. Keep it one file, standard

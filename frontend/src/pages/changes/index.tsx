@@ -12,11 +12,13 @@ import type { ChangeOut, ChangeStatus } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
 import { useSystemInfo } from "../servers";
 import { CHANGE_STATUS, ChangeStatusBadge, isActive } from "./shared";
+import { useNetBoxLabel } from "@/lib/system";
 
 const LIMIT = 200;
 
 /** Server configuration changes, across all servers: what waits for approval, what runs, and how each one ended. */
 export function AutomationPage() {
+  const nbName = useNetBoxLabel();
   const navigate = useNavigate();
   const info = useSystemInfo();
   const { values, set } = useUrlState(["show"] as const);
@@ -73,7 +75,7 @@ export function AutomationPage() {
       />
       {info.data && !info.data.automation_enabled && (
         <Notice tone="info" title="Changes are turned off for this Lanvex installation">
-          Lanvex only reads servers and NetBox until an administrator of the Lanvex server sets <span className="addr">LANVEX_AUTOMATION_ENABLED=true</span> and
+          Lanvex only reads servers and {nbName} until an administrator of the Lanvex server sets <span className="addr">LANVEX_AUTOMATION_ENABLED=true</span> and
           restarts it. Past changes stay listed here.
         </Notice>
       )}

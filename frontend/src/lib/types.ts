@@ -381,6 +381,9 @@ export interface SystemInfo {
   version: string;
   environment: string;
   automation_enabled: boolean;
+  /** Lanvex Core (the bundled NetBox-based application) is served under /core/. */
+  core_enabled: boolean;
+  netbox_label: string;
   credential_storage: boolean;
   server_allowed_networks: string[];
 }

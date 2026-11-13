@@ -14,6 +14,7 @@ import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
 import type { NetBoxStatus, Role, User } from "@/lib/types";
 import { cn, relativeTime } from "@/lib/utils";
+import { useNetBoxLabel } from "@/lib/system";
 
 export function SettingsPage() {
   const { isAdmin } = useSession();
@@ -41,12 +42,13 @@ function Check({ ok, label, pending }: { ok: boolean | null; label: string; pend
 }
 
 function ConnectionSection() {
+  const nbName = useNetBoxLabel();
   const q = useQuery({ queryKey: ["netbox-status"], queryFn: () => api<NetBoxStatus>("/system/netbox") });
   const s = q.data;
   return (
     <Section
-      title="NetBox connection"
-      description="Lanvex reads and writes all infrastructure data through this NetBox instance. Credentials stay on the server."
+      title={`${nbName} connection`}
+      description={`Lanvex reads and writes all infrastructure data through this ${nbName} instance. Credentials stay on the server.`}
       actions={
         <Button size="sm" onClick={() => void q.refetch()} loading={q.isFetching}>
           Test connection
@@ -66,7 +68,7 @@ function ConnectionSection() {
         )}
         <ul className="grid gap-1.5" aria-live="polite">
           <Check pending={q.isFetching} ok={s ? s.configured : null} label="URL and token configured" />
-          <Check pending={q.isFetching} ok={s?.configured ? s.reachable : null} label="NetBox reachable" />
+          <Check pending={q.isFetching} ok={s?.configured ? s.reachable : null} label={`${nbName} reachable`} />
           <Check pending={q.isFetching} ok={s?.reachable ? s.authenticated : null} label="API token accepted" />
           <Check pending={q.isFetching} ok={s?.reachable ? !!s.supported : null} label={`Version ${s?.minimum_version ?? "4.2"} or newer`} />
         </ul>
@@ -151,6 +153,7 @@ function AccountSection() {
 }
 
 function UsersSection() {
+  const nbName = useNetBoxLabel();
   const qc = useQueryClient();
   const { user: me } = useSession();
   const [adding, setAdding] = React.useState(false);
@@ -207,7 +210,7 @@ function UsersSection() {
   return (
     <Section
       title="Users"
-      description="Administrators can change NetBox data through Lanvex. Read-only users can view everything but change nothing."
+      description={`Administrators can change ${nbName} data through Lanvex. Read-only users can view everything but change nothing.`}
       actions={
         <Button size="sm" onClick={() => setAdding(true)}>
           <Plus /> Add user

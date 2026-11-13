@@ -13,6 +13,7 @@ import { api, errorMessage } from "@/lib/api";
 import { fieldError, useLookup, useNetBoxWrite, useUrlState } from "@/lib/hooks";
 import type { AvailableIP, Device, Interface, IPAddress, IPStatus, Page, Prefix, WriteResult } from "@/lib/types";
 import { NotConfigured, isNotConfigured } from "./networks";
+import { useNetBoxLabel } from "@/lib/system";
 
 const LIMIT = 50;
 const STATUSES: { v: IPStatus; label: string }[] = [
@@ -26,6 +27,7 @@ const STATUSES: { v: IPStatus; label: string }[] = [
 type IPWrite = WriteResult & { ip_address: IPAddress };
 
 export function IPAddressesPage() {
+  const nbName = useNetBoxLabel();
   const { isAdmin } = useSession();
   const { values, set, offset } = useUrlState(["q", "parent", "status", "assigned", "vrf_id", "global_only", "family"] as const);
   const [creating, setCreating] = React.useState(false);
@@ -124,7 +126,7 @@ export function IPAddressesPage() {
               {ip.meta.netbox_url && (
                 <MenuItem asChild>
                   <a href={ip.meta.netbox_url} target="_blank" rel="noreferrer">
-                    <ExternalLink /> Open in NetBox
+                    <ExternalLink /> Open in {nbName}
                   </a>
                 </MenuItem>
               )}
@@ -151,7 +153,7 @@ export function IPAddressesPage() {
               </button>
             </>
           ) : (
-            "Address records in NetBox. Changing a record here does not configure a host or DHCP server."
+            `Address records in ${nbName}. Changing a record here does not configure a host or DHCP server.`
           )
         }
         actions={
@@ -222,6 +224,7 @@ export function IPAddressesPage() {
 }
 
 function CreateIPDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const nbName = useNetBoxLabel();
   const vrfs = useLookup("vrfs", undefined, open);
   const [mode, setMode] = React.useState<"next" | "manual">("next");
   const [prefixId, setPrefixId] = React.useState("");
@@ -284,7 +287,7 @@ function CreateIPDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const err = create.error;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="Add IP address" description="Record an address in NetBox." width="max-w-xl">
+      <DialogContent title="Add IP address" description={`Record an address in ${nbName}.`} width="max-w-xl">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -310,7 +313,7 @@ function CreateIPDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
               <Field
                 label="Network"
                 htmlFor="ip-prefix"
-                hint={preview.data?.[0] ? <>Next free: <span className="addr text-ink">{preview.data[0].address}</span>. NetBox assigns it atomically.</> : preview.data ? "No free addresses in this network." : undefined}
+                hint={preview.data?.[0] ? <>Next free: <span className="addr text-ink">{preview.data[0].address}</span>. {nbName} assigns it atomically.</> : preview.data ? "No free addresses in this network." : undefined}
               >
                 <Select id="ip-prefix" value={prefixId} onChange={(e) => setPrefixId(e.target.value)} required>
                   <option value="">Choose a network</option>
@@ -442,6 +445,7 @@ export function InterfacePicker({
 }
 
 function AssignDialog({ ip, onClose }: { ip: IPAddress | null; onClose: () => void }) {
+  const nbName = useNetBoxLabel();
   const [device, setDevice] = React.useState<number | null>(null);
   const [iface, setIface] = React.useState<number | null>(null);
   React.useEffect(() => {
@@ -457,7 +461,7 @@ function AssignDialog({ ip, onClose }: { ip: IPAddress | null; onClose: () => vo
   return (
     <Dialog open={!!ip} onOpenChange={(o) => !o && onClose()}>
       {ip && (
-        <DialogContent title={`Assign ${ip.address}`} description="Records which interface uses this address in NetBox. The host is not reconfigured.">
+        <DialogContent title={`Assign ${ip.address}`} description={`Records which interface uses this address in ${nbName}. The host is not reconfigured.`}>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -484,6 +488,7 @@ function AssignDialog({ ip, onClose }: { ip: IPAddress | null; onClose: () => vo
 }
 
 function DeleteIPDialog({ ip, onClose }: { ip: IPAddress | null; onClose: () => void }) {
+  const nbName = useNetBoxLabel();
   const del = useNetBoxWrite({
     fn: () => api<WriteResult>(`/ip-addresses/${ip!.id}`, { method: "DELETE" }),
     success: () => `Deleted ${ip?.address}`,
@@ -493,7 +498,7 @@ function DeleteIPDialog({ ip, onClose }: { ip: IPAddress | null; onClose: () => 
   return (
     <Dialog open={!!ip} onOpenChange={(o) => !o && onClose()}>
       {ip && (
-        <DialogContent title={`Delete ${ip.address}?`} description="The address record is removed from NetBox." role="alertdialog">
+        <DialogContent title={`Delete ${ip.address}?`} description={`The address record is removed from ${nbName}.`} role="alertdialog">
           <DialogBody>
             {ip.assigned && (
               <Notice tone="warn" title="This address is assigned">

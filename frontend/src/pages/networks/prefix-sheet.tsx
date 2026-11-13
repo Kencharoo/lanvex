@@ -13,8 +13,10 @@ import { api, errorMessage } from "@/lib/api";
 import { fieldError, useLookup, useNetBoxWrite } from "@/lib/hooks";
 import type { AvailableIP, AvailablePrefix, IPAddress, Page, Prefix, PrefixStatus, WriteResult } from "@/lib/types";
 import { absoluteTime, formatCount, relativeTime } from "@/lib/utils";
+import { useNetBoxLabel } from "@/lib/system";
 
 export function PrefixSheet({ id, onClose, onSelect }: { id: number; onClose: () => void; onSelect: (id: number) => void }) {
+  const nbName = useNetBoxLabel();
   const { isAdmin } = useSession();
   const [editing, setEditing] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
@@ -84,7 +86,7 @@ export function PrefixSheet({ id, onClose, onSelect }: { id: number; onClose: ()
                 {p.meta.netbox_url && (
                   <Button asChild size="sm" variant="ghost">
                     <a href={p.meta.netbox_url} target="_blank" rel="noreferrer">
-                      <ExternalLink /> Open in NetBox
+                      <ExternalLink /> Open in {nbName}
                     </a>
                   </Button>
                 )}
@@ -111,7 +113,7 @@ export function PrefixSheet({ id, onClose, onSelect }: { id: number; onClose: ()
 
             <Section
               title="Address space"
-              description={p.utilization?.basis === "child_prefixes" ? "Coverage by child prefixes." : "Addresses recorded in NetBox, out of usable addresses."}
+              description={p.utilization?.basis === "child_prefixes" ? "Coverage by child prefixes." : `Addresses recorded in ${nbName}, out of usable addresses.`}
             >
               <div className="flex items-center justify-between">
                 <UtilStrip u={p.utilization} />
@@ -193,6 +195,7 @@ export function PrefixSheet({ id, onClose, onSelect }: { id: number; onClose: ()
 }
 
 function EditPrefixDialog({ prefix, open, onOpenChange }: { prefix: Prefix; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const nbName = useNetBoxLabel();
   const vlans = useLookup("vlans", undefined, open);
   const roles = useLookup("prefix-roles", undefined, open);
   const [form, setForm] = React.useState(() => initial(prefix));
@@ -223,7 +226,7 @@ function EditPrefixDialog({ prefix, open, onOpenChange }: { prefix: Prefix; open
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title={`Edit ${prefix.prefix}`} description="Changes are saved to NetBox.">
+      <DialogContent title={`Edit ${prefix.prefix}`} description={`Changes are saved to ${nbName}.`}>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -312,6 +315,7 @@ function DeletePrefixDialog({
   onOpenChange: (o: boolean) => void;
   onDeleted: () => void;
 }) {
+  const nbName = useNetBoxLabel();
   const [confirm, setConfirm] = React.useState("");
   React.useEffect(() => setConfirm(""), [open]);
   const impact = useQuery({
@@ -331,7 +335,7 @@ function DeletePrefixDialog({
   const matches = confirm.trim() === prefix.prefix;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title={`Delete ${prefix.prefix}?`} description="This removes the prefix record from NetBox." role="alertdialog">
+      <DialogContent title={`Delete ${prefix.prefix}?`} description={`This removes the prefix record from ${nbName}.`} role="alertdialog">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -350,7 +354,7 @@ function DeletePrefixDialog({
                 )}
                 {impact.data.ip_addresses > 0 ? (
                   <>
-                    <strong>{impact.data.ip_addresses}</strong> IP address record{impact.data.ip_addresses === 1 ? "" : "s"} inside it will stay in NetBox.
+                    <strong>{impact.data.ip_addresses}</strong> IP address record{impact.data.ip_addresses === 1 ? "" : "s"} inside it will stay in {nbName}.
                   </>
                 ) : (
                   "No IP address records are inside it."

@@ -10,6 +10,7 @@ import { formatBig, parseCidr, suggestGateway, usableHosts } from "@/lib/cidr";
 import { fieldError, useLookup, useNetBoxWrite } from "@/lib/hooks";
 import type { Prefix, PrefixStatus, PrefixValidation, WriteResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useNetBoxLabel } from "@/lib/system";
 
 const STEPS = ["Network", "Placement", "Gateway", "Review"] as const;
 
@@ -59,6 +60,7 @@ function useServerValidation(draft: Draft, enabled: boolean) {
 }
 
 export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: (p: Prefix) => void }) {
+  const nbName = useNetBoxLabel();
   const [step, setStep] = React.useState(0);
   const [draft, setDraft] = React.useState<Draft>(EMPTY);
   const [touched, setTouched] = React.useState(false);
@@ -131,7 +133,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="New network" description="Document a prefix in NetBox." width="max-w-[720px]">
+      <DialogContent title="New network" description={`Document a prefix in ${nbName}.`} width="max-w-[720px]">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -174,7 +176,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
 
               {step === 0 && (
                 <>
-                  <Field label="Name" htmlFor="pf-name" optional hint="Stored as the prefix description in NetBox.">
+                  <Field label="Name" htmlFor="pf-name" optional hint={`Stored as the prefix description in ${nbName}.`}>
                     <Input id="pf-name" value={draft.name} maxLength={200} placeholder="e.g. Office LAN, 3rd floor" onChange={(e) => set("name", e.target.value)} autoFocus />
                   </Field>
                   <Field
@@ -264,7 +266,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
                         label="Gateway"
                         htmlFor="pf-gateway"
                         error={gatewayError}
-                        hint="Created as an IP address in NetBox, tagged lanvex-gateway. Include the prefix's mask."
+                        hint={`Created as an IP address in ${nbName}, tagged lanvex-gateway. Include the prefix's mask.`}
                       >
                         <Input
                           id="pf-gateway"
@@ -306,10 +308,10 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
                   </dl>
                   <ValidationFindings v={v} loading={validation.isFetching} error={validation.error} onlyLevels={["error", "warning", "info"]} />
                   <Notice title="What this does">
-                    Lanvex records this network in NetBox. It does not configure routers, switches, firewalls, or DHCP servers.
+                    Lanvex records this network in {nbName}. It does not configure routers, switches, firewalls, or DHCP servers.
                   </Notice>
                   {create.error && fieldError(create.error, "__all__", "prefix", "vlan", "vrf", "role", "gateway") && (
-                    <Notice tone="danger" title="NetBox rejected the prefix">
+                    <Notice tone="danger" title={`${nbName} rejected the prefix`}>
                       {fieldError(create.error, "__all__", "prefix", "vlan", "vrf", "role", "gateway")}
                     </Notice>
                   )}
@@ -356,8 +358,9 @@ function ValidationFindings({
   error: unknown;
   onlyLevels: ("error" | "warning" | "info")[];
 }) {
-  if (error) return <Notice tone="danger" title="Could not check the prefix against NetBox">{(error as Error).message}</Notice>;
-  if (!v && loading) return <p className="text-xs text-muted">Checking against NetBox…</p>;
+  const nbName = useNetBoxLabel();
+  if (error) return <Notice tone="danger" title={`Could not check the prefix against ${nbName}`}>{(error as Error).message}</Notice>;
+  if (!v && loading) return <p className="text-xs text-muted">Checking against {nbName}…</p>;
   if (!v) return null;
   const items = v.findings.filter((f) => onlyLevels.includes(f.level) && f.field !== "prefix" && f.field !== "gateway");
   if (!items.length) return null;

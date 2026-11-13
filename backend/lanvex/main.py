@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from lanvex import __version__
+from lanvex import __version__, core_proxy
 from lanvex.audit.router import router as audit_router
 from lanvex.auth.models import Role, User
 from lanvex.auth.router import router as auth_router
@@ -44,6 +44,7 @@ def build_netbox(settings: Settings) -> NetBoxClient | None:
         timeout=settings.netbox_timeout_seconds,
         verify_tls=settings.netbox_verify_tls,
         max_retries=settings.netbox_max_retries,
+        name="Lanvex Core" if settings.core_enabled else "NetBox",
     )
 
 
@@ -89,10 +90,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             env=settings.env,
             netbox_configured=app.state.netbox is not None,
             automation_enabled=settings.automation_enabled,
+            core_enabled=settings.core_enabled,
         )
         yield
         if app.state.change_runner is not None:
             await app.state.change_runner.stop()
+        await core_proxy.aclose(app)
         if app.state.netbox is not None:
             await app.state.netbox.aclose()
         if app.state.redis is not None:
@@ -128,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         api.include_router(r)
     app.include_router(api)
 
+    core_proxy.install(app)
     _mount_frontend(app)
     return app
 

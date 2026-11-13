@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     netbox_verify_tls: bool = True
     netbox_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     netbox_max_retries: int = Field(default=2, ge=0, le=5)
+    # Where browsers open NetBox objects, when that differs from netbox_url (which is how Lanvex reaches
+    # NetBox). With Lanvex Core, Lanvex reaches it at http://core:8080/core and browsers at /core.
+    netbox_public_url: str | None = None
+
+    # Lanvex Core: the NetBox-based application bundled with Lanvex, served under /core/ through
+    # lanvex/core_proxy.py, which signs Lanvex users in to it. Off unless both are set.
+    core_upstream_url: AnyHttpUrl | None = None  # e.g. http://core:8080
+    core_proxy_secret: SecretStr | None = None  # shared with Lanvex Core; at least 32 characters
+    core_static_dir: str | None = None  # Lanvex Core's collected static files, served directly
 
     # Sessions
     session_cookie_name: str = "lanvex_session"
@@ -62,10 +71,28 @@ class Settings(BaseSettings):
 
     trusted_proxies: list[str] = Field(default_factory=list)
 
-    @field_validator("netbox_url", mode="before")
+    @field_validator("netbox_url", "core_upstream_url", "netbox_public_url", "core_static_dir", mode="before")
     @classmethod
     def _empty_url_is_none(cls, v: object) -> object:
         return None if v == "" else v
+
+    @field_validator("netbox_public_url")
+    @classmethod
+    def _public_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not (v.startswith("/") or v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("must be a path starting with / or an http(s) URL")
+        return v.rstrip("/")
+
+    @field_validator("core_proxy_secret", mode="before")
+    @classmethod
+    def _proxy_secret(cls, v: object) -> object:
+        if v == "" or v is None:
+            return None
+        if len(str(v)) < 32:
+            raise ValueError("must be at least 32 characters; the installer generates one")
+        return v
 
     @field_validator("server_allowed_networks")
     @classmethod
@@ -86,6 +113,19 @@ class Settings(BaseSettings):
     @property
     def netbox_configured(self) -> bool:
         return self.netbox_url is not None and self.netbox_token is not None
+
+    @property
+    def core_enabled(self) -> bool:
+        return self.core_upstream_url is not None and self.core_proxy_secret is not None
+
+    def public_netbox_url(self, url: str | None) -> str | None:
+        """A NetBox link as a browser should open it (see netbox_public_url)."""
+        if not url or self.netbox_public_url is None or self.netbox_url is None:
+            return url
+        internal = str(self.netbox_url).rstrip("/")
+        if url == internal or url.startswith(internal + "/"):
+            return self.netbox_public_url + url[len(internal) :]
+        return url
 
 
 @lru_cache

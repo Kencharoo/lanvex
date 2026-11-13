@@ -2,19 +2,22 @@
 
 Lanvex is a self-hosted network infrastructure console. NetBox is the source of truth for
 inventory and IPAM; Lanvex adds an independent UI, workflows, access control, audit, and
-controlled changes to servers.
+controlled changes to servers. The NetBox is either **Lanvex Core** (NetBox with Lanvex's branding
+and single sign-on, installed with Lanvex) or one the user already runs.
 
 ## Components
 
 ```
- Browser (React SPA)
-     │  same-origin /api/*  (session cookie + CSRF header)
-     ▼
- Lanvex API (FastAPI)  ── PostgreSQL (Lanvex-only data: users, sessions, audit, servers, changes)
-     │                 ── Redis (rate limiting)
-     │  REST, server-side token
-     ▼
- NetBox (separate service, unmodified, its own database)
+ Browser (React SPA)                         Browser (Lanvex Core pages)
+     │  same-origin /api/*                        │  same-origin /core/*
+     │  (session cookie + CSRF header)            │  (Lanvex session required)
+     ▼                                            ▼
+ Lanvex API (FastAPI) ──────────────────── /core/ proxy (core_proxy.py): identity headers + proxy secret
+     │  ── PostgreSQL (Lanvex-only data)          │
+     │  ── Redis (rate limiting)                  │
+     │  REST, service token                       │
+     ▼                                            ▼
+ Lanvex Core (NetBox fork, own PostgreSQL + Redis, internal network)   — or an existing NetBox
 ```
 
 | Component | Responsibility | Never does |
@@ -26,6 +29,7 @@ controlled changes to servers.
 | `backend/lanvex/audit` | Append-only audit trail of every write Lanvex performs | — |
 | `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; others plug in the same way | Run arbitrary commands |
 | `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state, comparison with NetBox | Write to servers |
+| `backend/lanvex/core_proxy.py` | Serves Lanvex Core at `/core/` to signed-in users: checks the Lanvex session, sends who they are and their role with the shared proxy secret, strips anything the browser sent under those names, serves Lanvex Core's static files | Let anyone without a Lanvex session through; forward `Authorization` or Lanvex's session cookie |
 | `backend/lanvex/changes` | Server changes: preparation and safety rules, approval, the runner that applies, verifies, confirms or rolls back | Change anything without an approved, previewed change |
 
 ## Three states, kept separate
@@ -103,9 +107,30 @@ so the comparison on the server page shows any difference that remains.
    gateway IP (`POST /api/ipam/ip-addresses/`, tagged `lanvex-gateway`), writes an audit event,
    then reads the object back from NetBox and returns it.
 
+## Lanvex Core
+
+A thin fork of NetBox in its own repository (pinned in `core.lock`, built from `./core`). Lanvex's
+behaviour there is one package loaded as a NetBox plugin (`lanvex_core`), plus a configuration module;
+five NetBox files carry small, listed changes (`FORK.md`). It adds no database models.
+
+- **Sign-in**: NetBox's remote authentication with a backend that trusts the `X-Lanvex-*` identity
+  headers only together with the shared proxy secret (≥32 characters, constant-time comparison), and
+  never for the service account. Lanvex administrators become superusers, read-only users get
+  view-only access (`EXEMPT_VIEW_PERMISSIONS`). A middleware ends sessions used without the proxy and
+  signs users in again when their Lanvex role changes. Lanvex Core's login form is hidden;
+  `/core/logout/` leads to Lanvex's sign-out.
+- **Lanvex's own access** is the API as `lanvex-service`, with exactly the permissions listed in
+  docs/operations.md, recreated on every start from `LANVEX_CORE_SERVICE_TOKEN`.
+- **Isolation**: Lanvex Core's containers publish no port and sit on an internal Docker network; only
+  the Lanvex container joins it. Lanvex Core's own secrets are not given to the Lanvex container.
+- **Links**: NetBox URLs in Lanvex's API responses are rewritten from the internal address to `/core/`
+  (`LANVEX_NETBOX_PUBLIC_URL`). The UI names the source "Lanvex Core" or "NetBox" accordingly
+  (`/api/v1/system/info` → `netbox_label`).
+
 ## NetBox integration rules
 
-- Targets NetBox **4.2+** (prefix `scope_type`/`scope_id` model); developed against the 4.7.4 API.
+- Targets NetBox **4.2+** (prefix `scope_type`/`scope_id` model); developed against the 4.7 API,
+  tested live against NetBox 4.7.4 and Lanvex Core (NetBox 4.7.5).
 - Token: v2 tokens (`nbt_…`) use `Authorization: Bearer`, v1 use `Authorization: Token`.
 - Retries only for idempotent methods (GET/HEAD) on connect errors and 502/503/504.
 - NetBox has no prefix "name" or "gateway" field. Lanvex maps the network name to
@@ -134,6 +159,10 @@ Migrations: Alembic in `backend/alembic`.
 - CSRF: per-session token, required in `X-CSRF-Token` for every non-GET request.
 - Rate limits (Redis, in-memory fallback in dev/tests): login attempts and write operations.
 - Secrets only from environment; never in responses, logs (structlog redaction), or the bundle.
+  The installer generates them into `.env` (mode 0600) and removes the first administrator's password
+  from it once that account exists.
+- Lanvex Core: reachable only through Lanvex with a Lanvex session; identity headers from the browser
+  are removed and replaced; see *Lanvex Core* above.
 - No user input reaches a shell. Server reads use a fixed command set. The only privileged command is
   the change helper, given typed JSON on stdin; it runs its own tools with fixed argument lists.
   Changes are disabled by default (`LANVEX_AUTOMATION_ENABLED=false`) and per server, need an
@@ -146,6 +175,9 @@ Migrations: Alembic in `backend/alembic`.
 ```
 backend/   FastAPI app (lanvex/), Alembic migrations, tests/
 frontend/  Vite + React + TS + Tailwind, shadcn-style components (src/components/ui)
+core/      Lanvex Core source (from core.lock; in release archives, or via scripts/fetch-core.sh)
+scripts/   fetch-core.sh, release.sh
 deploy/    Compose overlays (local NetBox), nginx config
-docs/      Setup, configuration, troubleshooting
+docs/      Setup, configuration, Lanvex Core, troubleshooting
+install.sh The installer
 ```

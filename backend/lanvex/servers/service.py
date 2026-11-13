@@ -186,7 +186,7 @@ class ServerService:
             object_type=link.object_type,
             object_id=link.object_id,
             name=obj.get("name") or obj.get("display"),
-            url=(obj.get("display_url") or obj.get("url")),
+            url=self.settings.public_netbox_url(obj.get("display_url") or obj.get("url")),
         )
 
     # ---- registration ----------------------------------------------------------
@@ -494,7 +494,7 @@ class ServerService:
                                     object_type=otype,
                                     object_id=o["id"],
                                     name=o.get("name"),
-                                    url=o.get("display_url"),
+                                    url=self.settings.public_netbox_url(o.get("display_url")),
                                 )
                             )
                     except Exception:  # noqa: S112 - suggestions are best-effort (e.g. no permission on VMs)

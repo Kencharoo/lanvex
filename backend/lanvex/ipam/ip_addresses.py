@@ -180,7 +180,7 @@ class IPAddressService:
                 if (dev.get(key) or {}).get("id") == ip_id:
                     raise ValidationFailed(
                         f"{current['address']} is the {key.replace('_', ' ')} of {dev.get('name')}. "
-                        "Change the device's primary IP in NetBox first."
+                        f"Change the device's primary IP in {self.nb.name} first."
                     )
         await self.nb.patch(f"{IPS}{ip_id}/", {"assigned_object_type": None, "assigned_object_id": None})
         return await self.get(ip_id)

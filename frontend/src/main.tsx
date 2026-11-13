@@ -15,6 +15,7 @@ import { ActivityPage } from "@/pages/activity";
 import { DeviceDetailPage, DevicesPage } from "@/pages/devices";
 import { IPAddressesPage } from "@/pages/ip-addresses";
 import { LoginPage } from "@/pages/login";
+import { LoginRedirect, SignOutPage } from "@/pages/session-routes";
 import { NetworksPage } from "@/pages/networks";
 import { AutomationPage } from "@/pages/changes";
 import { ChangeDetailPage } from "@/pages/changes/detail";
@@ -43,6 +44,8 @@ function NotFound() {
 }
 
 const router = createBrowserRouter([
+  { path: "/login", element: <LoginRedirect /> },
+  { path: "/signout", element: <SignOutPage /> },
   {
     element: <AppLayout />,
     children: [

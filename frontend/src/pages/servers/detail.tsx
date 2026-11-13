@@ -26,10 +26,12 @@ import {
   credentialsComplete,
   type CredentialDraft,
 } from "./shared";
+import { useNetBoxLabel } from "@/lib/system";
 
 const AUTH_LABEL = { generated_key: "Key created by Lanvex", private_key: "Uploaded private key", password: "Password" } as const;
 
 export function ServerDetailPage() {
+  const nbName = useNetBoxLabel();
   const { id = "" } = useParams();
   const { isAdmin } = useSession();
   const navigate = useNavigate();
@@ -147,7 +149,7 @@ export function ServerDetailPage() {
         <div className="grid gap-8">
           <p className="-mt-2 text-xs text-muted">
             {s?.last_status && s.last_status !== "ok" ? "Last successful read" : "Live state read"} over SSH {relativeTime(latest.data!.taken_at)} ({absoluteTime(latest.data!.taken_at)}). Everything below is what
-            the server reported, not what NetBox documents.
+            the server reported, not what {nbName} documents.
           </p>
           <SystemSummary facts={facts} />
           {facts.warnings.length > 0 && (
@@ -416,12 +418,13 @@ function ComparisonSection({
   isAdmin: boolean;
   onLinked: () => void;
 }) {
+  const nbName = useNetBoxLabel();
   const c = q.data;
   const link = useMutation({
     mutationFn: (ref: { object_type: string; object_id: number } | null) =>
       api<Server>(`/servers/${server.id}`, { method: "PATCH", body: ref ? { netbox: ref } : { unlink_netbox: true } }),
     onSuccess: (_s, ref) => {
-      toast.success(ref ? "Linked to NetBox" : "Unlinked from NetBox");
+      toast.success(ref ? `Linked to ${nbName}` : `Unlinked from ${nbName}`);
       onLinked();
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -435,7 +438,7 @@ function ComparisonSection({
         let { tone, label } = CMP[r.status];
         if (r.status === "only_on_server") {
           // Without a link there is nothing to compare against, only "is it in NetBox at all".
-          if (!c?.linked) [tone, label] = r.recorded_elsewhere ? ["neutral", "In NetBox"] : ["info", "Not in NetBox"];
+          if (!c?.linked) [tone, label] = r.recorded_elsewhere ? ["neutral", `In ${nbName}`] : ["info", `Not in ${nbName}`];
           else if (r.recorded_elsewhere) [tone, label] = ["warn", "Documented elsewhere"];
         }
         return <Badge tone={tone}>{label}</Badge>;
@@ -448,7 +451,7 @@ function ComparisonSection({
     },
     {
       key: "netbox",
-      header: "In NetBox",
+      header: `In ${nbName}`,
       cell: (r) =>
         r.netbox_address ? (
           <span><span className="addr">{r.netbox_address}</span>{r.netbox_interface && <span className="text-muted"> on {r.netbox_interface}</span>}</span>
@@ -461,7 +464,7 @@ function ComparisonSection({
   ];
   return (
     <Section
-      title="Documented in NetBox vs. on the server"
+      title={`Documented in ${nbName} vs. on the server`}
       description="Compares addresses, ignoring loopback and link-local. Read-only: differences are shown, not fixed."
       actions={
         c?.linked && c.netbox ? (
@@ -491,14 +494,14 @@ function ComparisonSection({
           {!c.linked && (
             <div className="grid gap-3 rounded-[var(--radius-panel)] border border-line bg-surface p-4">
               <p className="text-[13px]">
-                Link this server to its NetBox device or virtual machine to compare against the addresses documented for it. Until then, Lanvex only shows whether each address appears
-                anywhere in NetBox.
+                Link this server to its {nbName} device or virtual machine to compare against the addresses documented for it. Until then, Lanvex only shows whether each address appears
+                anywhere in {nbName}.
               </p>
               {isAdmin && (
                 <>
                   {c.suggestions.length > 0 && (
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs text-muted">Same name in NetBox:</span>
+                      <span className="text-xs text-muted">Same name in {nbName}:</span>
                       {c.suggestions.map((sug) => (
                         <Button key={`${sug.object_type}-${sug.object_id}`} size="sm" onClick={() => link.mutate({ object_type: sug.object_type, object_id: sug.object_id })} loading={link.isPending}>
                           Link to {sug.name} ({sug.object_type === "dcim.device" ? "device" : "VM"})
@@ -519,6 +522,7 @@ function ComparisonSection({
 }
 
 function LinkPicker({ onPick, busy }: { onPick: (r: NetBoxRef) => void; busy: boolean }) {
+  const nbName = useNetBoxLabel();
   const [q, setQ] = React.useState("");
   const [debounced, setDebounced] = React.useState("");
   React.useEffect(() => {
@@ -534,7 +538,7 @@ function LinkPicker({ onPick, busy }: { onPick: (r: NetBoxRef) => void; busy: bo
   const options = results.data?.results ?? [];
   return (
     <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-      <Field label="Find in NetBox" htmlFor="link-q">
+      <Field label={`Find in ${nbName}`} htmlFor="link-q">
         <Input id="link-q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Device or VM name" />
       </Field>
       <Field label="Object" htmlFor="link-pick">

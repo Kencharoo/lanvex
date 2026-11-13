@@ -12,7 +12,8 @@ import { Badge, EmptyState, Notice } from "@/components/ui/misc";
 import { useSession } from "@/app/session";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
-import type { HostKeyScan, Server, Snapshot, SystemInfo } from "@/lib/types";
+import type { HostKeyScan, Server, Snapshot } from "@/lib/types";
+import { useSystemInfo } from "@/lib/system";
 import { cn, relativeTime } from "@/lib/utils";
 import {
   ConnectionBadge,
@@ -24,12 +25,12 @@ import {
   credentialsComplete,
   type CredentialDraft,
 } from "./shared";
+import { useNetBoxLabel } from "@/lib/system";
 
-export function useSystemInfo() {
-  return useQuery({ queryKey: ["system-info"], queryFn: () => api<SystemInfo>("/system/info"), staleTime: 5 * 60_000 });
-}
+export { useSystemInfo } from "@/lib/system";
 
 export function ServersPage() {
+  const nbName = useNetBoxLabel();
   const { isAdmin } = useSession();
   const navigate = useNavigate();
   const [adding, setAdding] = React.useState(false);
@@ -66,7 +67,7 @@ export function ServersPage() {
         ),
     },
     { key: "stack", header: "Network stack", cell: (s) => s.network_stack ?? <span className="text-faint">—</span> },
-    { key: "netbox", header: "NetBox", cell: (s) => (s.netbox ? <span className="text-muted">Linked</span> : <span className="text-faint">Not linked</span>) },
+    { key: "netbox", header: `${nbName}`, cell: (s) => (s.netbox ? <span className="text-muted">Linked</span> : <span className="text-faint">Not linked</span>) },
     {
       key: "read",
       header: "Last read",
@@ -115,7 +116,7 @@ export function ServersPage() {
               )
             }
           >
-            Add Ubuntu Server, Debian or Fedora Server hosts to see their live network configuration next to what NetBox documents.
+            Add Ubuntu Server, Debian or Fedora Server hosts to see their live network configuration next to what {nbName} documents.
           </EmptyState>
         }
       />

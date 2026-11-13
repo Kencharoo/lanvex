@@ -26,3 +26,7 @@ frontend/playwright-report/
 # Redis snapshot written when redis-server runs from the repo root
 dump.rdb
 *.tsbuildinfo
+
+# Lanvex Core source, fetched by scripts/fetch-core.sh or shipped in release archives
+/core/
+/core.new/

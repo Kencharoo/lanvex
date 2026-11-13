@@ -40,6 +40,8 @@ class SystemInfo(ApiModel):
     version: str
     environment: str
     automation_enabled: bool
+    core_enabled: bool
+    netbox_label: str
     credential_storage: bool
     server_allowed_networks: list[str]
 
@@ -113,6 +115,8 @@ async def info(_: CurrentUser) -> SystemInfo:
         version=__version__,
         environment=s.env,
         automation_enabled=s.automation_enabled,
+        core_enabled=s.core_enabled,
+        netbox_label="Lanvex Core" if s.core_enabled else "NetBox",
         credential_storage=s.secret_key is not None,
         server_allowed_networks=s.server_allowed_networks,
     )

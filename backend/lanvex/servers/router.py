@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query, Request, status
 from sqlalchemy import select
 
 from lanvex.changes.models import IN_PROGRESS, ServerChange
+from lanvex.core.config import get_settings
 from lanvex.core.errors import Conflict, NotFound
 from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
 from lanvex.netbox.client import NetBoxClient
@@ -64,6 +65,7 @@ async def link_candidates(
     request: Request, _: CurrentUser, q: Annotated[str, Query(min_length=1, max_length=100)]
 ) -> LinkCandidates:
     nb: NetBoxClient | None = request.app.state.netbox
+    settings = get_settings()
     out: list[NetBoxRef] = []
     if nb is None:
         return LinkCandidates(results=out)
@@ -76,7 +78,12 @@ async def link_candidates(
         except Exception:  # noqa: S112 - e.g. the token may not see virtual machines
             continue
         out += [
-            NetBoxRef(object_type=otype, object_id=o["id"], name=o.get("name"), url=o.get("display_url"))
+            NetBoxRef(
+                object_type=otype,
+                object_id=o["id"],
+                name=o.get("name"),
+                url=settings.public_netbox_url(o.get("display_url")),
+            )
             for o in page.results
         ]
     return LinkCandidates(results=out)

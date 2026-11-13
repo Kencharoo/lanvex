@@ -1,7 +1,8 @@
 # Configuration
 
-All settings are environment variables prefixed `LANVEX_`. In Docker they come from `.env`; locally,
-`backend/.env` is also read. Secrets are never logged or returned by the API.
+All settings are environment variables prefixed `LANVEX_`. In Docker they come from `.env`, which
+`install.sh` writes; locally, `backend/.env` is also read. Secrets are never logged or returned by
+the API.
 
 ## Core
 
@@ -27,7 +28,31 @@ All settings are environment variables prefixed `LANVEX_`. In Docker they come f
 | `LANVEX_NETBOX_TIMEOUT_SECONDS` | `10` | Per request |
 | `LANVEX_NETBOX_MAX_RETRIES` | `2` | Read requests only. Writes are never retried automatically |
 
+| `LANVEX_NETBOX_PUBLIC_URL` | — | Where browsers reach this NetBox, when it differs from `LANVEX_NETBOX_URL`. Links in Lanvex (*Open in NetBox*) use it. A path (`/core`) or an `http(s)://` URL. With Lanvex Core: `/core` |
+
 Without URL and token Lanvex still starts; NetBox-backed pages show how to connect.
+
+## Lanvex Core
+
+Set by the installer when you choose Lanvex Core; see [core.md](core.md). `COMPOSE_PROFILES=core`
+starts its containers. With Lanvex Core, `LANVEX_NETBOX_URL` is `http://core:8080/core` and
+`LANVEX_NETBOX_TOKEN` equals `LANVEX_CORE_SERVICE_TOKEN`.
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `LANVEX_CORE_UPSTREAM_URL` | Lanvex | Lanvex Core inside Docker, `http://core:8080`. Together with the proxy secret it switches on `/core/` and the *Lanvex Core* menu item |
+| `LANVEX_CORE_PROXY_SECRET` | both | Shared secret proving a request came through Lanvex. 32+ characters |
+| `LANVEX_CORE_STATIC_DIR` | Lanvex | Lanvex Core's static files, `/srv/core-static` (the shared `core-static` volume) |
+| `LANVEX_CORE_SERVICE_TOKEN` | Lanvex Core | Token of the `lanvex-service` account: `nbt_` + 12 + `.` + 40 letters or digits. Applied on every start |
+| `LANVEX_CORE_DB_PASSWORD` | Lanvex Core | Password of its PostgreSQL. Set when the database is first created; see core.md to change it |
+| `LANVEX_CORE_SECRET_KEY` | Lanvex Core | Django secret key (sessions, signing) |
+| `LANVEX_CORE_API_TOKEN_PEPPER` | Lanvex Core | Hashes API tokens. Changing it invalidates tokens; the service token is recreated on start |
+| `LANVEX_CORE_TIME_ZONE` | Lanvex Core | e.g. `Europe/Berlin`; default `UTC` |
+
+Compose passes only these to Lanvex Core's containers, and its own secrets only to them. Lanvex Core
+reads further optional `LANVEX_CORE_*` variables (database and Redis hosts, log level, number of web
+workers), listed in `netbox/lanvex_configuration.py` and `lanvex/docker-entrypoint.sh` in Lanvex
+Core; to use one, add it to the `core` service's `environment` in `docker-compose.yml`.
 
 ## Sessions and access
 

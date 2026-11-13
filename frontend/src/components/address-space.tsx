@@ -16,7 +16,7 @@ export function UtilStrip({ u, className }: { u: Utilization | null; className?:
     u.basis === "child_prefixes"
       ? `${formatCount(u.used)} of ${formatCount(u.total)} addresses covered by child prefixes`
       : u.basis === "marked_utilized"
-        ? "Marked as fully utilized in NetBox"
+        ? "Marked as fully utilized"
         : `${formatCount(u.used)} of ${formatCount(u.total)} usable addresses recorded`;
   return (
     <Tooltip content={basis}>

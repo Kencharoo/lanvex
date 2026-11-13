@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { ApiError, api, errorMessage } from "./api";
 import type { Option, WriteResult } from "./types";
+import { useNetBoxLabel } from "@/lib/system";
 
 export type LookupKind = "vrfs" | "prefix-roles" | "tenants" | "sites" | "vlan-groups" | "vlans" | "device-roles" | "manufacturers";
 
@@ -51,11 +52,12 @@ export function useNetBoxWrite<TVars, TResult extends WriteResult | undefined>(o
   invalidate: unknown[][];
   onSuccess?: (result: TResult, vars: TVars) => void;
 }) {
+  const nbName = useNetBoxLabel();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: opts.fn,
     onSuccess: (result, vars) => {
-      toast.success(opts.success(result, vars), { description: "Recorded in NetBox. No device configuration was changed." });
+      toast.success(opts.success(result, vars), { description: `Recorded in ${nbName}. No device configuration was changed.` });
       for (const w of result?.warnings ?? []) toast.warning(w, { duration: 12_000 });
       for (const key of [...opts.invalidate, ["dashboard"]]) void qc.invalidateQueries({ queryKey: key });
       opts.onSuccess?.(result, vars);
