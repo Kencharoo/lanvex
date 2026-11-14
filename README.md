@@ -33,7 +33,7 @@ what it needs before it ships. Lanvex does not configure routers, switches or DH
 You need a Linux server with Docker and Docker Compose v2.
 
 ```bash
-unzip lanvex-0.4.1.zip && cd lanvex-0.4.1
+unzip lanvex-0.4.2.zip && cd lanvex-0.4.2
 sudo ./install.sh
 ```
 

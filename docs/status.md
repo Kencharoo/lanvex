@@ -1,4 +1,4 @@
-# Status of Lanvex 0.4.1
+# Status of Lanvex 0.4.2
 
 Last updated 2026-11-14. "Verified" means it was run, not just written.
 
@@ -15,7 +15,7 @@ Tailscale address, automation off:
 | Containers | All seven start; `lanvex`, `lanvex-db`, `lanvex-redis`, `core`, `core-db`, `core-redis` turn healthy. Lanvex Core's first start (migrations, service account) took about 3½ minutes |
 | Lanvex | Sign-in over plain HTTP; Lanvex Core reachable and authenticated as NetBox 4.7.5; the prefix, IP address, VLAN, device and overview APIs answer |
 | Lanvex Core through Lanvex | `/core/` opens as the signed-in user, with its styles |
-| Problems found | Seven, all fixed in 0.4.1 ([CHANGELOG.md](../CHANGELOG.md)). The fixes were tested here piece by piece: the first-start crash with two workers on a fresh database, the health check against a running and a stopped worker and web process, the pull behaviour with Docker Compose, and every port case of the installer. They have not yet run together in a full Docker installation |
+| Problems found | Seven, fixed in 0.4.1 ([CHANGELOG.md](../CHANGELOG.md)). The first automatic full installation then found that 0.4.1's health check reported Lanvex Core healthy too early; fixed in 0.4.2 |
 
 ### Lanvex Core (new in 0.4)
 

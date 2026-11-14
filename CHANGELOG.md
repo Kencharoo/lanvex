@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 — 2026-11-14
 
+- **Fix:** 0.4.1's new health check reported Lanvex Core *healthy* while it was still setting up its
+  database, so the installer finished before Lanvex Core answered. Found by the first automatic full
+  installation; 0.4.0 was not affected.
 - Lanvex is licensed under the Apache License 2.0 (`LICENSE`, `NOTICE`).
 - `scripts/check-install.sh` checks a running installation: containers, logs, sign-in, Lanvex Core.
 - Continuous integration for both repositories, including a full installation with `install.sh`
