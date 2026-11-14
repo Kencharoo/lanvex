@@ -15,7 +15,7 @@ the API.
 | `LANVEX_LOG_JSON` | `false` | `true` in the Docker image |
 | `LANVEX_MIGRATE_ON_START` | `true` | Docker entrypoint only |
 | `LANVEX_WORKERS` | `2` | Docker entrypoint only |
-| `LANVEX_HTTP_PORT` | `8080` | Docker Compose only. Host port; prefix an address to limit it, e.g. `127.0.0.1:8080` behind a proxy on the same host |
+| `LANVEX_HTTP_PORT` | `8080` | Docker Compose only. Host port; prefix an address to limit it, e.g. `127.0.0.1:8080` behind a proxy on the same host. The installer sets it (`--port`) after checking the port is free |
 | `LANVEX_DOCKER_SUBNET` | `172.31.250.0/24` | Docker Compose only. Subnet of the `lanvex` network; its `.1` is the address a proxy on the host connects from. Change it if it overlaps a network you use |
 
 ## NetBox

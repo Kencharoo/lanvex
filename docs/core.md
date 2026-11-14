@@ -103,9 +103,11 @@ each one. Change them only together with the matching value:
 ### Logs and status
 
 ```bash
-docker compose ps                          # core should be "healthy"
+docker compose ps                          # core and core-worker should be "healthy"
 docker compose logs -f core core-worker    # Lanvex Core and its background jobs
 ```
+
+Lanvex Core logs in `LANVEX_CORE_TIME_ZONE` with the UTC offset on every line; Lanvex logs in UTC.
 
 ### Backups
 
@@ -138,10 +140,17 @@ docker compose run --rm core manage nbshell
 ### Updating
 
 Lanvex and Lanvex Core are released together: each Lanvex release names the Lanvex Core version it
-was tested with in `core.lock` and contains it in `./core`. To update, back up first, unpack the new
-release over the old directory (keep `.env`), and run `docker compose up -d --build`. Lanvex Core
-applies its database migrations when it starts; that can take a few minutes after a NetBox feature
-release.
+was tested with in `core.lock` and contains it in `./core`. To update:
+
+```bash
+# back up first (above), then:
+unzip lanvex-0.4.1.zip && cp lanvex-0.4.0/.env lanvex-0.4.1/
+cd lanvex-0.4.1 && docker compose up -d --build
+```
+
+The Compose project is always called `lanvex`, so the new directory uses the same containers,
+networks and volumes; the old directory can be deleted once everything runs. Lanvex Core applies its
+database migrations when it starts; that can take a few minutes after a NetBox feature release.
 
 ### Switching between Lanvex Core and your own NetBox
 
@@ -153,6 +162,7 @@ source contains.
 
 | Symptom | Cause and fix |
 |---|---|
+| `core-worker` is *unhealthy* | Its background worker is not registered in Redis: it stopped, hangs, or cannot reach `core-redis`. `docker compose logs core-worker`. (Lanvex 0.4.0 reported it unhealthy even when it worked; update) |
 | "Lanvex Core is not answering" | The `core` container is starting (the first start takes minutes) or stopped. `docker compose ps`, `docker compose logs core` |
 | "Lanvex Core is not part of this installation" | `LANVEX_CORE_UPSTREAM_URL` and `LANVEX_CORE_PROXY_SECRET` are not set for Lanvex. The installer sets both when you choose Lanvex Core |
 | "Lanvex Core could not sign you in" | `docker compose logs core` names the reason. *The proxy secret does not match*: the `lanvex` and `core` containers run with different `LANVEX_CORE_PROXY_SECRET` values; run `docker compose up -d` after any change to `.env`. *The user name is reserved*: a Lanvex user is called `lanvex-service`; rename it |

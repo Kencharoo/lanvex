@@ -81,6 +81,8 @@ services:
       LANVEX_CORE_PROXY_SECRET: ${LANVEX_CORE_PROXY_SECRET:-}
       LANVEX_CORE_SERVICE_TOKEN: ${LANVEX_CORE_SERVICE_TOKEN:-}
       LANVEX_CORE_TIME_ZONE: ${LANVEX_CORE_TIME_ZONE:-UTC}
+      # The same zone for the whole process, so gunicorn's own log lines match Lanvex Core's.
+      TZ: ${LANVEX_CORE_TIME_ZONE:-UTC}
     volumes:
       - core-media:/opt/lanvex-core/netbox/media
       - core-static:/opt/lanvex-core/netbox/static
@@ -92,7 +94,9 @@ services:
     networks: [core]
 
   core-worker:
+    # The image the core service builds; never look for it in a registry.
     image: lanvex-core:local
+    pull_policy: never
     profiles: [core]
     restart: unless-stopped
     command: ["worker"]

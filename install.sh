@@ -9,6 +9,8 @@
 #   --core                             keep network documentation in Lanvex Core, installed now
 #   --netbox URL --netbox-token TOKEN  use an existing NetBox instead (--netbox-insecure: no TLS check)
 #   --behind-proxy | --plain-http      HTTPS through a reverse proxy on this server, or plain HTTP
+#   --port [ADDRESS:]PORT              where Lanvex listens (default 8080; with --behind-proxy only on
+#                                      127.0.0.1). An address limits it, e.g. 100.64.0.5:8080
 #   --admin NAME                       first administrator's username (default: admin)
 #   --time-zone ZONE                   e.g. Europe/Berlin (default: this server's)
 #   --yes                              accept defaults for everything not given
@@ -18,9 +20,9 @@ cd "$(dirname "$0")"
 
 say() { printf '%s\n' "$*"; }
 fail() { printf '\nError: %s\n' "$*" >&2; exit 1; }
-rand() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$1" || true; }  # tr ends on SIGPIPE
+rand() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c "$1" || true; }  # tr ends on SIGPIPE
 
-choice="" mode="" netbox_url="" netbox_token="" netbox_tls=true access="" admin="" tz="" yes=false start=true
+choice="" mode="" netbox_url="" netbox_token="" netbox_tls=true access="" port="" admin="" tz="" yes=false start=true
 while [ $# -gt 0 ]; do
   case "$1" in
     --core) mode=core ;;
@@ -29,11 +31,12 @@ while [ $# -gt 0 ]; do
     --netbox-insecure) netbox_tls=false ;;
     --behind-proxy) access=proxy ;;
     --plain-http) access=plain ;;
+    --port) port=${2:?--port needs a port, e.g. 8081 or 100.64.0.5:8081}; shift ;;
     --admin) admin=${2:?--admin needs a name}; shift ;;
     --time-zone) tz=${2:?--time-zone needs a zone}; shift ;;
     --yes) yes=true ;;
     --no-start) start=false ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) fail "Unknown option $1. See ./install.sh --help." ;;
   esac
   shift
@@ -88,6 +91,36 @@ if [ -z "$access" ]; then
   ask choice "Choose 1 or 2" 1
   case "$choice" in 1) access=proxy ;; 2) access=plain ;; *) fail "Please answer 1 or 2." ;; esac
 fi
+# Is anything already listening where Lanvex would? A program on all addresses, or on the same
+# address, blocks it; one on a different single address does not.
+port_taken() {  # port_taken ADDRESS PORT   (empty ADDRESS: all addresses)
+  local listeners
+  if command -v ss >/dev/null; then
+    listeners=$(ss -Hltn 2>/dev/null | awk '{print $4}' | sed -n "s/:$2\$//p")
+  else
+    (exec 3<>"/dev/tcp/${1:-127.0.0.1}/$2") 2>/dev/null && return 0
+    return 1
+  fi
+  [ -n "$listeners" ] || return 1
+  [ -z "$1" ] && return 0
+  printf '%s\n' "$listeners" | grep -qxE "0\.0\.0\.0|\*|\[::\]|\[::ffff:0\.0\.0\.0\]|${1//./\\.}"
+}
+while :; do
+  if [ -z "$port" ]; then
+    say ""
+    ask port "Port for Lanvex on this server (add an address to limit it, e.g. 100.64.0.5:8080)" 8080
+  fi
+  if ! [[ "$port" =~ ^(([0-9]{1,3}\.){3}[0-9]{1,3}:)?[0-9]{1,5}$ ]] || [ "${port##*:}" -lt 1 ] || [ "${port##*:}" -gt 65535 ]; then
+    fail "The port must be a number from 1 to 65535, optionally after an IPv4 address: 8080 or 100.64.0.5:8080."
+  fi
+  if [[ "$port" != *:* ]] && [ "$access" = proxy ]; then port="127.0.0.1:$port"; fi
+  address=""
+  if [[ "$port" == *:* ]]; then address=${port%:*}; fi
+  port_taken "$address" "${port##*:}" || break
+  $yes && fail "Port ${port##*:} is already in use on this server. Choose another with --port, e.g. --port 8081."
+  say "Port ${port##*:} is already in use on this server by another program. Please choose another."
+  port=""
+done
 [ -n "$admin" ] || ask admin "Username for the first administrator" admin
 [[ "$admin" =~ ^[A-Za-z0-9_.@-]{2,64}$ ]] || fail "Usernames use letters, digits and . _ @ - (2 to 64 characters)."
 if [ -z "$tz" ]; then
@@ -108,12 +141,12 @@ umask 077
   say "LANVEX_BOOTSTRAP_ADMIN_PASSWORD=$admin_password"
   say ""
   if [ "$access" = proxy ]; then
-    say "# Reachable only from this server; a reverse proxy here provides HTTPS (manual, HTTPS chapter)."
-    say "LANVEX_HTTP_PORT=127.0.0.1:8080"
+    say "# A reverse proxy on this server provides HTTPS (manual, HTTPS chapter)."
+    say "LANVEX_HTTP_PORT=$port"
     say 'LANVEX_TRUSTED_PROXIES=["172.31.250.1/32"]'
   else
-    say "# Plain HTTP on port 8080 of this server. Fine for trying Lanvex out; use HTTPS for real use."
-    say "LANVEX_HTTP_PORT=8080"
+    say "# Plain HTTP. Fine for trying Lanvex out; use HTTPS for real use."
+    say "LANVEX_HTTP_PORT=$port"
     say "LANVEX_COOKIE_SECURE=false"
   fi
   say ""
@@ -150,7 +183,15 @@ $start || { say "Start Lanvex with: docker compose up -d --build"; exit 0; }
 say ""
 say "Building and starting the containers. The first build downloads and compiles a lot and can take"
 say "10 to 20 minutes."
-docker compose up -d --build
+start_failed() {
+  printf '\nError: %s\n\n' "$1" >&2
+  say "Your settings are in .env, including the first administrator's password"
+  say "(LANVEX_BOOTSTRAP_ADMIN_PASSWORD; username: $admin). Once the cause is fixed, start Lanvex with:"
+  say "  docker compose up -d --build"
+  say "and remove the password from .env after signing in for the first time."
+  exit 1
+}
+docker compose up -d --build || start_failed "Starting the containers failed; the output above says why."
 
 health() { docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
   "$(docker compose ps -q "$1")" 2>/dev/null || echo missing; }
@@ -168,24 +209,25 @@ wait_healthy() {  # wait_healthy SERVICE "description" MINUTES
     printf '.'; sleep 10
   done
 }
-wait_healthy lanvex "Lanvex" 5 || fail "Lanvex did not start. See the log above and the manual's troubleshooting chapter."
+wait_healthy lanvex "Lanvex" 5 || start_failed "Lanvex did not start. See the log above and the manual's troubleshooting chapter."
 if [ "$mode" = core ]; then
   say "Lanvex Core sets up its database on the first start, which takes several minutes."
-  wait_healthy core "Lanvex Core" 20 || fail "Lanvex Core did not start. See the log above; 'docker compose logs core' shows all of it."
+  wait_healthy core "Lanvex Core" 20 || start_failed "Lanvex Core did not start. See the log above; 'docker compose logs core' shows all of it."
 fi
 
 # The administrator exists now; the password does not need to stay in .env.
 sed -i 's/^LANVEX_BOOTSTRAP_ADMIN_PASSWORD=.*/LANVEX_BOOTSTRAP_ADMIN_PASSWORD=/' .env
 
-port=$(sed -n 's/^LANVEX_HTTP_PORT=//p' .env)
 say ""
 say "Lanvex is running."
 say ""
-if [ "$access" = proxy ]; then
-  say "  Address:   http://127.0.0.1:8080 on this server. Set up HTTPS next (manual, HTTPS chapter);"
-  say "             until then, an SSH tunnel works: ssh -L 8080:127.0.0.1:8080 <you>@<this server>"
+if [ "$access" = proxy ] && [ "${port%:*}" = 127.0.0.1 ]; then
+  say "  Address:   http://127.0.0.1:${port##*:} on this server. Set up HTTPS next (manual, HTTPS chapter);"
+  say "             until then, an SSH tunnel works: ssh -L ${port##*:}:127.0.0.1:${port##*:} <you>@<this server>"
+elif [[ "$port" == *:* ]]; then
+  say "  Address:   http://$port"
 else
-  say "  Address:   http://<this server's address>:${port##*:}"
+  say "  Address:   http://<this server's address>:$port"
 fi
 say "  Username:  $admin"
 say "  Password:  $admin_password"

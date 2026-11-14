@@ -1,8 +1,21 @@
-# Status of Lanvex 0.4
+# Status of Lanvex 0.4.1
 
-Last updated 2026-11-13. "Verified" means it was run, not just written.
+Last updated 2026-11-14. "Verified" means it was run, not just written.
 
 ## Verified
+
+### First installation on a real server (0.4.0)
+
+On Ubuntu 24.04 with Docker Compose v2, from the release archive, Lanvex Core mode, plain HTTP on a
+Tailscale address, automation off:
+
+| What | Result |
+|---|---|
+| Images | `lanvex:local` and `lanvex-core:local` build from the archive |
+| Containers | All seven start; `lanvex`, `lanvex-db`, `lanvex-redis`, `core`, `core-db`, `core-redis` turn healthy. Lanvex Core's first start (migrations, service account) took about 3½ minutes |
+| Lanvex | Sign-in over plain HTTP; Lanvex Core reachable and authenticated as NetBox 4.7.5; the prefix, IP address, VLAN, device and overview APIs answer |
+| Lanvex Core through Lanvex | `/core/` opens as the signed-in user, with its styles |
+| Problems found | Seven, all fixed in 0.4.1 ([CHANGELOG.md](../CHANGELOG.md)). The fixes were tested here piece by piece: the first-start crash with two workers on a fresh database, the health check against a running and a stopped worker and web process, the pull behaviour with Docker Compose, and every port case of the installer. They have not yet run together in a full Docker installation |
 
 ### Lanvex Core (new in 0.4)
 
@@ -64,7 +77,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 247 tests: 227 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 12 SSH lab (5 reading, 7 changes). The lab tests were last run for 0.3; 0.4 changes server code only where links to NetBox are built, which unit tests cover |
+| Backend | 249 tests: 229 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 12 SSH lab (5 reading, 7 changes). The lab tests were last run for 0.3; 0.4 changes server code only where links to NetBox are built, which unit tests cover |
 | Frontend | Type check, 16 unit tests, production build; 8 Playwright tests in Chrome (2 against the lab, 1 against Lanvex Core) |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
@@ -77,8 +90,10 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Changes on real hardware and real routers | The lab is containers on one bridge; DHCP was not tested (no DHCP server in the lab) | Try on a non-critical server first, with console access at hand |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
 | IPv6, VLAN and bond interfaces on servers | The lab kernel has no IPv6, 8021q or bonding | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
-| Docker images and the Compose stack, including `install.sh` from start to finish | No access to Docker Hub or any other image registry from the build environment, so neither image was built and no container was started. Everything inside them was run directly instead (see above) | `sudo ./install.sh` on a test server; both containers must turn *healthy* |
-| Upgrading an installation from 0.3 | Same reason | Back up, unpack 0.4 over 0.3 keeping `.env`, `docker compose up -d --build`. 0.3 installations keep their NetBox; Lanvex Core is only added by a new installation or by hand (`.env.example`) |
+| 0.4.1 as a whole in Docker, and updating 0.4.0 → 0.4.1 | The build environment cannot reach an image registry, so the images cannot be built here | Update the test server as in docs/core.md (*Updating*); all seven containers must turn *healthy* and stay so after ten minutes |
+| In the browser on a real installation: creating and editing data, read-only users, servers over SSH, server changes | Not part of the first installation test | A walkthrough on the test server |
+| Backup and restore of a Docker installation | Not tried yet | The commands in docs/core.md (*Backups*) on the test server, restored into a fresh installation |
+| Upgrading an installation from 0.3 | No 0.3 installation exists outside the build environment | 0.3 installations keep their NetBox; Lanvex Core is only added by a new installation or by hand (`.env.example`) |
 | NetBox versions other than 4.7.4 and 4.7.5 | | Run the live suite against each supported version (4.2+) |
 | Moving data from an existing NetBox into Lanvex Core | Not built | NetBox's own backup and restore, by hand; see docs/core.md |
 

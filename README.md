@@ -33,15 +33,20 @@ what it needs before it ships. Lanvex does not configure routers, switches or DH
 You need a Linux server with Docker and Docker Compose v2.
 
 ```bash
-unzip lanvex-0.4.0.zip && cd lanvex-0.4.0
+unzip lanvex-0.4.1.zip && cd lanvex-0.4.1
 sudo ./install.sh
 ```
 
 The installer asks where to keep your network documentation (Lanvex Core, installed now, or a NetBox
 you already run), whether Lanvex will be reached over HTTPS through a reverse proxy or over plain HTTP,
-and the first administrator's name. It generates every password and key into `.env`, builds and
-starts the containers, waits until they are healthy and prints how to sign in. `./install.sh --help`
-lists options for installing without questions.
+which port it listens on (it checks that the port is free), and the first administrator's name. It
+generates every password and key into `.env`, builds and starts the containers, waits until they are
+healthy and prints how to sign in. `./install.sh --help` lists options for installing without
+questions, such as `--port 100.64.0.5:8081`.
+
+To update, unpack the new release next to the old one, copy `.env` into it and run
+`docker compose up -d --build` there; the data stays in Docker's volumes. Back up first
+([docs/core.md](docs/core.md#updating)). [CHANGELOG.md](CHANGELOG.md) lists what changed.
 
 Session cookies are HTTPS-only unless you choose plain HTTP. For HTTPS see
 [docs/operations.md](docs/operations.md). Setting up by hand instead: copy `.env.example` to `.env`,

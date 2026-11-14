@@ -6,7 +6,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lanvex import __version__, core_proxy
@@ -48,11 +48,20 @@ def build_netbox(settings: Settings) -> NetBoxClient | None:
     )
 
 
+# Any fixed number; it only has to be the same in every worker.
+BOOTSTRAP_LOCK = 0x4C414E5645580001
+
+
 async def bootstrap_admin(db: Database, settings: Settings) -> None:
-    """Create the first administrator from env vars, only when the user table is empty."""
+    """Create the first administrator from env vars, only when the user table is empty.
+
+    Every uvicorn worker runs this at startup, at the same moment. A transaction-scoped advisory lock
+    makes the others wait until the first has committed, so they find the administrator and stop.
+    """
     if not (settings.bootstrap_admin_username and settings.bootstrap_admin_password):
         return
     async with db.sessionmaker() as session:
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": BOOTSTRAP_LOCK})
         if await session.scalar(select(func.count()).select_from(User)):
             return
         await create_user(
