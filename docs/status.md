@@ -4,6 +4,14 @@ Last updated 2026-11-14. "Verified" means it was run, not just written.
 
 ## Verified
 
+### Full installation, automatically on every push (GitHub Actions)
+
+`install.sh --core` on a fresh Ubuntu 24.04 runner builds both images and starts all seven
+containers; `scripts/check-install.sh` then checks them. Passed for 0.4.2: every container healthy
+and never restarted, no errors in the logs, sign-in, Lanvex Core (NetBox 4.7.5) reachable and
+signed in, Lanvex Core closed to visitors without a session, its styles served, and its pages open
+as the signed-in user. The installer waited about 5½ minutes for Lanvex Core's first start.
+
 ### First installation on a real server (0.4.0)
 
 On Ubuntu 24.04 with Docker Compose v2, from the release archive, Lanvex Core mode, plain HTTP on a
@@ -90,7 +98,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Changes on real hardware and real routers | The lab is containers on one bridge; DHCP was not tested (no DHCP server in the lab) | Try on a non-critical server first, with console access at hand |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
 | IPv6, VLAN and bond interfaces on servers | The lab kernel has no IPv6, 8021q or bonding | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
-| 0.4.1 as a whole in Docker, and updating 0.4.0 → 0.4.1 | The build environment cannot reach an image registry, so the images cannot be built here | Update the test server as in docs/core.md (*Updating*); all seven containers must turn *healthy* and stay so after ten minutes |
+| Updating an existing installation (0.4.0 → 0.4.2) | Every automatic run installs from scratch | Update the test server as in docs/core.md (*Updating*), then `scripts/check-install.sh "" admin` |
 | In the browser on a real installation: creating and editing data, read-only users, servers over SSH, server changes | Not part of the first installation test | A walkthrough on the test server |
 | Backup and restore of a Docker installation | Not tried yet | The commands in docs/core.md (*Backups*) on the test server, restored into a fresh installation |
 | Upgrading an installation from 0.3 | No 0.3 installation exists outside the build environment | 0.3 installations keep their NetBox; Lanvex Core is only added by a new installation or by hand (`.env.example`) |
