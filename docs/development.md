@@ -104,8 +104,8 @@ Both repositories check every push and pull request on GitHub Actions.
 | lanvex | `.github/workflows/ci.yml` | Backend (ruff, pytest with PostgreSQL), frontend (type check, unit tests, build), browser tests against the NetBox stand-in, shellcheck and an installer run in both modes, the image build, and a **full installation**: `install.sh --core` on a fresh runner with the Lanvex Core version from `core.lock`, then `scripts/check-install.sh` |
 | lanvex-core | `.github/workflows/lanvex-core.yml` | Lint, fork check, no migrations of our own, Lanvex Core's tests, NetBox's complete suite on `lanvex-core-*` tags (or on request: *Run workflow*), and the image built and started with `lanvex/scripts/smoke-image.sh` |
 
-The full installation needs to read the private lanvex-core repository, through a read-only deploy
-key. Without it, that job is skipped with a notice. To set it up:
+The full installation fetches lanvex-core at the commit in `core.lock`. Both repositories are public,
+so that needs nothing. Should lanvex-core ever become private, give the job a read-only deploy key:
 
 ```bash
 ssh-keygen -t ed25519 -N '' -C lanvex-ci -f lanvex-core-ci

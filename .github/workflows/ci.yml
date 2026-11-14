@@ -1,5 +1,5 @@
-# Lanvex's checks: backend, frontend, browser tests, scripts, the image, and (with access to the
-# lanvex-core repository) a full installation with install.sh. docs/development.md explains each.
+# Lanvex's checks: backend, frontend, browser tests, scripts, the image, and a full installation with
+# install.sh and the Lanvex Core version from core.lock. docs/development.md explains each.
 name: CI
 
 on:
@@ -132,33 +132,25 @@ jobs:
     name: Full installation
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      HAS_CORE_ACCESS: ${{ secrets.LANVEX_CORE_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Skipped without access to lanvex-core
-        if: env.HAS_CORE_ACCESS != 'true'
-        run: echo "::notice::Full installation not tested. Add the LANVEX_CORE_DEPLOY_KEY secret (docs/development.md)."
       - name: Lanvex Core version from core.lock
         id: lock
-        if: env.HAS_CORE_ACCESS == 'true'
         run: echo "commit=$(sed -n 's/^commit=//p' core.lock)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-        if: env.HAS_CORE_ACCESS == 'true'
         with:
           repository: ${{ github.repository_owner }}/lanvex-core
           ref: ${{ steps.lock.outputs.commit }}
+          # Only needed if lanvex-core is private: a read-only deploy key (docs/development.md).
           ssh-key: ${{ secrets.LANVEX_CORE_DEPLOY_KEY }}
           persist-credentials: false
           path: core
       - name: Install with install.sh
-        if: env.HAS_CORE_ACCESS == 'true'
         run: ./install.sh --core --plain-http --port 8080 --admin ci-admin --time-zone Europe/Berlin --yes | tee install.log
       - name: Check the installation
-        if: env.HAS_CORE_ACCESS == 'true'
         run: |
           password=$(sed -n 's/^  Password:  //p' install.log)
           scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$password"
       - name: Container logs
-        if: failure() && env.HAS_CORE_ACCESS == 'true'
+        if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail 150
