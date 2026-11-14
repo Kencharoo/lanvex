@@ -153,4 +153,4 @@ jobs:
           scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$password"
       - name: Container logs
         if: failure()
-        run: docker compose ps -a && docker compose logs --no-color --tail 150
+        run: docker compose ps -a && docker compose logs --no-color --tail 150 || echo "No containers were started."
