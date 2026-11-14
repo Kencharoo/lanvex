@@ -95,6 +95,29 @@ LANVEX_E2E_CORE_URL=http://127.0.0.1:8000 LANVEX_E2E_CORE_PASSWORD=… npx playw
 into `./core` for `docker compose`; `scripts/release.sh` builds the release archive (Lanvex at HEAD
 plus `./core`). Steps for a new Lanvex Core version are in [core.md](core.md#for-developers).
 
+## Continuous integration
+
+Both repositories check every push and pull request on GitHub Actions.
+
+| Repository | Workflow | What it does |
+|---|---|---|
+| lanvex | `.github/workflows/ci.yml` | Backend (ruff, pytest with PostgreSQL), frontend (type check, unit tests, build), browser tests against the NetBox stand-in, shellcheck and an installer run in both modes, the image build, and a **full installation**: `install.sh --core` on a fresh runner with the Lanvex Core version from `core.lock`, then `scripts/check-install.sh` |
+| lanvex-core | `.github/workflows/lanvex-core.yml` | Lint, fork check, no migrations of our own, Lanvex Core's tests, NetBox's complete suite on `lanvex-core-*` tags (or on request: *Run workflow*), and the image built and started with `lanvex/scripts/smoke-image.sh` |
+
+The full installation needs to read the private lanvex-core repository, through a read-only deploy
+key. Without it, that job is skipped with a notice. To set it up:
+
+```bash
+ssh-keygen -t ed25519 -N '' -C lanvex-ci -f lanvex-core-ci
+```
+
+Add `lanvex-core-ci.pub` to lanvex-core under *Settings → Deploy keys* (leave *Allow write access*
+off), and the content of `lanvex-core-ci` to lanvex under *Settings → Secrets and variables → Actions*
+as `LANVEX_CORE_DEPLOY_KEY`. Then delete both files.
+
+`scripts/check-install.sh [URL] [USERNAME] [PASSWORD]` is the check the full installation ends with,
+and works on any installation: run it in the directory you installed from.
+
 ## Layout
 
 ```

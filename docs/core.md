@@ -102,6 +102,11 @@ each one. Change them only together with the matching value:
 
 ### Logs and status
 
+`scripts/check-install.sh` checks a whole installation at once: every container healthy and never
+restarted, no errors in the logs, sign-in, the connection to Lanvex Core, and that Lanvex Core is
+closed to anyone not signed in. Run it in the directory you installed from; with your username it
+asks for your password and includes the sign-in checks: `scripts/check-install.sh "" admin`.
+
 ```bash
 docker compose ps                          # core and core-worker should be "healthy"
 docker compose logs -f core core-worker    # Lanvex Core and its background jobs

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `scripts/check-install.sh` checks a running installation: containers, logs, sign-in, Lanvex Core.
+- Continuous integration for both repositories, including a full installation with `install.sh`
+  ([docs/development.md](docs/development.md#continuous-integration)).
+
 ## 0.4.1 — 2026-11-14
 
 Fixes from the first installation on a real server (Ubuntu 24.04, Docker Compose v2).
