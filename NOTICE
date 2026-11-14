@@ -1,0 +1,13 @@
+Lanvex
+Copyright 2026 The Lanvex Authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Lanvex Core, the network documentation application installed with Lanvex, is a separate work: a
+modified version of NetBox, which is copyrighted and licensed under the Apache License 2.0 by
+DigitalOcean, LLC (https://github.com/netbox-community/netbox). Its source, licence and notices are
+in the lanvex-core repository and, in release archives, in the core/ directory.
+
+The web interface includes the IBM Plex typefaces (Copyright IBM Corp., SIL Open Font License 1.1)
+and other open-source packages under their own licences; frontend/package.json and
+backend/pyproject.toml list them.

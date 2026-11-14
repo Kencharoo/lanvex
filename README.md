@@ -87,3 +87,9 @@ your NetBox.
 - [docs/operations.md](docs/operations.md) — production, NetBox token permissions, backups, troubleshooting
 - [docs/changes.md](docs/changes.md) — changing server configuration: setup, how a change runs, safety, rollback
 - [docs/status.md](docs/status.md) — what has been verified, and what has not
+
+## Licence
+
+Lanvex is licensed under the [Apache License 2.0](LICENSE); see also [NOTICE](NOTICE). Lanvex Core,
+installed with it, is a modified version of [NetBox](https://github.com/netbox-community/netbox),
+also under the Apache License 2.0, with its own notices in the lanvex-core repository.

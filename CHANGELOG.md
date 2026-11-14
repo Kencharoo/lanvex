@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Lanvex is licensed under the Apache License 2.0 (`LICENSE`, `NOTICE`).
 - `scripts/check-install.sh` checks a running installation: containers, logs, sign-in, Lanvex Core.
 - Continuous integration for both repositories, including a full installation with `install.sh`
   ([docs/development.md](docs/development.md#continuous-integration)).
