@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-15
+
+Keeping documentation and servers in step: what changed on a server, where it differs from Lanvex
+Core, closing each difference in either direction, and what servers see around them.
 
 - **Server history.** Lanvex reads each server every hour (configurable, per server too) and keeps
   each state the server was in. The server page lists what changed between them in words: addresses

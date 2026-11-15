@@ -107,8 +107,8 @@ class NetBox:
                 200, json={"id": oid, "name": self.devices[oid], "display": self.devices[oid]}
             )
         if path == "dcim/devices/":
-            names = set(qp.get_list("name"))
-            return page([{"id": i, "name": n} for i, n in self.devices.items() if n in names])
+            names = {n.lower() for n in qp.get_list("name__ie")}  # case-insensitive, as NetBox's name__ie
+            return page([{"id": i, "name": n} for i, n in self.devices.items() if n.lower() in names])
         if path == "dcim/interfaces/":
             return page(
                 [
@@ -144,7 +144,7 @@ async def scenario(admin: httpx.AsyncClient, fake: FakeServer) -> tuple[str, str
     fake.facts.neighbors = [neigh("172.30.0.1", router=True), neigh("172.30.0.12"), neigh("fe80::1")]
     fake.facts.lldp = [
         lldp("eth0", "sw-01.example.net", "Gi1/0/1"),  # documented, through its short name
-        lldp("eth1", "sw-02", "Gi1/0/7"),  # recordable
+        lldp("eth1", "SW-02", "Gi1/0/7"),  # recordable; the switch reports its name in capitals
         lldp("eth2", "sw-02", "Gi1/0/8"),  # that port already has a cable
         lldp("eth3", "sw-09", "Gi1/0/1"),  # no such device
         lldp("eth4", "sw-01", "Gi1/0/5"),
@@ -209,7 +209,7 @@ async def test_lldp_links_against_documented_cables(
     status = {k: (v["status"], v["problem"]) for k, v in got.items()}
     assert status[("web-01", "eth0", "Gi1/0/1")] == ("documented", None)
     assert status[("web-01", "eth1", "Gi1/0/7")] == ("undocumented", None)
-    assert got[("web-01", "eth1", "Gi1/0/7")]["peer"] == "sw-02 / Gi1/0/7"
+    assert got[("web-01", "eth1", "Gi1/0/7")]["peer"] == "sw-02 / Gi1/0/7"  # as NetBox names it
     assert status[("web-01", "eth2", "Gi1/0/8")] == (
         "undocumented",
         "sw-02 / Gi1/0/8 already has a cable in NetBox.",

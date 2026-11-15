@@ -325,7 +325,7 @@ class DiscoveryService:
                         )
                     }
             if names:
-                for d in await nb.list_all("dcim/devices/", {"name": sorted(names)}, cap=1000):
+                for d in await nb.list_all("dcim/devices/", {"name__ie": sorted(names)}, cap=1000):
                     devices_by_name.setdefault(_short(d.get("name")), d)
         peer_ifaces: dict[int, list[dict[str, Any]]] = {}
 

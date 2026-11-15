@@ -1,4 +1,4 @@
-# Status of Lanvex 0.5.0
+# Status of Lanvex 0.6.0
 
 Last updated 2026-11-15. "Verified" means it was run, not just written.
 
@@ -101,8 +101,9 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 257 tests: 237 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 12 SSH lab (5 reading, 7 changes). The lab tests were last run for 0.3; 0.4 changes server code only where links to NetBox are built, which unit tests cover |
-| Frontend | Type check, 25 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, 1 against Lanvex Core) |
+| Backend | 281 tests: 260 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 13 SSH lab (6 reading, discovery and recording; 7 changes). The lab tests run in CI on every push; the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Frontend | Type check, 29 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core) |
+| Lanvex Core | 0.6.0: its own tests (permissions of the service account included) |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
 ## Not verified yet
