@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, KeyRound, MoreHorizontal, Pencil, RefreshCw, ShieldAlert, Trash2, Unlink } from "lucide-react";
+import { BookCheck, ExternalLink, KeyRound, MoreHorizontal, Pencil, RefreshCw, Settings2, ShieldAlert, Trash2, Unlink } from "lucide-react";
 import * as React from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
@@ -12,9 +12,10 @@ import { Field, Input, Select } from "@/components/ui/form";
 import { Badge, EmptyState, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Notice, Skeleton, type Tone } from "@/components/ui/misc";
 import { useSession } from "@/app/session";
 import { ChangesSection } from "./changes-section";
+import { changeSeedFor, differs, RecordDialog, type ChangeSeed } from "./record";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
-import type { Comparison, ComparisonRow, HostFacts, HostInterface, HostKeyScan, HistoryEntry, HostRoute, NetBoxRef, Server, Snapshot } from "@/lib/types";
+import type { ChangeReadiness, Comparison, ComparisonRow, HostFacts, HostInterface, HostKeyScan, HistoryEntry, HostRoute, NetBoxRef, Server, Snapshot } from "@/lib/types";
 import { absoluteTime, cn, relativeTime } from "@/lib/utils";
 import {
   ConnectionBadge,
@@ -37,6 +38,19 @@ export function ServerDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [dialog, setDialog] = React.useState<null | "edit" | "credentials" | "hostkey" | "delete">(null);
+  const [changeSeed, setChangeSeed] = React.useState<ChangeSeed | null>(null);
+  const readiness = useQuery({
+    queryKey: ["servers", id, "changes", "readiness"],
+    queryFn: () => api<ChangeReadiness>(`/servers/${id}/changes/readiness`),
+    enabled: isAdmin,
+  });
+  const changeBlocker = !readiness.data
+    ? "Checking whether changes are possible…"
+    : readiness.data.open_change
+      ? `Change #${readiness.data.open_change.number} is open. Finish it first.`
+      : !readiness.data.ready
+        ? "Set up configuration changes for this server first (see Configuration changes below)."
+        : null;
 
   const server = useQuery({ queryKey: ["servers", id], queryFn: () => api<Server>(`/servers/${id}`) });
   const latest = useQuery({ queryKey: ["servers", id, "latest"], queryFn: () => api<Snapshot | null>(`/servers/${id}/snapshots/latest`) });
@@ -165,13 +179,23 @@ export function ServerDetailPage() {
             <RoutesSection routes={facts.routes} />
             <DnsSection facts={facts} />
           </div>
-          {s && <ComparisonSection server={s} q={comparison} isAdmin={isAdmin} onLinked={refreshAll} />}
+          {s && (
+            <ComparisonSection
+              server={s}
+              facts={facts}
+              q={comparison}
+              isAdmin={isAdmin}
+              onLinked={refreshAll}
+              changeBlocker={changeBlocker}
+              onPrepareChange={setChangeSeed}
+            />
+          )}
         </div>
       )}
 
       {s && (
         <div className="mt-8">
-          <ChangesSection server={s} facts={facts} isAdmin={isAdmin} />
+          <ChangesSection server={s} facts={facts} isAdmin={isAdmin} seed={changeSeed} onSeedUsed={() => setChangeSeed(null)} />
         </div>
       )}
 
@@ -408,17 +432,27 @@ const CMP: Record<ComparisonRow["status"], { tone: Tone; label: string }> = {
 
 function ComparisonSection({
   server,
+  facts,
   q,
   isAdmin,
   onLinked,
+  changeBlocker,
+  onPrepareChange,
 }: {
   server: Server;
+  facts: HostFacts;
   q: ReturnType<typeof useQuery<Comparison>>;
   isAdmin: boolean;
   onLinked: () => void;
+  /** Why a server change cannot be prepared right now, or null when it can. */
+  changeBlocker: string | null;
+  onPrepareChange: (seed: ChangeSeed) => void;
 }) {
   const nbName = useNetBoxLabel();
   const c = q.data;
+  const [recordFor, setRecordFor] = React.useState<string[] | null>(null);
+  const fixable = !!(isAdmin && c?.linked);
+  const differing = (c?.rows ?? []).filter(differs);
   const link = useMutation({
     mutationFn: (ref: { object_type: string; object_id: number } | null) =>
       api<Server>(`/servers/${server.id}`, { method: "PATCH", body: ref ? { netbox: ref } : { unlink_netbox: true } }),
@@ -461,13 +495,43 @@ function ComparisonSection({
         ),
     },
   ];
+  if (fixable) {
+    columns.push({
+      key: "fix",
+      header: <span className="sr-only">Actions</span>,
+      headerClassName: "w-10",
+      cell: (r) => {
+        if (!differs(r)) return null;
+        const seed = changeSeedFor(r, facts, nbName);
+        const why = typeof seed === "string" ? seed : changeBlocker;
+        return (
+          <Menu>
+            <MenuTrigger asChild>
+              <Button size="icon" variant="ghost" aria-label={`Fix ${r.address}`}>
+                <MoreHorizontal />
+              </Button>
+            </MenuTrigger>
+            <MenuContent align="end" className="max-w-80">
+              <MenuItem onSelect={() => setRecordFor([r.address])}>
+                <BookCheck /> Record in {nbName}…
+              </MenuItem>
+              <MenuItem disabled={!!why} onSelect={() => typeof seed !== "string" && onPrepareChange(seed)}>
+                <Settings2 /> Change the server to match…
+              </MenuItem>
+              {why && <p className="px-2 pb-1.5 text-xs text-muted">{why}</p>}
+            </MenuContent>
+          </Menu>
+        );
+      },
+    });
+  }
   return (
     <Section
       title={`Documented in ${nbName} vs. on the server`}
-      description="Compares addresses, ignoring loopback and link-local. Read-only: differences are shown, not fixed."
+      description={`Compares addresses, ignoring loopback and link-local. A difference can be recorded in ${nbName}, or changed on the server through a previewed and approved change.`}
       actions={
         c?.linked && c.netbox ? (
-          <span className="flex items-center gap-2 text-xs">
+          <span className="flex items-center gap-2 whitespace-nowrap text-xs">
             {c.netbox.url ? (
               <a href={c.netbox.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">
                 {c.netbox.name ?? `#${c.netbox.object_id}`} <ExternalLink className="size-3" />
@@ -513,7 +577,22 @@ function ComparisonSection({
               )}
             </div>
           )}
+          {c.linked && c.rows.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[13px] text-muted">
+                {differing.length === 0
+                  ? `All ${c.rows.length} addresses match.`
+                  : `${differing.length} of ${c.rows.length} address${c.rows.length === 1 ? "" : "es"} differ${differing.length === 1 ? "s" : ""}.`}
+              </p>
+              {fixable && differing.length > 0 && (
+                <Button size="sm" variant="secondary" onClick={() => setRecordFor(differing.map((r) => r.address))}>
+                  <BookCheck /> Record {differing.length === 1 ? "it" : "them"} in {nbName}…
+                </Button>
+              )}
+            </div>
+          )}
           <DataTable dense columns={columns} rows={c.rows} rowKey={(r) => r.address} empty={<p className="p-4 text-[13px] text-muted">No addresses to compare.</p>} />
+          {fixable && <RecordDialog server={server} rows={c.rows} initial={recordFor ?? []} open={recordFor !== null} onClose={() => setRecordFor(null)} />}
         </>
       ) : null}
     </Section>

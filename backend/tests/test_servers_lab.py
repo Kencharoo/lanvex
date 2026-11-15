@@ -2,7 +2,7 @@
 
 Uses `docker exec` to play the server administrator's part (installing the authorized key,
 regenerating host keys). The comparison test also needs the live NetBox variables from
-test_integration_netbox.py, and removes any NetBox IP records for 172.30.0.11, 172.30.0.50 and 10.11.0.1.
+test_integration_netbox.py, and removes any NetBox IP records for the addresses in OWNED_ADDRESSES.
 """
 
 import os
@@ -32,7 +32,7 @@ pytestmark = [
 ]
 
 HOSTS = {"lab-netplan": "172.30.0.11", "lab-nm": "172.30.0.12", "lab-ifup": "172.30.0.13"}
-OWNED_ADDRESSES = ("172.30.0.11", "172.30.0.50", "10.11.0.1")
+OWNED_ADDRESSES = ("172.30.0.11", "172.30.0.50", "10.11.0.1", "172.30.0.60", "192.0.2.70")
 
 
 def sh(host: str, script: str) -> str:
@@ -284,7 +284,42 @@ async def test_documented_vs_actual_comparison(api: httpx.AsyncClient) -> None:
             "172.30.0.50": "only_in_netbox",
         }
         assert c["counts"] == {"match": 1, "mask_differs": 1, "only_in_netbox": 1}
+
+        # Record what the server has: one more address on eth0, and one on an interface NetBox lacks.
+        sh(
+            "lab-netplan",
+            "ip address add 172.30.0.60/24 dev eth0 && ip link add lanvex-t0 type bridge && "
+            "ip address add 192.0.2.70/24 dev lanvex-t0 && ip link set lanvex-t0 up",
+        )
+        ok(await api.post(f"/api/v1/servers/{s['id']}/collect"))
+        pick = {"addresses": ["172.30.0.60", "192.0.2.70", "10.11.0.1", "172.30.0.50", "172.30.0.11"]}
+        plan = ok(await api.post(f"/api/v1/servers/{s['id']}/record", json=pick))
+        assert [(a["kind"], a["text"]) for a in plan["actions"]] == [
+            ("create_interface", "Add interface lanvex-t0 to lab-netplan (type Bridge)"),
+            ("create", "Record 172.30.0.60/24 on lab-netplan / eth0"),
+            ("create", "Record 192.0.2.70/24 on lab-netplan / lanvex-t0"),
+            ("update_mask", "Change the record 10.11.0.1/16 to 10.11.0.1/24"),
+            ("unassign", "Unassign 172.30.0.50/24 from lab-netplan / eth0 (the record stays in NetBox)"),
+        ]
+        assert plan["applied"] is False and not any(a["problem"] for a in plan["actions"])
+        c = ok(await api.get(f"/api/v1/servers/{s['id']}/comparison"))
+        assert c["counts"]["only_on_server"] == 2  # the preview wrote nothing
+
+        r = await api.post(f"/api/v1/servers/{s['id']}/record", json={**pick, "token": "0" * 32})
+        assert r.status_code == 409, r.text
+        done = ok(await api.post(f"/api/v1/servers/{s['id']}/record", json={**pick, "token": plan["token"]}))
+        assert done["applied"] and done["failed"] is None and len(done["done"]) == 5
+        c = ok(await api.get(f"/api/v1/servers/{s['id']}/comparison"))
+        assert {r["address"]: r["status"] for r in c["rows"]} == {
+            "172.30.0.11": "match",
+            "172.30.0.60": "match",
+            "192.0.2.70": "match",
+            "10.11.0.1": "match",
+        }
+        unassigned = await nb.list_all("ipam/ip-addresses/", {"address": "172.30.0.50/24"})
+        assert len(unassigned) == 1 and unassigned[0]["assigned_object"] is None
     finally:
+        sh("lab-netplan", "ip address del 172.30.0.60/24 dev eth0; ip link del lanvex-t0; true")
         for path in made:
             try:
                 await nb.delete(path)

@@ -386,6 +386,24 @@ export interface ComparisonRow {
   recorded_elsewhere: string | null;
 }
 
+export interface RecordAction {
+  address: string | null;
+  kind: "create_interface" | "create" | "assign" | "update_mask" | "move" | "unassign";
+  text: string;
+  problem: string | null;
+}
+
+/** NetBox writes that make the documentation match the server's last read (preview or result). */
+export interface RecordPlan {
+  target: NetBoxRef;
+  actions: RecordAction[];
+  token: string;
+  applied: boolean;
+  done: RecordAction[];
+  failed: RecordAction | null;
+  error: string | null;
+}
+
 export interface Comparison {
   linked: boolean;
   netbox: NetBoxRef | null;

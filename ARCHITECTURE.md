@@ -28,7 +28,7 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 | `backend/lanvex/auth` | Local users, Argon2 hashing, server-side sessions, roles, CSRF | — |
 | `backend/lanvex/audit` | Append-only audit trail of every write Lanvex performs | — |
 | `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; others plug in the same way | Run arbitrary commands |
-| `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state, comparison with NetBox | Write to servers |
+| `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state and their history, scheduled reads, comparison with NetBox, recording differences in NetBox | Write to servers |
 | `backend/lanvex/core_proxy.py` | Serves Lanvex Core at `/core/` to signed-in users: checks the Lanvex session, sends who they are and their role with the shared proxy secret, strips anything the browser sent under those names, serves Lanvex Core's static files | Let anyone without a Lanvex session through; forward `Authorization` or Lanvex's session cookie |
 | `backend/lanvex/topology` | The topology map's data: devices and circuits as nodes, documented cables as links, one site or all, Lanvex servers marked | Claim a cable exists because it is drawn: links are documented state |
 | `backend/lanvex/changes` | Server changes: preparation and safety rules, approval, the runner that applies, verifies, confirms or rolls back | Change anything without an approved, previewed change |
@@ -41,7 +41,10 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 
 The UI labels NetBox writes as "Recorded in NetBox", never "deployed". A server change is shown as
 applied only after the server confirmed it and Lanvex verified it; it never updates NetBox by itself,
-so the comparison on the server page shows any difference that remains.
+so the comparison on the server page shows any difference that remains. Closing a difference is
+always a deliberate step in one direction: *record* (actual → documented: `servers/record.py` plans
+the NetBox writes, the administrator sees them, and only that exact plan is applied, checked by a
+token over the plan) or *change* (documented → actual: a server change prepared from the difference).
 
 ## Server management: reading
 
@@ -49,7 +52,9 @@ so the comparison on the server page shows any difference that remains.
  Lanvex API ──SSH (pinned host key, one stored credential, fixed commands)──▶ Linux server
      │                                                                      (unprivileged user)
      ├── servers            registry; credentials encrypted with LANVEX_SECRET_KEY (Fernet via HKDF)
-     ├── server_snapshots   immutable reads of *actual* state (facts JSON + raw output, pruned)
+     ├── server_snapshots   immutable reads of *actual* state (facts JSON + raw output, pruned);
+     │                      a read that finds the same state confirms the latest snapshot instead
+     │                      of adding one, so the snapshots are the server's history of changes
      └── NetBox             *documented* state for the linked device/VM, compared address by address
 ```
 
@@ -145,8 +150,8 @@ five NetBox files carry small, listed changes (`FORK.md`). It adds no database m
 `users` (id, username, password_hash, role, is_active, timestamps) ·
 `sessions` (token hash, user, csrf token, expiry, IP, user agent) ·
 `audit_events` (actor, action, target type/id/repr, outcome, detail JSON, IP, request id, time) ·
-`servers` (address, user, auth method, encrypted credential, public key, pinned host key, NetBox link, last status, summary) ·
-`server_snapshots` (server, time, status, facts JSON, raw output, duration, requested by) ·
+`servers` (address, user, auth method, encrypted credential, public key, pinned host key, NetBox link, last status, summary, read interval, next read) ·
+`server_snapshots` (server, time, status, facts JSON, raw output, duration, requested by, fingerprint, confirmed at, reads) ·
 `server_changes` (number, server, interface, request, state before, helper preview, status, approvals,
 deadline, checks, log, outcome; one open change per server).
 Migrations: Alembic in `backend/alembic`.

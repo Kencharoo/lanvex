@@ -57,8 +57,25 @@ The change page follows each step live. Its status is always one of: *Waiting fo
 *Approved, queued*, *Applying*, *Verifying*, *Applied and verified*, *Rolled back*, *Not applied*,
 *Cancelled*, or *Needs attention* (below). Nothing is called "applied" before the server confirmed it.
 
-**NetBox is not changed.** After a change, the server page's comparison shows where the server and
-NetBox now differ; updating the documentation is a separate, deliberate step.
+**NetBox is not changed by the change itself.** Afterwards, the change page says whether NetBox
+documents the interface as the server now has it. If not, **Record in NetBox…** shows exactly which
+NetBox updates would make it so (add the address to the interface, correct a prefix length, unassign
+an address the server no longer has), and makes those updates, and only those, when you confirm.
+The same is available for every difference on the server page (below).
+
+### Starting from a difference
+
+On the server page, the comparison with NetBox lists each address that differs. Its menu offers both
+directions:
+
+- **Record in NetBox…** — the server is right: update the documentation (a preview first, then exactly
+  the previewed updates; if NetBox or the server changed in between, Lanvex shows the new preview
+  instead). Nothing on the server changes. An address recorded on another device is not moved; an
+  address that is a device's primary IP is not unassigned. Lanvex says so in the preview.
+- **Change the server to match…** — NetBox is right: opens this change form with the difference
+  already undone (the documented address added, the undocumented one removed, or the documented prefix
+  length), starting from the interface's current addresses. It then goes through the usual preview,
+  approval and verification. Offered for static IPv4 addresses, when changes are set up for the server.
 
 ### When Lanvex loses contact
 

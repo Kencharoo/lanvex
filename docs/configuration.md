@@ -75,7 +75,9 @@ Core; to use one, add it to the `core` service's `environment` in `docker-compos
 | `LANVEX_SERVER_ALLOWED_NETWORKS` | `[]` | JSON list of CIDRs. When set, Lanvex refuses to scan or connect to addresses outside them (names are resolved first) |
 | `LANVEX_SSH_CONNECT_TIMEOUT_SECONDS` | `10` | Connection and login |
 | `LANVEX_SSH_COMMAND_TIMEOUT_SECONDS` | `15` | Per command |
-| `LANVEX_SERVER_SNAPSHOT_RETENTION` | `20` | Reads kept per server |
+| `LANVEX_SERVER_READ_INTERVAL_MINUTES` | `60` | How often servers are read automatically; `0` turns scheduled reads off. Each server can override it on its page (15 minutes to daily, or off) |
+| `LANVEX_READ_SCHEDULER_ENABLED` | `true` | Run the scheduler in this process. Safe with several processes: each due server is read once |
+| `LANVEX_SERVER_SNAPSHOT_RETENTION` | `200` | Different states kept per server (its history). Reads that find nothing new do not add one |
 
 Back up `LANVEX_SECRET_KEY` with the database. Without it, stored credentials cannot be decrypted
 and every server has to be given new credentials.

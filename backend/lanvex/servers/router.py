@@ -11,6 +11,7 @@ from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
 from lanvex.netbox.client import NetBoxClient
 from lanvex.schemas import ApiModel
 from lanvex.servers.models import AuthMethod, ServerSnapshot
+from lanvex.servers.record import RecordPlan, RecordRequest, stale
 from lanvex.servers.schemas import (
     Comparison,
     Credentials,
@@ -300,6 +301,44 @@ async def comparison(
 ) -> Comparison:
     svc = _svc(request, db, settings)
     return await svc.compare(await svc.get(server_id))
+
+
+@router.post("/{server_id}/record", response_model=RecordPlan)
+async def record_in_netbox(
+    server_id: uuid.UUID,
+    body: RecordRequest,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    _: AdminUser,
+    audit: Audit,
+) -> RecordPlan:
+    """Record what the server has in NetBox, for the comparison rows picked. Without a token this only
+    previews; with the preview's token it applies that exact plan, or refuses if the plan changed."""
+    svc = _svc(request, db, settings)
+    s = await svc.get(server_id)
+    recorder, plan, steps = await svc.record_plan(s, body.addresses)
+    if body.token is None:
+        return plan
+    if body.token != plan.token:
+        raise stale(recorder.nb.name)
+    plan = await recorder.apply(plan, steps)
+    detail: dict[str, Any] = {
+        "netbox": {"object_type": plan.target.object_type, "object_id": plan.target.object_id},
+        "done": [a.text for a in plan.done],
+        "skipped": [f"{a.text}: {a.problem}" for a in plan.actions if a.problem],
+    }
+    if plan.failed:
+        detail |= {"failed": plan.failed.text, "error": plan.error}
+    await audit.record(
+        "server.record",
+        "failure" if plan.failed else "success",
+        target_type="server",
+        target_id=s.id,
+        target_repr=s.name,
+        detail=detail,
+    )
+    return plan
 
 
 @router.delete("/{server_id}", status_code=status.HTTP_204_NO_CONTENT)

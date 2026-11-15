@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **Server history.** Lanvex reads each server every hour (configurable, per server too) and keeps
+  each state the server was in. The server page lists what changed between them in words: addresses
+  added or removed, links lost, MTU, gateway, routes, DNS. Reads that find nothing new are counted
+  instead of stored, so a year of hourly reads of a quiet server is one entry.
+- **Closing differences with NetBox.** Each address where the server and NetBox differ can be
+  - recorded in NetBox: a preview of exactly which NetBox updates are needed (create the address on
+    the right interface, add the interface if the device lacks it, correct a prefix length, unassign
+    an address the server no longer has), then those updates and no others; or
+  - changed on the server: the change form opens with that difference undone, followed by the usual
+    preview, approval, verification and automatic rollback.
+- After a successful change, its page says whether NetBox documents the result and offers to record it.
+- `LANVEX_SERVER_SNAPSHOT_RETENTION` now counts different states and defaults to 200 (was 20 reads).
+- New settings `LANVEX_SERVER_READ_INTERVAL_MINUTES` (default 60, `0` = off) and
+  `LANVEX_READ_SCHEDULER_ENABLED`. Recording an interface the device lacks needs *add* on interfaces
+  for your own NetBox's token (docs/operations.md). Lanvex Core 0.6.0 gives its service account
+  exactly that (view, add and change on device and VM interfaces).
+- The SSH lab (three real Ubuntu servers with netplan, NetworkManager and ifupdown) now runs in CI.
+
 ## 0.5.0 — 2026-11-15
 
 - **Topology.** The map of your network that was a placeholder until now: devices, sites, provider

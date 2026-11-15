@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, ShieldCheck, Undo2 } from "lucide-react";
+import { BookCheck, RefreshCw, ShieldCheck, Undo2 } from "lucide-react";
 import * as React from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
@@ -10,14 +10,18 @@ import { Field, Input } from "@/components/ui/form";
 import { Notice, Skeleton } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
-import type { ChangeDetail } from "@/lib/types";
+import { useSession } from "@/app/session";
+import { useNetBoxLabel } from "@/lib/system";
+import type { ChangeDetail, Comparison, Server } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
+import { differs, RecordDialog } from "../servers/record";
 import { BeforeAfter, CheckList, ChangeStatusBadge, DiffView, Timeline, isActive } from "./shared";
 
 export function ChangeDetailPage() {
   const { id = "" } = useParams();
   const qc = useQueryClient();
   const [approving, setApproving] = React.useState(false);
+  const { isAdmin } = useSession();
 
   const q = useQuery({
     queryKey: ["changes", id],
@@ -101,6 +105,7 @@ export function ChangeDetailPage() {
 
       <div className="grid gap-8">
         <Outcome change={c} />
+        {c.status === "succeeded" && isAdmin && <Documentation change={c} />}
 
         <Section title={pending ? "What changes" : "What was requested"} description={c.summary}>
           <BeforeAfter change={c} />
@@ -162,6 +167,52 @@ export function ChangeDetailPage() {
       </div>
 
       <ApproveDialog change={c} open={approving} onClose={() => setApproving(false)} onApproved={refresh} />
+    </>
+  );
+}
+
+/** After a successful change: does NetBox document the interface as it is now? Offer to record it. */
+function Documentation({ change: c }: { change: ChangeDetail }) {
+  const nbName = useNetBoxLabel();
+  const [open, setOpen] = React.useState(false);
+  const server = useQuery({ queryKey: ["servers", c.server_id], queryFn: () => api<Server>(`/servers/${c.server_id}`) });
+  const comparison = useQuery({
+    queryKey: ["servers", c.server_id, "comparison"],
+    queryFn: () => api<Comparison>(`/servers/${c.server_id}/comparison`),
+  });
+  const s = server.data;
+  const cmp = comparison.data;
+  if (!s || !cmp) return null;
+  if (!cmp.linked) {
+    return (
+      <Notice title={`${nbName} was not updated`}>
+        Lanvex does not change {nbName} by itself. Link {s.name} to its {nbName} device or virtual machine on the{" "}
+        <Link to={`/servers/${s.id}`} className="text-accent hover:underline">
+          server page
+        </Link>{" "}
+        to compare it and record what changed.
+      </Notice>
+    );
+  }
+  const rows = cmp.rows.filter((r) => differs(r) && (r.server_interface === c.interface || r.netbox_interface === c.interface));
+  if (rows.length === 0) {
+    return <Notice title={`${nbName} matches`}>{nbName} documents the addresses of {c.interface} as the server has them now.</Notice>;
+  }
+  return (
+    <>
+      <Notice
+        tone="warn"
+        title={`${nbName} does not document this yet`}
+        action={
+          <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
+            <BookCheck /> Record in {nbName}…
+          </Button>
+        }
+      >
+        {rows.length === 1 ? "One address" : `${rows.length} addresses`} on {c.interface} differ from what {nbName} documents for {s.name}:{" "}
+        {rows.map((r) => r.server_address ?? r.netbox_address).join(", ")}.
+      </Notice>
+      <RecordDialog server={s} rows={cmp.rows} initial={rows.map((r) => r.address)} open={open} onClose={() => setOpen(false)} />
     </>
   );
 }

@@ -65,12 +65,17 @@ as the containers are wired, but outside Docker (see *Not verified yet*).
 
 ### Against real SSH servers (deploy/lab)
 
+Since 0.5, the lab (three Ubuntu 24.04 containers) is built and its backend and browser tests run on
+every push in GitHub Actions.
+
 | What | How |
 |---|---|
 | Host-key verification | The fingerprint Lanvex shows equals `ssh-keygen -lf` on the server; a regenerated host key is refused until re-verified; a confirmed fingerprint must belong to the key being pinned |
 | Sign-in | Lanvex-generated ed25519 key (with `restrict`), uploaded keys (incl. passphrase-protected), password; wrong key, wrong password and unreachable hosts are each reported distinctly |
 | Reading network state | 5 lab tests (`pytest -m lab`) and a browser test, on Ubuntu 24.04 hosts under systemd running netplan → systemd-networkd + systemd-resolved, NetworkManager, and ifupdown, as an unprivileged user |
 | Documented vs actual | Comparison against real NetBox: match, mask differs, only in NetBox, not documented, recorded on another object, link suggestions; works with the least-privilege token |
+| Recording differences in NetBox | Against Lanvex Core (NetBox 4.7.5) and the netplan host: an interface the device lacks is added, a server-only address recorded on it and on eth0, a prefix length corrected, an address the server lacks unassigned; the preview writes nothing; a plan that changed since the preview is refused (live test). Refusals (address on another device, primary IP), DHCP addresses recorded as DHCP, a write NetBox refuses midway (4 API tests). In the browser: linking, recording, and preparing a server change from a difference |
+| History and scheduled reads | Repeated reads of an unchanged real host are recognised as the same state; changes made on the host are kept up to the retention limit and described in words (lab test). Two Lanvex processes never read the same server twice for one due time (API test). The history through a host key change (browser test) |
 | Secrets | Credentials never appear in API responses or audit entries; `/etc/network/interfaces` content is not stored |
 | Parsers | Fixtures are real output captured from the three lab hosts |
 
@@ -118,9 +123,9 @@ with the helper installed through sudo exactly as documented. Only lab container
 ## Not built yet
 
 - **More kinds of server change.** Creating VLAN interfaces, bonds and bridges; IPv6; static routes;
-  changes on ifupdown servers. Updating NetBox after a successful change (today a separate step).
-- Scheduled reads of servers (today reads happen on request).
-- Discovery, drift reconciliation, deployment wizard, configuration history, monitoring.
+  changes on ifupdown servers.
+- Discovery of neighbours (LLDP) and cabling, a deployment wizard, monitoring and alerts.
+- Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
 - Editing prefix tenant/scope and IP tenant/role/NAT; device and interface creation.
 
 ## Known limitations

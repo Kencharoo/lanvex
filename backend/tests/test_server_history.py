@@ -22,6 +22,7 @@ from lanvex.servers.history import changes, fingerprint
 from lanvex.servers.models import Server, ServerSnapshot
 from lanvex.servers.scheduler import ReadScheduler
 
+from .conftest import login
 from .test_linux_parsing import load
 from .test_servers_api import body
 
@@ -145,11 +146,12 @@ async def test_reads_of_an_unchanged_server_confirm_instead_of_piling_up(
 
 
 async def test_history_is_open_to_readers(
-    reader: httpx.AsyncClient, admin: httpx.AsyncClient, fake: FakeServer
+    admin: httpx.AsyncClient, users: dict[str, str], fake: FakeServer
 ) -> None:
     sid = await _server(admin)
     await admin.post(f"/api/v1/servers/{sid}/collect")
-    r = await reader.get(f"/api/v1/servers/{sid}/history")
+    await login(admin, "reader", users["reader"])  # the same client, now signed in as a reader
+    r = await admin.get(f"/api/v1/servers/{sid}/history")
     assert r.status_code == 200 and len(r.json()) == 1
 
 

@@ -25,6 +25,7 @@ from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.history import HistoryChange, fingerprint
 from lanvex.servers.history import changes as history_changes
 from lanvex.servers.models import AuthMethod, ConnectionStatus, Server, ServerSnapshot
+from lanvex.servers.record import Recorder, RecordPlan, check_addresses
 from lanvex.servers.schemas import (
     Comparison,
     ComparisonRow,
@@ -466,6 +467,21 @@ class ServerService:
         return snap, (HostFacts.model_validate(snap.facts) if snap and snap.facts else None)
 
     # ---- documented vs actual ------------------------------------------------------
+
+    async def record_plan(self, s: Server, addresses: list[str]) -> tuple[Recorder, RecordPlan, list[Any]]:
+        """Plan the NetBox writes that make the documentation match the server's last read."""
+        if self.nb is None:
+            raise ValidationFailed("Recording needs a configured NetBox connection.")
+        if not s.netbox_object_id:
+            raise ValidationFailed(f"Link this server to its {self.nb.name} device or virtual machine first.")
+        _, facts = await self.latest_facts(s.id)
+        if facts is None:
+            raise ValidationFailed("Read the server first.")
+        comparison = await self.compare(s)
+        assert comparison.netbox is not None
+        recorder = Recorder(self.nb, s, comparison.netbox, facts)
+        plan, steps = await recorder.plan(comparison.rows, check_addresses(addresses))
+        return recorder, plan, steps
 
     async def compare(self, s: Server) -> Comparison:
         snap, facts = await self.latest_facts(s.id)

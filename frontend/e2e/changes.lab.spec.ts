@@ -100,6 +100,8 @@ test("install the helper, prepare, approve and apply an address change, verified
   await expect(page.getByText("Applied, verified and confirmed. The new configuration is permanent.").first()).toBeVisible();
   expect(br0()).toEqual(["10.11.0.1/24", "10.11.0.2/24"]);
   expect(sh("systemctl list-timers --all --no-legend 'lanvex-rollback-*' | wc -l").trim()).toBe("0");
+  await expect(page.getByText("NetBox was not updated")).toBeVisible(); // the server is not linked yet
+  const changeUrl = page.url();
 
   // It is listed under Automation, and the server page shows the new address from Lanvex's fresh read.
   await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Automation" }).click();
@@ -107,6 +109,37 @@ test("install the helper, prepare, approve and apply an address change, verified
   await page.getByRole("row", { name: new RegExp(name) }).click();
   await page.getByRole("link", { name: "Open server" }).click();
   await expect(page.getByRole("row", { name: /br0.*10\.11\.0\.2\/24/ })).toBeVisible();
+
+  // Documentation: link the server to its NetBox device, which documents none of its addresses yet.
+  const cmp = page.getByRole("region", { name: /vs\. on the server/ });
+  await cmp.getByLabel("Find in NetBox").fill("kob-srv");
+  await cmp.getByLabel("Object").selectOption({ label: "kob-srv-01 (device)" });
+  await cmp.getByRole("button", { name: "Link", exact: true }).click();
+  await expect(cmp.getByText("3 of 3 addresses differ.")).toBeVisible();
+
+  // A server change prepared from a difference starts from the server's settings with that one difference undone.
+  await cmp.getByRole("button", { name: "Fix 10.11.0.2" }).click();
+  await page.getByRole("menuitem", { name: "Change the server to match…" }).click();
+  const prepared = page.getByRole("dialog", { name: `Change IP settings on ${name}` });
+  await expect(prepared.getByText("Removes 10.11.0.2/24, which NetBox does not document for this server.")).toBeVisible();
+  await expect(prepared.getByLabel("Interface", { exact: true })).toHaveValue("br0");
+  await expect(prepared.getByLabel("Address 1", { exact: true })).toHaveValue("10.11.0.1/24");
+  await expect(prepared.getByLabel("Address 2", { exact: true })).toHaveCount(0);
+  await prepared.getByRole("button", { name: "Cancel" }).click();
+
+  // Or record what the server has: a preview first, then exactly those updates.
+  await cmp.getByRole("button", { name: "Record them in NetBox…" }).click();
+  const rec = page.getByRole("dialog", { name: "Record in NetBox" });
+  await expect(rec.getByText("Add interface br0 to kob-srv-01 (type Bridge)")).toBeVisible();
+  await expect(rec.getByText("Record 10.11.0.2/24 on kob-srv-01 / br0")).toBeVisible();
+  await expect(rec.getByText("Record 172.30.0.11/24 on kob-srv-01 / eth0")).toBeVisible();
+  await rec.getByRole("button", { name: "Make 5 updates" }).click();
+  await expect(page.getByText("Recorded in NetBox")).toBeVisible();
+  await expect(cmp.getByText("All 3 addresses match.")).toBeVisible();
+  expect(br0()).toEqual(["10.11.0.1/24", "10.11.0.2/24"]); // documentation only: the server is unchanged
+  await page.goto(changeUrl);
+  await expect(page.getByText("NetBox documents the addresses of br0 as the server has them now.")).toBeVisible();
+  await page.getByRole("link", { name: "Open server" }).click();
 
   await page.getByRole("button", { name: "Server actions" }).click();
   await page.getByRole("menuitem", { name: "Remove server" }).click();

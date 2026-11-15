@@ -49,12 +49,12 @@ every start. For your own NetBox, create a user (for example `lanvex`) and grant
 | Objects | Actions |
 |---|---|
 | IPAM: prefixes, IP addresses, VLANs | view, add, change, delete |
-| DCIM: interfaces | view, change (Lanvex only edits 802.1Q mode and VLANs) |
+| DCIM: interfaces | view, change (802.1Q mode and VLANs), add (optional: recording a server interface the device lacks) |
 | Extras: tags | view, add (Lanvex creates the `lanvex-gateway` tag once) |
 | IPAM: VRFs, roles, VLAN groups, IP ranges; DCIM: devices, sites, device roles, manufacturers; Tenancy: tenants | view |
 | Core: object changes | view (optional, for the overview's change feed) |
 | DCIM: cables | view (optional, for the topology map) |
-| Virtualization: virtual machines | view (optional, to link servers to VMs) |
+| Virtualization: virtual machines, interfaces | view (optional, to link servers to VMs); add interfaces (optional, as for devices) |
 
 A read-only token works too; write actions then fail with NetBox's permission message, and Lanvex
 records the failure in its audit log.
@@ -74,6 +74,11 @@ additionally needs a small helper installed as root; see [changes.md](changes.md
 
 If a server's host key changes (after a reinstall, or if something intercepts the connection),
 Lanvex stops connecting and says so. Verify the new fingerprint the same way before trusting it.
+
+Lanvex reads each server every hour by default (`LANVEX_SERVER_READ_INTERVAL_MINUTES`; each server
+can be set to 15 minutes to daily, or off, on its page). The server page's **History** lists each
+state the server was found in and what changed, in words: addresses, links, MTU, gateway, routes,
+DNS. A read that finds the same state is counted, not stored again; failed reads are listed too.
 
 The commands Lanvex runs to read a server are fixed and read-only: `ip -json` (addresses, routes), `cat` of
 `/etc/os-release`, `/etc/resolv.conf` and `/etc/network/interfaces[.d]`, `systemctl is-active`,

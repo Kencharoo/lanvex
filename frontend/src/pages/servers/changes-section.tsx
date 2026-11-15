@@ -14,6 +14,7 @@ import { fieldError } from "@/lib/hooks";
 import type { ChangeDetail, ChangeOut, ChangeReadiness, ChangeRequestBody, HelperInstall, HelperState, HostFacts, Server } from "@/lib/types";
 import { cn, relativeTime } from "@/lib/utils";
 import { ChangeStatusBadge } from "../changes/shared";
+import type { ChangeSeed } from "./record";
 
 const HELPER_LABEL: Record<HelperState, string> = {
   unknown: "Not checked yet",
@@ -26,9 +27,25 @@ const HELPER_LABEL: Record<HelperState, string> = {
   error: "Not usable",
 };
 
-export function ChangesSection({ server: s, facts, isAdmin }: { server: Server; facts: HostFacts | null; isAdmin: boolean }) {
+export function ChangesSection({
+  server: s,
+  facts,
+  isAdmin,
+  seed = null,
+  onSeedUsed,
+}: {
+  server: Server;
+  facts: HostFacts | null;
+  isAdmin: boolean;
+  /** Start the change form from this (a change prepared from the comparison with NetBox). */
+  seed?: ChangeSeed | null;
+  onSeedUsed?: () => void;
+}) {
   const qc = useQueryClient();
   const [dialog, setDialog] = React.useState<null | "install" | "change">(null);
+  React.useEffect(() => {
+    if (seed) setDialog("change");
+  }, [seed]);
   const readiness = useQuery({
     queryKey: ["servers", s.id, "changes", "readiness"],
     queryFn: () => api<ChangeReadiness>(`/servers/${s.id}/changes/readiness`),
@@ -173,7 +190,19 @@ export function ChangesSection({ server: s, facts, isAdmin }: { server: Server; 
         </div>
       )}
       {r && <InstallHelperDialog server={s} readiness={r} open={dialog === "install"} onClose={() => setDialog(null)} onChecked={refresh} />}
-      {r && facts && <ChangeDialog server={s} facts={facts} readiness={r} open={dialog === "change"} onClose={() => setDialog(null)} />}
+      {r && facts && (
+        <ChangeDialog
+          server={s}
+          facts={facts}
+          readiness={r}
+          seed={seed}
+          open={dialog === "change"}
+          onClose={() => {
+            setDialog(null);
+            onSeedUsed?.();
+          }}
+        />
+      )}
     </Section>
   );
 }
@@ -341,12 +370,14 @@ function ChangeDialog({
   server: s,
   facts,
   readiness: r,
+  seed,
   open,
   onClose,
 }: {
   server: Server;
   facts: HostFacts;
   readiness: ChangeReadiness;
+  seed: ChangeSeed | null;
   open: boolean;
   onClose: () => void;
 }) {
@@ -366,7 +397,7 @@ function ChangeDialog({
   });
   React.useEffect(() => {
     if (open) {
-      setD(draftFor(facts, candidates[0]?.name ?? ""));
+      setD(seed ? { ...draftFor(facts, seed.iface), method: "static", addresses: seed.addresses } : draftFor(facts, candidates[0]?.name ?? ""));
       prepare.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -401,6 +432,11 @@ function ChangeDialog({
         >
           <DialogBody>
             {generalError && <Notice tone="danger">{generalError}</Notice>}
+            {seed && seed.iface === d.iface && (
+              <Notice tone="info" title="Prepared from the comparison">
+                {seed.note} Check the other settings, then continue to the preview.
+              </Notice>
+            )}
             <Field label="Interface" htmlFor="chg-iface" error={err("interface")}>
               <Select id="chg-iface" value={d.iface} onChange={(e) => setD(draftFor(facts, e.target.value))}>
                 {candidates.map((i) => (
