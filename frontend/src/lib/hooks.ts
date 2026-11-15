@@ -21,20 +21,21 @@ export function useLookup(kind: LookupKind, params?: { site_id?: number | null }
 export function useUrlState<K extends string>(keys: readonly K[]) {
   const [params, setParams] = useSearchParams();
   const values = Object.fromEntries(keys.map((k) => [k, params.get(k) ?? ""])) as Record<K, string>;
+  // Each change builds on the previous one, even before React has rendered it: setSearchParams'
+  // own "prev" is the last rendered URL, so two quick changes (a view, then a filter) would lose
+  // the first.
+  const latest = React.useRef(params);
+  latest.current = params;
   const set = React.useCallback(
     (patch: Partial<Record<K | "offset", string | number | null>>) => {
-      setParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          for (const [k, v] of Object.entries(patch)) {
-            if (v === null || v === "" || v === undefined) next.delete(k);
-            else next.set(k, String(v));
-          }
-          if (!("offset" in patch)) next.delete("offset");
-          return next;
-        },
-        { replace: true },
-      );
+      const next = new URLSearchParams(latest.current);
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === null || v === "" || v === undefined) next.delete(k);
+        else next.set(k, String(v));
+      }
+      if (!("offset" in patch)) next.delete("offset");
+      latest.current = next;
+      setParams(next, { replace: true });
     },
     [setParams],
   );
