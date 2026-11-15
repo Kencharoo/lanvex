@@ -15,6 +15,9 @@
   - Fast with hundreds of devices: the layout runs in the background, and the map's code loads only when
     the page is opened.
 - With your own NetBox, the token needs *view* on cables for the map (docs/operations.md).
+- **Fix:** two quick changes to a page's filters (switching a view and then choosing a site, say)
+  kept only the second. Affected every filtered page.
+- CI keeps Playwright traces of failed browser tests for 14 days.
 
 ## 0.4.2 — 2026-11-14
 
