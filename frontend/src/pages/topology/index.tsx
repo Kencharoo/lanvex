@@ -60,7 +60,7 @@ function matches(n: TopologyNode, q: string): boolean {
     .some((v) => (v as string).toLowerCase().includes(q));
 }
 
-/** Zooms to what the search found (or the node in the URL) once the map is drawn. */
+/** Zooms to what the search found, or to the device a shared link selected, once the map is drawn. */
 function Focus({ ids, ready }: { ids: string[]; ready: boolean }) {
   const flow = useReactFlow();
   const key = ids.join(",");
@@ -86,6 +86,8 @@ export function TopologyPage() {
   const view = values.view === "cables" ? "cables" : "map";
   const q = values.q.trim().toLowerCase();
   const [selectedLink, setSelectedLink] = React.useState<string | null>(null);
+  // A link that opens the page with a device selected zooms to it once; clicking around does not.
+  const linkedNode = React.useRef(values.node || null);
 
   const { nodes, links, unconnected, byId } = React.useMemo(() => {
     const all = topo?.nodes ?? [];
@@ -329,7 +331,7 @@ export function TopologyPage() {
                     nodeColor={(n) => (n.type === "site" ? "rgba(128,128,128,0.12)" : ((n.data as DeviceData).node?.color ?? "#8a929e"))}
                   />
                 )}
-                <Focus ids={found.length ? found : values.node ? [values.node] : []} ready={!!laidOut} />
+                <Focus ids={found.length ? found : linkedNode.current ? [linkedNode.current] : []} ready={!!laidOut} />
               </ReactFlow>
             </ReactFlowProvider>
           )}

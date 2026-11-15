@@ -82,6 +82,23 @@ describe("stacks", () => {
     expect([...st.values()].flat()).not.toContain("dual");
   });
 
+  it("never stacks under a circuit or under a device at another site", () => {
+    const lab = { id: 1, name: "Lab", slug: "lab" };
+    const branch = { id: 2, name: "Branch", slug: "branch" };
+    const nodes = [
+      { ...node("isp", null, "circuit") },
+      { ...node("core", "Core switch"), site: lab },
+      { ...node("acc", "Access switch"), site: lab },
+      { ...node("br", "Access switch"), site: branch },
+      { ...node("far", "Server"), site: branch },
+    ];
+    const links = [link("isp", "core"), link("isp", "br"), link("core", "acc"), link("core", "far")];
+    const stacked = [...stacks(nodes, links, tiers(nodes, links)).values()].flat();
+    expect(stacked).not.toContain("br");
+    expect(stacked).not.toContain("far");
+    expect(stacked).toContain("acc");
+  });
+
   it("never stacks a device from another site", () => {
     const remote = { ...node("remote", "Server"), external: true };
     const nodes = [node("core", "Core switch"), node("acc", "Access switch"), remote];

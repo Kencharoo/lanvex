@@ -41,12 +41,16 @@ export function stacks(nodes: TopologyNode[], links: TopologyLink[], tier: Map<s
     ends.set(l.a, [...(ends.get(l.a) ?? []), l.b]);
     ends.set(l.b, [...(ends.get(l.b) ?? []), l.a]);
   }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
   const out = new Map<string, string[]>();
   for (const n of [...nodes].sort((x, y) => x.name.localeCompare(y.name))) {
     const up = ends.get(n.id) ?? [];
     // Devices from another site keep their own frame ("Other sites") and full card.
     if (n.kind !== "device" || n.external || up.length !== 1) continue;
     const parent = up[0];
+    const p = byId.get(parent);
+    // Only under a device at the same site: a branch switch behind a circuit keeps its site frame.
+    if (!p || p.kind !== "device" || p.site?.id !== n.site?.id) continue;
     if ((ends.get(parent)?.length ?? 0) < 2 || (tier.get(parent) ?? 0) >= (tier.get(n.id) ?? 0)) continue;
     out.set(parent, [...(out.get(parent) ?? []), n.id]);
   }
