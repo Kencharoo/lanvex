@@ -343,7 +343,7 @@ async def test_prepare_shows_exactly_what_will_change(
     # Preparing reads the server and asks for a plan; it never applies anything.
     assert fake.commands() == [Cmd.HELPER_VERSION, Cmd.HELPER_PLAN]
     async with database.sessionmaker() as db:
-        assert await db.scalar(select(func.count()).select_from(ServerSnapshot)) == 2
+        assert await db.scalar(select(func.sum(ServerSnapshot.reads))) == 2  # reads, kept or confirmed
 
 
 @pytest.mark.parametrize(
@@ -460,7 +460,7 @@ async def test_success_applies_verifies_and_confirms(
             ("server.change.approve", "success"),
             ("server.change.execute", "success"),
         }
-        assert await db.scalar(select(func.count()).select_from(ServerSnapshot)) == 3  # read again afterwards
+        assert await db.scalar(select(func.sum(ServerSnapshot.reads))) == 3  # read again afterwards
     detail = (await admin.get(f"/api/v1/changes/{c['id']}")).json()
     assert detail["can_approve"] is False and detail["can_cancel"] is False
     assert (await admin.post(f"/api/v1/changes/{c['id']}/cancel")).status_code == 409

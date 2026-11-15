@@ -59,7 +59,12 @@ class Settings(BaseSettings):
     )
     ssh_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     ssh_command_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
-    server_snapshot_retention: int = Field(default=20, ge=1, le=500)
+    # Snapshots are kept only when a read finds something different, so this many changes are kept.
+    server_snapshot_retention: int = Field(default=200, ge=1, le=5000)
+    # Read every server on a schedule (read-only). Servers may set their own interval; 0 turns the
+    # schedule off for every server.
+    server_read_interval_minutes: int = Field(default=60, ge=0, le=10080)
+    read_scheduler_enabled: bool = True  # run scheduled reads in this process; tests drive them directly
 
     # Changing server configuration. Off unless explicitly enabled; each server must also be opted in.
     automation_enabled: bool = False

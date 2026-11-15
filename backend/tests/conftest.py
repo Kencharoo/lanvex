@@ -15,6 +15,7 @@ os.environ["LANVEX_SERVER_ALLOWED_NETWORKS"] = "[]"
 os.environ["LANVEX_AUTOMATION_ENABLED"] = "false"
 # Tests drive the change runner themselves instead of a background task.
 os.environ["LANVEX_CHANGE_RUNNER_ENABLED"] = "false"
+os.environ["LANVEX_READ_SCHEDULER_ENABLED"] = "false"  # tests run scheduled reads themselves
 
 from collections.abc import AsyncIterator  # noqa: E402
 from pathlib import Path  # noqa: E402

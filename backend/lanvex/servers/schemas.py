@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 
 from lanvex.integrations.linux.facts import HostFacts
 from lanvex.schemas import ApiModel
+from lanvex.servers.history import HistoryChange
 from lanvex.servers.models import AuthMethod, ConnectionStatus
 
 _HOSTNAME = re.compile(
@@ -107,11 +108,20 @@ class ServerUpdate(ApiModel):
     )
     netbox: NetBoxLink | None = None
     unlink_netbox: bool = False
+    # Scheduled reads: null = the installation's default, 0 = off, otherwise minutes (5 to 7 days).
+    read_interval_minutes: int | None = None
 
     @field_validator("address")
     @classmethod
     def _addr(cls, v: str | None) -> str | None:
         return valid_address(v) if v is not None else None
+
+    @field_validator("read_interval_minutes")
+    @classmethod
+    def _interval(cls, v: int | None) -> int | None:
+        if v is not None and v != 0 and not 5 <= v <= 10080:
+            raise ValueError("Choose 0 (off) or between 5 minutes and 7 days (10080 minutes).")
+        return v
 
     @field_validator("username")
     @classmethod
@@ -152,6 +162,9 @@ class ServerOut(ApiModel):
     os_supported: bool | None
     network_stack: str | None
     changes_enabled: bool
+    read_interval_minutes: int | None  # as set for this server; null = the default
+    read_interval: int  # the interval in effect, in minutes; 0 = not read on a schedule
+    next_read_at: datetime | None
     created_at: datetime
 
 
@@ -173,6 +186,22 @@ class SnapshotMeta(ApiModel):
     message: str | None
     duration_ms: int | None
     requested_by: str | None
+    confirmed_at: datetime | None = None  # last read that found this same state
+    reads: int = 1  # reads that found it, including the first
+
+
+class HistoryEntry(ApiModel):
+    """One state of a server, and what was different from the state before it."""
+
+    snapshot_id: uuid.UUID
+    taken_at: datetime
+    confirmed_at: datetime | None
+    reads: int
+    status: ConnectionStatus
+    message: str | None
+    requested_by: str | None
+    first: bool  # the oldest state kept: nothing to compare with
+    changes: list[HistoryChange]
 
 
 class SnapshotOut(SnapshotMeta):

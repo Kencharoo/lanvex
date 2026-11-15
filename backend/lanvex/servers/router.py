@@ -14,6 +14,7 @@ from lanvex.servers.models import AuthMethod, ServerSnapshot
 from lanvex.servers.schemas import (
     Comparison,
     Credentials,
+    HistoryEntry,
     HostKeyOut,
     NetBoxRef,
     PinnedHostKey,
@@ -247,6 +248,21 @@ async def list_snapshots(
     svc = _svc(request, db, settings)
     await svc.get(server_id)
     return await svc.snapshots(server_id)
+
+
+@router.get("/{server_id}/history", response_model=list[HistoryEntry])
+async def history(
+    server_id: uuid.UUID,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    _: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[HistoryEntry]:
+    """The server's states over time, newest first, each with what differed from the one before."""
+    svc = _svc(request, db, settings)
+    await svc.get(server_id)
+    return await svc.history(server_id, limit)
 
 
 @router.get("/{server_id}/snapshots/latest", response_model=SnapshotOut | None)

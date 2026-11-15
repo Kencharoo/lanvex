@@ -28,6 +28,7 @@ from lanvex.ipam.router import router as ipam_router
 from lanvex.lookups.router import router as lookups_router
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.router import router as servers_router
+from lanvex.servers.scheduler import ReadScheduler
 from lanvex.system.router import router as system_router
 from lanvex.topology.router import router as topology_router
 from lanvex.vlans.router import router as vlans_router
@@ -94,6 +95,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.change_runner_enabled:
             app.state.change_runner = ChangeRunner(app.state.db, settings, lambda: app.state.netbox)
             app.state.change_runner.start()
+        app.state.read_scheduler = None
+        if settings.read_scheduler_enabled:
+            app.state.read_scheduler = ReadScheduler(app.state.db, settings, lambda: app.state.netbox)
+            app.state.read_scheduler.start()
         log.info(
             "lanvex_started",
             version=__version__,
@@ -105,6 +110,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         if app.state.change_runner is not None:
             await app.state.change_runner.stop()
+        if app.state.read_scheduler is not None:
+            await app.state.read_scheduler.stop()
         await core_proxy.aclose(app)
         if app.state.netbox is not None:
             await app.state.netbox.aclose()

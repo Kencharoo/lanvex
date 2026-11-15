@@ -6,7 +6,7 @@ Everything here reads from servers. Changing a server's configuration lives in l
 import asyncio
 import ipaddress
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncssh
@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lanvex.auth.models import User
-from lanvex.core.config import Settings
+from lanvex.core.config import Settings, get_settings
 from lanvex.core.errors import Conflict, NotFound, ValidationFailed
 from lanvex.core.secrets import Vault
 from lanvex.integrations.base import capabilities
@@ -22,11 +22,14 @@ from lanvex.integrations.linux import adapter, transport
 from lanvex.integrations.linux.commands import Cmd
 from lanvex.integrations.linux.facts import HostFacts
 from lanvex.netbox.client import NetBoxClient
+from lanvex.servers.history import HistoryChange, fingerprint
+from lanvex.servers.history import changes as history_changes
 from lanvex.servers.models import AuthMethod, ConnectionStatus, Server, ServerSnapshot
 from lanvex.servers.schemas import (
     Comparison,
     ComparisonRow,
     Credentials,
+    HistoryEntry,
     HostKeyOut,
     NetBoxLink,
     NetBoxRef,
@@ -82,8 +85,23 @@ def to_out(s: Server, netbox: NetBoxRef | None = None) -> ServerOut:
         os_supported=s.os_supported,
         network_stack=s.network_stack,
         changes_enabled=s.changes_enabled,
+        read_interval_minutes=s.read_interval_minutes,
+        read_interval=read_interval(s, get_settings()),
+        next_read_at=s.next_read_at if read_interval(s, get_settings()) else None,
         created_at=s.created_at,
     )
+
+
+def read_interval(s: Server, settings: Settings) -> int:
+    """Minutes between scheduled reads of this server; 0 when it is not read on a schedule."""
+    if not settings.server_read_interval_minutes:
+        return 0  # schedule switched off for the installation
+    return (
+        settings.server_read_interval_minutes if s.read_interval_minutes is None else s.read_interval_minutes
+    )
+
+
+SCHEDULE = "(schedule)"  # requested_by of scheduled reads; cannot be a username
 
 
 def verified_host_key(k: PinnedHostKey) -> tuple[str, str]:
@@ -223,6 +241,9 @@ class ServerService:
             netbox_object_id=data.netbox.object_id if data.netbox else None,
             created_by_id=user.id,
         )
+        minutes = read_interval(s, self.settings)
+        # Added servers are read right away by whoever adds them; the schedule takes over after that.
+        s.next_read_at = datetime.now(UTC) + timedelta(minutes=minutes) if minutes else None
         self.db.add(s)
         await self.db.flush()
         return s
@@ -254,6 +275,10 @@ class ServerService:
             s.host_key_pinned_at = datetime.now(UTC)
             if s.last_status == ConnectionStatus.HOST_KEY_MISMATCH:
                 s.last_status, s.last_status_message = None, "New host key pinned; not tested yet."
+        if "read_interval_minutes" in sent:
+            s.read_interval_minutes = data.read_interval_minutes
+            minutes = read_interval(s, self.settings)
+            s.next_read_at = datetime.now(UTC) + timedelta(minutes=minutes) if minutes else None
         if data.unlink_netbox:
             s.netbox_object_type = s.netbox_object_id = None
         elif "netbox" in sent and data.netbox is not None:
@@ -310,8 +335,12 @@ class ServerService:
         self._record(s, ConnectionStatus.OK, msg)
         return TestResult(status=ConnectionStatus.OK, message=msg, remote_hostname=hostname)
 
-    async def collect(self, s: Server, user: User | None) -> ServerSnapshot:
-        snap = ServerSnapshot(server_id=s.id, requested_by=user.username if user else None)
+    async def collect(self, s: Server, user: User | None, *, scheduled: bool = False) -> ServerSnapshot:
+        """Read the server. A read that finds the same state as the latest snapshot is not stored again:
+        that snapshot is confirmed instead, so snapshots are the server's history of changes."""
+        snap = ServerSnapshot(
+            server_id=s.id, requested_by=user.username if user else (SCHEDULE if scheduled else None)
+        )
         try:
             await self._check_target(s.address)
             async with _lock(s.id):
@@ -341,10 +370,66 @@ class ServerService:
             s.os_pretty_name = c.facts.system.os.pretty_name
             s.os_supported = c.facts.system.os.supported
             s.network_stack = c.facts.stack.primary
+        snap.fingerprint = fingerprint(snap.facts) if snap.facts else None
+        latest = await self.db.scalar(
+            select(ServerSnapshot)
+            .where(ServerSnapshot.server_id == s.id)
+            .order_by(ServerSnapshot.taken_at.desc())
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.status == snap.status
+            and latest.fingerprint == snap.fingerprint
+            and (snap.fingerprint is not None or latest.message == snap.message)
+        ):
+            latest.confirmed_at = datetime.now(UTC)
+            latest.reads += 1
+            await self.db.flush()
+            return latest
         self.db.add(snap)
         await self.db.flush()
         await self._prune(s.id)
         return snap
+
+    async def history(self, server_id: uuid.UUID, limit: int = 100) -> list[HistoryEntry]:
+        """Newest first: each kept state and what differed from the readable state before it."""
+        snaps = list(
+            reversed(
+                (
+                    await self.db.scalars(
+                        select(ServerSnapshot)
+                        .where(ServerSnapshot.server_id == server_id)
+                        .order_by(ServerSnapshot.taken_at.desc())
+                        .limit(limit + 1)
+                    )
+                ).all()
+            )
+        )
+        entries: list[HistoryEntry] = []
+        previous: HostFacts | None = None
+        for i, snap in enumerate(snaps):
+            facts = HostFacts.model_validate(snap.facts) if snap.facts else None
+            found: list[HistoryChange] = []
+            if facts and previous:
+                found = history_changes(previous, facts)
+            if facts:
+                previous = facts
+            entries.append(
+                HistoryEntry(
+                    snapshot_id=snap.id,
+                    taken_at=snap.taken_at,
+                    confirmed_at=snap.confirmed_at,
+                    reads=snap.reads,
+                    status=snap.status,
+                    message=snap.message,
+                    requested_by=snap.requested_by,
+                    first=i == 0,
+                    changes=found,
+                )
+            )
+        # The extra (oldest) snapshot was only read for comparison when there are more than `limit`.
+        return list(reversed(entries[-limit:]))
 
     async def _prune(self, server_id: uuid.UUID) -> None:
         keep = self.settings.server_snapshot_retention

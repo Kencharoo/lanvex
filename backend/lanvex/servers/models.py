@@ -55,6 +55,9 @@ class Server(TimestampMixin, Base):
         String(32)
     )  # dcim.device | virtualization.virtualmachine
     netbox_object_id: Mapped[int | None] = mapped_column(Integer)
+    # Scheduled reads: None = the installation's default interval, 0 = never on a schedule.
+    read_interval_minutes: Mapped[int | None] = mapped_column(Integer)
+    next_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     last_status: Mapped[ConnectionStatus | None] = mapped_column(
         _enum(ConnectionStatus, "server_connection_status")
@@ -109,5 +112,10 @@ class ServerSnapshot(Base):
     requested_by: Mapped[str | None] = mapped_column(String(64))
     facts: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # command outputs, for troubleshooting parsers
+    # A read that finds the same state (same fingerprint, or the same error) is not stored again;
+    # it moves confirmed_at forward. So every snapshot is a state that differed from the one before.
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reads: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
 
     server: Mapped[Server] = relationship(back_populates="snapshots")
