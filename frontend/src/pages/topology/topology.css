@@ -1,0 +1,37 @@
+/* React Flow in Lanvex's colours; the tokens switch with light and dark mode. */
+.topology .react-flow {
+  --xy-background-color: var(--canvas);
+  --xy-background-pattern-dots-color: var(--line-strong);
+  --xy-node-background-color: transparent;
+  --xy-node-border: none;
+  --xy-node-boxshadow-selected: none;
+  --xy-edge-stroke: var(--muted);
+  --xy-edge-stroke-selected: var(--accent);
+  --xy-minimap-background-color: var(--surface);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--canvas) 70%, transparent);
+  --xy-minimap-node-background-color: var(--line-strong);
+  --xy-controls-button-background-color: var(--surface);
+  --xy-controls-button-background-color-hover: var(--surface-2);
+  --xy-controls-button-color: var(--ink);
+  --xy-controls-button-color-hover: var(--ink);
+  --xy-controls-button-border-color: var(--line);
+  --xy-controls-box-shadow: var(--shadow-pop);
+  --xy-attribution-background-color: transparent;
+  font-family: inherit;
+}
+.topology .react-flow__node-device,
+.topology .react-flow__node-circuit,
+.topology .react-flow__node-site {
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+.topology .react-flow__node:focus-visible > div {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.topology .react-flow__attribution a {
+  color: var(--faint);
+}

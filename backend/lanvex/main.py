@@ -29,6 +29,7 @@ from lanvex.lookups.router import router as lookups_router
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.router import router as servers_router
 from lanvex.system.router import router as system_router
+from lanvex.topology.router import router as topology_router
 from lanvex.vlans.router import router as vlans_router
 
 log = get_logger("lanvex")
@@ -136,6 +137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audit_router,
         servers_router,
         changes_router,
+        topology_router,
     ):
         api.include_router(r)
     app.include_router(api)

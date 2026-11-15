@@ -69,6 +69,7 @@ def seed() -> None:
         "device-roles",
         "manufacturers",
         "object-changes",
+        "cables",
     ):
         DB[k] = {}
 
@@ -151,8 +152,9 @@ def seed() -> None:
 
     gw_tag = add("tags", name="Lanvex gateway", slug="lanvex-gateway", color="2563eb")
     mfr = add("manufacturers", name="Cisco", slug="cisco")
-    role_core = add("device-roles", name="Core switch", slug="core-switch")
-    add("device-roles", name="Access switch", slug="access-switch")
+    role_core = add("device-roles", name="Core switch", slug="core-switch", color="1f6feb")
+    role_access = add("device-roles", name="Access switch", slug="access-switch", color="2da44e")
+    role_server = add("device-roles", name="Server", slug="server", color="bf8700")
     sw = add(
         "devices",
         name="kob-core-01",
@@ -186,6 +188,64 @@ def seed() -> None:
         for n in names
     ]
     ifaces[0].update(mode="access", untagged_vlan=v10["id"])
+
+    # A small campus around the core switch, and a second site joined by a provider circuit.
+    def device(
+        name: str, role: dict[str, Any], site: dict[str, Any], model: str, ports: list[str]
+    ) -> list[dict[str, Any]]:
+        dev = add(
+            "devices",
+            name=name,
+            status="active",
+            role=role["id"],
+            site=site["id"],
+            device_type={"id": 2, "model": model, "manufacturer": _brief("dcim/manufacturers", mfr)},
+            serial="",
+            asset_tag=None,
+            primary_ip=None,
+            description="",
+        )
+        return [
+            add(
+                "interfaces",
+                device=dev["id"],
+                name=n,
+                type="1000base-t",
+                enabled=True,
+                mgmt_only=False,
+                mode=None,
+                untagged_vlan=None,
+                tagged_vlans=[],
+                description="",
+            )
+            for n in ports
+        ]
+
+    fra = next(x for x in DB["sites"].values() if x["slug"] == "frankfurt-dc")
+    acc1 = device("kob-acc-01", role_access, hq, "Catalyst 9200-24P", ["Gi1/0/1", "Gi1/0/49"])
+    acc2 = device("kob-acc-02", role_access, hq, "Catalyst 9200-24P", ["Gi1/0/1", "Gi1/0/49"])
+    srv = device("kob-srv-01", role_server, hq, "PowerEdge R650", ["eno1"])
+    fra_core = device("fra-core-01", role_core, fra, "Catalyst 9500-24Y4C", ["Te1/0/1", "Te1/0/24"])
+
+    def cable(a: dict[str, Any] | tuple[str, int], b: dict[str, Any] | tuple[str, int], **extra: Any) -> None:
+        end = lambda t: t if isinstance(t, tuple) else ("dcim.interface", t["id"])  # noqa: E731
+        add(
+            "cables",
+            a=[end(a)],
+            b=[end(b)],
+            status=extra.pop("status", "connected"),
+            type=extra.pop("type", "cat6"),
+            label=extra.pop("label", ""),
+            color="",
+            description="",
+        )
+
+    cable(ifaces[1], acc1[1], label="uplink-1")
+    cable(ifaces[2], acc2[1], label="uplink-2")
+    cable(acc1[0], srv[0])
+    cable(acc2[0], fra_core[0], status="planned")
+    cable(ifaces[3], ("circuits.circuittermination", 1), type="smf")
+    cable(fra_core[1], ("circuits.circuittermination", 2), type="smf")
     ifaces[3].update(mode="tagged", untagged_vlan=v99["id"], tagged_vlans=[v10["id"], v20["id"]])
     add(
         "ip-addresses",
@@ -336,12 +396,61 @@ def ser(kind: str, o: dict[str, Any]) -> dict[str, Any]:
             tagged_vlans=[
                 _brief("ipam/vlans", DB["vlans"][v]) for v in o.get("tagged_vlans", []) if v in DB["vlans"]
             ],
-            cable=None,
+            cable=next(
+                (
+                    {"id": c["id"]}
+                    for c in DB["cables"].values()
+                    if ("dcim.interface", o["id"]) in [tuple(t) for t in c["a"] + c["b"]]
+                ),
+                None,
+            ),
             mark_connected=False,
             mac_address=None,
             mtu=None,
             lag=None,
         )
+    elif kind == "cables":
+
+        def term(t: tuple[str, int] | list[Any]) -> dict[str, Any]:
+            kind_, oid = t
+            if kind_ == "circuits.circuittermination":
+                circuit = {
+                    "id": 1,
+                    "cid": "CID-4711",
+                    "display": "CID-4711",
+                    "provider": {"id": 1, "name": "Example Carrier", "slug": "example-carrier"},
+                }
+                obj = {
+                    "id": oid,
+                    "circuit": circuit,
+                    "term_side": "A" if oid == 1 else "Z",
+                    "cable": {"id": o["id"]},
+                }
+            else:
+                i = DB["interfaces"][oid]
+                obj = {
+                    "id": oid,
+                    "name": i["name"],
+                    "device": _brief("dcim/devices", DB["devices"][i["device"]]),
+                    "cable": {"id": o["id"]},
+                }
+            return {"object_type": kind_, "object_id": oid, "object": obj}
+
+        d = {
+            "id": o["id"],
+            "url": d["url"],
+            "display_url": d["display_url"],
+            "display": f"#{o['id']}",
+            "a_terminations": [term(t) for t in o["a"]],
+            "b_terminations": [term(t) for t in o["b"]],
+            "status": _choice(o["status"]),
+            "type": o.get("type", ""),
+            "label": o.get("label", ""),
+            "color": o.get("color", ""),
+            "description": "",
+            "created": o.get("created"),
+            "last_updated": o.get("last_updated"),
+        }
     return d
 
 
@@ -442,6 +551,15 @@ def matches(kind: str, o: dict[str, Any], qp: Any) -> bool:
     elif kind == "interfaces":
         if (dev := qp.get("device_id")) and o["device"] != int(dev):
             return False
+    elif kind == "cables":
+        if site := qp.get("site_id"):
+            sites = {
+                DB["devices"][DB["interfaces"][oid]["device"]]["site"]
+                for t, oid in o["a"] + o["b"]
+                if t == "dcim.interface"
+            }
+            if int(site) not in sites:
+                return False
     return True
 
 
@@ -471,6 +589,7 @@ ROUTES = {
     "dcim/sites": "sites",
     "dcim/device-roles": "device-roles",
     "dcim/manufacturers": "manufacturers",
+    "dcim/cables": "cables",
     "tenancy/tenants": "tenants",
     "core/object-changes": "object-changes",
 }

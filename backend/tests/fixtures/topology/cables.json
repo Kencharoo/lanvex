@@ -1,0 +1,752 @@
+{
+ "count": 9,
+ "next": null,
+ "previous": null,
+ "results": [
+  {
+   "id": 1,
+   "url": "https://netbox.test/api/dcim/cables/1/",
+   "display_url": "https://netbox.test/dcim/cables/1/",
+   "display": "core-link",
+   "type": "mmf",
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 7,
+     "object": {
+      "id": 7,
+      "url": "https://netbox.test/api/dcim/interfaces/7/",
+      "display": "Gi1/0/1",
+      "device": {
+       "id": 3,
+       "url": "https://netbox.test/api/dcim/devices/3/",
+       "display": "topo-core-01",
+       "name": "topo-core-01",
+       "description": ""
+      },
+      "name": "Gi1/0/1",
+      "description": "",
+      "cable": {
+       "id": 1,
+       "url": "https://netbox.test/api/dcim/cables/1/",
+       "display": "core-link",
+       "label": "core-link",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 8,
+     "object": {
+      "id": 8,
+      "url": "https://netbox.test/api/dcim/interfaces/8/",
+      "display": "Gi1/0/1",
+      "device": {
+       "id": 4,
+       "url": "https://netbox.test/api/dcim/devices/4/",
+       "display": "topo-core-02",
+       "name": "topo-core-02",
+       "description": ""
+      },
+      "name": "Gi1/0/1",
+      "description": "",
+      "cable": {
+       "id": 1,
+       "url": "https://netbox.test/api/dcim/cables/1/",
+       "display": "core-link",
+       "label": "core-link",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "core-link",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:33.434560Z",
+   "last_updated": "2026-11-15T19:57:33.517332Z"
+  },
+  {
+   "id": 2,
+   "url": "https://netbox.test/api/dcim/cables/2/",
+   "display_url": "https://netbox.test/dcim/cables/2/",
+   "display": "#2",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 9,
+     "object": {
+      "id": 9,
+      "url": "https://netbox.test/api/dcim/interfaces/9/",
+      "display": "Gi1/0/2",
+      "device": {
+       "id": 3,
+       "url": "https://netbox.test/api/dcim/devices/3/",
+       "display": "topo-core-01",
+       "name": "topo-core-01",
+       "description": ""
+      },
+      "name": "Gi1/0/2",
+      "description": "",
+      "cable": {
+       "id": 2,
+       "url": "https://netbox.test/api/dcim/cables/2/",
+       "display": "#2",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 10,
+     "object": {
+      "id": 10,
+      "url": "https://netbox.test/api/dcim/interfaces/10/",
+      "display": "Gi1/0/49",
+      "device": {
+       "id": 5,
+       "url": "https://netbox.test/api/dcim/devices/5/",
+       "display": "topo-acc-01",
+       "name": "topo-acc-01",
+       "description": ""
+      },
+      "name": "Gi1/0/49",
+      "description": "",
+      "cable": {
+       "id": 2,
+       "url": "https://netbox.test/api/dcim/cables/2/",
+       "display": "#2",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:33.963336Z",
+   "last_updated": "2026-11-15T19:57:34.053056Z"
+  },
+  {
+   "id": 3,
+   "url": "https://netbox.test/api/dcim/cables/3/",
+   "display_url": "https://netbox.test/dcim/cables/3/",
+   "display": "#3",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 11,
+     "object": {
+      "id": 11,
+      "url": "https://netbox.test/api/dcim/interfaces/11/",
+      "display": "Gi1/0/2",
+      "device": {
+       "id": 4,
+       "url": "https://netbox.test/api/dcim/devices/4/",
+       "display": "topo-core-02",
+       "name": "topo-core-02",
+       "description": ""
+      },
+      "name": "Gi1/0/2",
+      "description": "",
+      "cable": {
+       "id": 3,
+       "url": "https://netbox.test/api/dcim/cables/3/",
+       "display": "#3",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 12,
+     "object": {
+      "id": 12,
+      "url": "https://netbox.test/api/dcim/interfaces/12/",
+      "display": "Gi1/0/49",
+      "device": {
+       "id": 6,
+       "url": "https://netbox.test/api/dcim/devices/6/",
+       "display": "topo-acc-02",
+       "name": "topo-acc-02",
+       "description": ""
+      },
+      "name": "Gi1/0/49",
+      "description": "",
+      "cable": {
+       "id": 3,
+       "url": "https://netbox.test/api/dcim/cables/3/",
+       "display": "#3",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:34.495460Z",
+   "last_updated": "2026-11-15T19:57:34.566112Z"
+  },
+  {
+   "id": 4,
+   "url": "https://netbox.test/api/dcim/cables/4/",
+   "display_url": "https://netbox.test/dcim/cables/4/",
+   "display": "#4",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 13,
+     "object": {
+      "id": 13,
+      "url": "https://netbox.test/api/dcim/interfaces/13/",
+      "display": "Gi1/0/3",
+      "device": {
+       "id": 3,
+       "url": "https://netbox.test/api/dcim/devices/3/",
+       "display": "topo-core-01",
+       "name": "topo-core-01",
+       "description": ""
+      },
+      "name": "Gi1/0/3",
+      "description": "",
+      "cable": {
+       "id": 4,
+       "url": "https://netbox.test/api/dcim/cables/4/",
+       "display": "#4",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 14,
+     "object": {
+      "id": 14,
+      "url": "https://netbox.test/api/dcim/interfaces/14/",
+      "display": "Gi1/0/50",
+      "device": {
+       "id": 6,
+       "url": "https://netbox.test/api/dcim/devices/6/",
+       "display": "topo-acc-02",
+       "name": "topo-acc-02",
+       "description": ""
+      },
+      "name": "Gi1/0/50",
+      "description": "",
+      "cable": {
+       "id": 4,
+       "url": "https://netbox.test/api/dcim/cables/4/",
+       "display": "#4",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "planned",
+    "label": "Planned"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:35.276087Z",
+   "last_updated": "2026-11-15T19:57:35.352175Z"
+  },
+  {
+   "id": 5,
+   "url": "https://netbox.test/api/dcim/cables/5/",
+   "display_url": "https://netbox.test/dcim/cables/5/",
+   "display": "#5",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 15,
+     "object": {
+      "id": 15,
+      "url": "https://netbox.test/api/dcim/interfaces/15/",
+      "display": "Gi1/0/1",
+      "device": {
+       "id": 5,
+       "url": "https://netbox.test/api/dcim/devices/5/",
+       "display": "topo-acc-01",
+       "name": "topo-acc-01",
+       "description": ""
+      },
+      "name": "Gi1/0/1",
+      "description": "",
+      "cable": {
+       "id": 5,
+       "url": "https://netbox.test/api/dcim/cables/5/",
+       "display": "#5",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "dcim.frontport",
+     "object_id": 1,
+     "object": {
+      "id": 1,
+      "url": "https://netbox.test/api/dcim/front-ports/1/",
+      "display": "F1",
+      "device": {
+       "id": 8,
+       "url": "https://netbox.test/api/dcim/devices/8/",
+       "display": "topo-pp-01",
+       "name": "topo-pp-01",
+       "description": ""
+      },
+      "name": "F1",
+      "description": "",
+      "cable": {
+       "id": 5,
+       "url": "https://netbox.test/api/dcim/cables/5/",
+       "display": "#5",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:35.607997Z",
+   "last_updated": "2026-11-15T19:57:35.664452Z"
+  },
+  {
+   "id": 6,
+   "url": "https://netbox.test/api/dcim/cables/6/",
+   "display_url": "https://netbox.test/dcim/cables/6/",
+   "display": "#6",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.rearport",
+     "object_id": 1,
+     "object": {
+      "id": 1,
+      "url": "https://netbox.test/api/dcim/rear-ports/1/",
+      "display": "R1",
+      "device": {
+       "id": 8,
+       "url": "https://netbox.test/api/dcim/devices/8/",
+       "display": "topo-pp-01",
+       "name": "topo-pp-01",
+       "description": ""
+      },
+      "name": "R1",
+      "description": "",
+      "cable": {
+       "id": 6,
+       "url": "https://netbox.test/api/dcim/cables/6/",
+       "display": "#6",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 16,
+     "object": {
+      "id": 16,
+      "url": "https://netbox.test/api/dcim/interfaces/16/",
+      "display": "Gi1/0/49",
+      "device": {
+       "id": 7,
+       "url": "https://netbox.test/api/dcim/devices/7/",
+       "display": "topo-acc-03",
+       "name": "topo-acc-03",
+       "description": ""
+      },
+      "name": "Gi1/0/49",
+      "description": "",
+      "cable": {
+       "id": 6,
+       "url": "https://netbox.test/api/dcim/cables/6/",
+       "display": "#6",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:35.976975Z",
+   "last_updated": "2026-11-15T19:57:36.061523Z"
+  },
+  {
+   "id": 7,
+   "url": "https://netbox.test/api/dcim/cables/7/",
+   "display_url": "https://netbox.test/dcim/cables/7/",
+   "display": "#7",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 17,
+     "object": {
+      "id": 17,
+      "url": "https://netbox.test/api/dcim/interfaces/17/",
+      "display": "eth0",
+      "device": {
+       "id": 9,
+       "url": "https://netbox.test/api/dcim/devices/9/",
+       "display": "topo-srv-01",
+       "name": "topo-srv-01",
+       "description": ""
+      },
+      "name": "eth0",
+      "description": "",
+      "cable": {
+       "id": 7,
+       "url": "https://netbox.test/api/dcim/cables/7/",
+       "display": "#7",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 18,
+     "object": {
+      "id": 18,
+      "url": "https://netbox.test/api/dcim/interfaces/18/",
+      "display": "Gi1/0/2",
+      "device": {
+       "id": 5,
+       "url": "https://netbox.test/api/dcim/devices/5/",
+       "display": "topo-acc-01",
+       "name": "topo-acc-01",
+       "description": ""
+      },
+      "name": "Gi1/0/2",
+      "description": "",
+      "cable": {
+       "id": 7,
+       "url": "https://netbox.test/api/dcim/cables/7/",
+       "display": "#7",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:36.613577Z",
+   "last_updated": "2026-11-15T19:57:36.691998Z"
+  },
+  {
+   "id": 8,
+   "url": "https://netbox.test/api/dcim/cables/8/",
+   "display_url": "https://netbox.test/dcim/cables/8/",
+   "display": "#8",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 19,
+     "object": {
+      "id": 19,
+      "url": "https://netbox.test/api/dcim/interfaces/19/",
+      "display": "Gi1/0/48",
+      "device": {
+       "id": 3,
+       "url": "https://netbox.test/api/dcim/devices/3/",
+       "display": "topo-core-01",
+       "name": "topo-core-01",
+       "description": ""
+      },
+      "name": "Gi1/0/48",
+      "description": "",
+      "cable": {
+       "id": 8,
+       "url": "https://netbox.test/api/dcim/cables/8/",
+       "display": "#8",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "circuits.circuittermination",
+     "object_id": 1,
+     "object": {
+      "id": 1,
+      "url": "https://netbox.test/api/circuits/circuit-terminations/1/",
+      "display": "CID-1001: Termination A",
+      "circuit": {
+       "id": 1,
+       "url": "https://netbox.test/api/circuits/circuits/1/",
+       "display": "CID-1001",
+       "cid": "CID-1001",
+       "provider": {
+        "id": 1,
+        "url": "https://netbox.test/api/circuits/providers/1/",
+        "display": "LabISP",
+        "name": "LabISP",
+        "slug": "labisp",
+        "description": ""
+       },
+       "description": ""
+      },
+      "term_side": "A",
+      "description": "",
+      "cable": {
+       "id": 8,
+       "url": "https://netbox.test/api/dcim/cables/8/",
+       "display": "#8",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:36.928987Z",
+   "last_updated": "2026-11-15T19:57:36.997767Z"
+  },
+  {
+   "id": 9,
+   "url": "https://netbox.test/api/dcim/cables/9/",
+   "display_url": "https://netbox.test/dcim/cables/9/",
+   "display": "#9",
+   "type": null,
+   "a_terminations": [
+    {
+     "object_type": "dcim.interface",
+     "object_id": 20,
+     "object": {
+      "id": 20,
+      "url": "https://netbox.test/api/dcim/interfaces/20/",
+      "display": "Gi1/0/48",
+      "device": {
+       "id": 10,
+       "url": "https://netbox.test/api/dcim/devices/10/",
+       "display": "topo-br-sw-01",
+       "name": "topo-br-sw-01",
+       "description": ""
+      },
+      "name": "Gi1/0/48",
+      "description": "",
+      "cable": {
+       "id": 9,
+       "url": "https://netbox.test/api/dcim/cables/9/",
+       "display": "#9",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "b_terminations": [
+    {
+     "object_type": "circuits.circuittermination",
+     "object_id": 2,
+     "object": {
+      "id": 2,
+      "url": "https://netbox.test/api/circuits/circuit-terminations/2/",
+      "display": "CID-1001: Termination Z",
+      "circuit": {
+       "id": 1,
+       "url": "https://netbox.test/api/circuits/circuits/1/",
+       "display": "CID-1001",
+       "cid": "CID-1001",
+       "provider": {
+        "id": 1,
+        "url": "https://netbox.test/api/circuits/providers/1/",
+        "display": "LabISP",
+        "name": "LabISP",
+        "slug": "labisp",
+        "description": ""
+       },
+       "description": ""
+      },
+      "term_side": "Z",
+      "description": "",
+      "cable": {
+       "id": 9,
+       "url": "https://netbox.test/api/dcim/cables/9/",
+       "display": "#9",
+       "label": "",
+       "description": ""
+      },
+      "_occupied": true
+     }
+    }
+   ],
+   "status": {
+    "value": "connected",
+    "label": "Connected"
+   },
+   "profile": null,
+   "tenant": null,
+   "bundle": null,
+   "label": "",
+   "color": "",
+   "length": null,
+   "length_unit": null,
+   "description": "",
+   "owner": null,
+   "comments": "",
+   "tags": [],
+   "custom_fields": {},
+   "created": "2026-11-15T19:57:37.318235Z",
+   "last_updated": "2026-11-15T19:57:37.454101Z"
+  }
+ ]
+}

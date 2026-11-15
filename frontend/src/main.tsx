@@ -19,7 +19,6 @@ import { LoginRedirect, SignOutPage } from "@/pages/session-routes";
 import { NetworksPage } from "@/pages/networks";
 import { AutomationPage } from "@/pages/changes";
 import { ChangeDetailPage } from "@/pages/changes/detail";
-import { TopologyPage } from "@/pages/planned";
 import { ServersPage } from "@/pages/servers";
 import { ServerDetailPage } from "@/pages/servers/detail";
 import { SettingsPage } from "@/pages/settings";
@@ -27,6 +26,8 @@ import { VLANsPage } from "@/pages/vlans";
 import "./index.css";
 
 // Recharts is the heaviest dependency; only the overview needs it.
+// Loaded when opened: the map brings React Flow and the ELK layout engine.
+const TopologyPage = lazy(() => import("@/pages/topology").then((m) => ({ default: m.TopologyPage })));
 const OverviewPage = lazy(() => import("@/pages/overview").then((m) => ({ default: m.OverviewPage })));
 
 const queryClient = new QueryClient({
@@ -57,7 +58,7 @@ const router = createBrowserRouter([
       { path: "devices/:id", element: <DeviceDetailPage /> },
       { path: "servers", element: <ServersPage /> },
       { path: "servers/:id", element: <ServerDetailPage /> },
-      { path: "topology", element: <TopologyPage /> },
+      { path: "topology", element: <Suspense fallback={<Skeleton className="h-96 w-full" />}><TopologyPage /></Suspense> },
       { path: "automation", element: <AutomationPage /> },
       { path: "changes/:id", element: <ChangeDetailPage /> },
       { path: "activity", element: <ActivityPage /> },

@@ -52,7 +52,7 @@ const NAV: NavItem[][] = [
     { to: "/core/", label: "Lanvex Core", icon: Boxes, page: true, core: true },
   ],
   [
-    { to: "/topology", label: "Topology", icon: Share2, later: true },
+    { to: "/topology", label: "Topology", icon: Share2 },
     { to: "/automation", label: "Automation", icon: Workflow, also: "/changes/" },
     { to: "/activity", label: "Activity & Audit Logs", icon: Activity },
   ],

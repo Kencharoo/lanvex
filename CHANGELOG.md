@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 — 2026-11-15
+
+- **Topology.** The map of your network that was a placeholder until now: devices, sites, provider
+  circuits and the cables between them, as documented in Lanvex Core or NetBox.
+  - Layout by role: circuits on top, then core, distribution, access, patch panels, servers and other
+    end devices. Cables between devices of the same rank are drawn side by side; servers and other
+    devices on a single cable are stacked under their switch, so large sites stay compact.
+  - One site or all sites (each in its own frame); devices at the far end of a cable from another site
+    are shown and marked.
+  - Search, a details panel with every cable of a device, links to the device, its server in Lanvex
+    and its page in Lanvex Core, and a cable list for reading everything as a table.
+  - Planned cables are dashed; devices Lanvex reads over SSH are marked.
+  - Fast with hundreds of devices: the layout runs in the background, and the map's code loads only when
+    the page is opened.
+- With your own NetBox, the token needs *view* on cables for the map (docs/operations.md).
+
 ## 0.4.2 — 2026-11-14
 
 - **Fix:** 0.4.1's new health check reported Lanvex Core *healthy* while it was still setting up its

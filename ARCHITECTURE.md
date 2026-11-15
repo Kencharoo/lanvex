@@ -30,6 +30,7 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 | `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; others plug in the same way | Run arbitrary commands |
 | `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state, comparison with NetBox | Write to servers |
 | `backend/lanvex/core_proxy.py` | Serves Lanvex Core at `/core/` to signed-in users: checks the Lanvex session, sends who they are and their role with the shared proxy secret, strips anything the browser sent under those names, serves Lanvex Core's static files | Let anyone without a Lanvex session through; forward `Authorization` or Lanvex's session cookie |
+| `backend/lanvex/topology` | The topology map's data: devices and circuits as nodes, documented cables as links, one site or all, Lanvex servers marked | Claim a cable exists because it is drawn: links are documented state |
 | `backend/lanvex/changes` | Server changes: preparation and safety rules, approval, the runner that applies, verifies, confirms or rolls back | Change anything without an approved, previewed change |
 
 ## Three states, kept separate

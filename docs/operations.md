@@ -53,6 +53,7 @@ every start. For your own NetBox, create a user (for example `lanvex`) and grant
 | Extras: tags | view, add (Lanvex creates the `lanvex-gateway` tag once) |
 | IPAM: VRFs, roles, VLAN groups, IP ranges; DCIM: devices, sites, device roles, manufacturers; Tenancy: tenants | view |
 | Core: object changes | view (optional, for the overview's change feed) |
+| DCIM: cables | view (optional, for the topology map) |
 | Virtualization: virtual machines | view (optional, to link servers to VMs) |
 
 A read-only token works too; write actions then fail with NetBox's permission message, and Lanvex

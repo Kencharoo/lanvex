@@ -487,3 +487,45 @@ export interface HelperInstall {
   sha256: string;
   commands: string[];
 }
+
+/** Network topology: documented devices and circuits as nodes, documented cables as links. */
+export type TopologyNodeKind = "device" | "circuit";
+export type TopologyLinkKind = "data" | "patch" | "console" | "power" | "circuit";
+export interface TopologyNode {
+  id: string;
+  kind: TopologyNodeKind;
+  object_id: number;
+  name: string;
+  role: Ref | null;
+  color: string | null;
+  site: Ref | null;
+  status: Choice | null;
+  device_type: string | null;
+  primary_ip: string | null;
+  provider: string | null;
+  external: boolean;
+  server_id: string | null;
+  netbox_url: string | null;
+}
+export interface TopologyLink {
+  id: string;
+  cable_id: number;
+  a: string;
+  b: string;
+  a_ports: string[];
+  b_ports: string[];
+  kind: TopologyLinkKind;
+  status: Choice | null;
+  type: string | null;
+  label: string;
+  color: string | null;
+  netbox_url: string | null;
+}
+export interface Topology {
+  nodes: TopologyNode[];
+  links: TopologyLink[];
+  sites: Ref[];
+  site_id: number | null;
+  truncated: boolean;
+  skipped_cables: number;
+}

@@ -1,8 +1,18 @@
-# Status of Lanvex 0.4.2
+# Status of Lanvex 0.5.0
 
-Last updated 2026-11-14. "Verified" means it was run, not just written.
+Last updated 2026-11-15. "Verified" means it was run, not just written.
 
 ## Verified
+
+### Topology (new in 0.5)
+
+| What | How |
+|---|---|
+| Real NetBox data | The API is tested against responses captured from NetBox 4.7.5 (Lanvex Core) with a sample network: two sites, core and access switches, a patch panel with front and rear ports, a server, an unconnected switch, a planned cable and a provider circuit between the sites (8 tests). The map was checked in the browser against that Lanvex Core, light and dark, and on a phone |
+| Layout rules | Role ranking, cable direction, side-by-side cables between peers, which end devices are stacked and that devices from another site never are (6 unit tests) |
+| In the browser | Devices, site frames, the circuit and all cables drawn; details panel and following a cable to its other end; search; the cable list; one site with the device at the far end of a cable shown as another site (2 browser tests against the stand-in) |
+| Size | A synthetic campus of 296 devices and 349 cables is arranged and drawn in about 1.5 seconds and stays at 60 frames per second |
+| Permissions | With Lanvex Core, the service account reads cables; with your own NetBox, the token needs *view* on cables (docs/operations.md) |
 
 ### Full installation, automatically on every push (GitHub Actions)
 
@@ -85,8 +95,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 249 tests: 229 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 12 SSH lab (5 reading, 7 changes). The lab tests were last run for 0.3; 0.4 changes server code only where links to NetBox are built, which unit tests cover |
-| Frontend | Type check, 16 unit tests, production build; 8 Playwright tests in Chrome (2 against the lab, 1 against Lanvex Core) |
+| Backend | 257 tests: 237 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 12 SSH lab (5 reading, 7 changes). The lab tests were last run for 0.3; 0.4 changes server code only where links to NetBox are built, which unit tests cover |
+| Frontend | Type check, 22 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, 1 against Lanvex Core) |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
 ## Not verified yet
@@ -110,7 +120,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 - **More kinds of server change.** Creating VLAN interfaces, bonds and bridges; IPv6; static routes;
   changes on ifupdown servers. Updating NetBox after a successful change (today a separate step).
 - Scheduled reads of servers (today reads happen on request).
-- Topology, discovery, drift reconciliation, deployment wizard, configuration history, monitoring.
+- Discovery, drift reconciliation, deployment wizard, configuration history, monitoring.
 - Editing prefix tenant/scope and IP tenant/role/NAT; device and interface creation.
 
 ## Known limitations

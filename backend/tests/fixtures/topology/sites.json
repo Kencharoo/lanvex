@@ -1,0 +1,23 @@
+{
+ "count": 2,
+ "next": null,
+ "previous": null,
+ "results": [
+  {
+   "id": 4,
+   "url": "https://netbox.test/api/dcim/sites/4/",
+   "display": "Topo Branch",
+   "name": "Topo Branch",
+   "slug": "topo-branch",
+   "description": ""
+  },
+  {
+   "id": 3,
+   "url": "https://netbox.test/api/dcim/sites/3/",
+   "display": "Topo Lab",
+   "name": "Topo Lab",
+   "slug": "topo-lab",
+   "description": ""
+  }
+ ]
+}

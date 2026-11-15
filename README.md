@@ -11,7 +11,7 @@ API and never touches their database. Changes to networks, IP addresses and VLAN
 real is a Linux server's interface addresses, gateway and DNS, and only when an administrator has
 switched that on, previewed the change and approved it; see below.
 
-## What works in 0.4
+## What works in 0.5
 
 | Area | Capability |
 |---|---|
@@ -22,18 +22,18 @@ switched that on, previewed the change and approved it; see below.
 | Servers | Register Ubuntu Server, Debian and Fedora Server hosts over SSH with a verified, pinned host key and a key Lanvex generates; read interfaces, addresses, routes, DNS and which network stack (netplan/systemd-networkd, NetworkManager, ifupdown) manages what; compare with the addresses NetBox documents for the linked device or VM |
 | Server changes | Change one interface's IPv4 addresses (or DHCP), default gateway and DNS on netplan and NetworkManager servers. Previewed by a helper on the server, approved by an administrator (optionally a second one), applied behind a rollback timer the server arms itself, verified over a new SSH connection, and confirmed or rolled back automatically. Off by default: see [docs/changes.md](docs/changes.md) |
 | Lanvex Core | NetBox 4.7.5 with Lanvex's look, installed and set up by the installer: sites, racks, devices, cables, circuits, virtualization and the rest of NetBox's model, at `/core/` with Lanvex's sign-in. Administrators edit, read-only users look. See [docs/core.md](docs/core.md) |
+| Topology | Interactive map of devices, sites, provider circuits and the cables between them, as documented: role-ranked layout (core above access above servers), servers stacked under their switch, search, a details panel with every cable, devices read by Lanvex marked, and a cable list. Stays fast with hundreds of devices |
 | Overview | Inventory counts, most-utilized networks, addresses by status, recent changes (NetBox change log, falling back to the Lanvex audit log) |
 | Platform | Local users with admin / read-only roles, server-side sessions, CSRF, rate limiting, append-only audit log, light and dark themes, NetBox connection checks |
 
-**Automation** lists every server change with its status. **Topology** appears as planned and says
-what it needs before it ships. Lanvex does not configure routers, switches or DHCP services.
+**Automation** lists every server change with its status. Lanvex does not configure routers, switches or DHCP services.
 
 ## Installation
 
 You need a Linux server with Docker and Docker Compose v2.
 
 ```bash
-unzip lanvex-0.4.2.zip && cd lanvex-0.4.2
+unzip lanvex-0.5.0.zip && cd lanvex-0.5.0
 sudo ./install.sh
 ```
 
