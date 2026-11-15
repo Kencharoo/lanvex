@@ -176,13 +176,30 @@ async def test_host_key_change_is_refused_until_repinned(api: httpx.AsyncClient)
     assert ok(await api.post(f"/api/v1/servers/{sid}/test"))["status"] == "ok"
 
 
-async def test_snapshot_retention(api: httpx.AsyncClient, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+async def test_unchanged_reads_confirm_changed_reads_are_kept(api: httpx.AsyncClient, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Reads of a real host that did not change are recognised as the same state; changes are kept,
+    up to the retention limit, and described in the history."""
     monkeypatch.setattr(get_settings(), "server_snapshot_retention", 2)
     s = await register(api, "lab-ifup")
     authorize("lab-ifup", s["authorized_keys_line"])
-    ids = [ok(await api.post(f"/api/v1/servers/{s['id']}/collect"))["id"] for _ in range(3)]
+
+    same = [ok(await api.post(f"/api/v1/servers/{s['id']}/collect"))["id"] for _ in range(3)]
+    assert len(set(same)) == 1
+    snaps = ok(await api.get(f"/api/v1/servers/{s['id']}/snapshots"))
+    assert [x["id"] for x in snaps] == [same[0]] and snaps[0]["reads"] == 3
+
+    try:
+        sh("lab-ifup", "ip address add 192.0.2.201/32 dev lo")
+        added = ok(await api.post(f"/api/v1/servers/{s['id']}/collect"))["id"]
+        sh("lab-ifup", "ip address add 192.0.2.202/32 dev lo")
+        added2 = ok(await api.post(f"/api/v1/servers/{s['id']}/collect"))["id"]
+    finally:
+        sh("lab-ifup", "ip address del 192.0.2.201/32 dev lo; ip address del 192.0.2.202/32 dev lo; true")
     kept = [x["id"] for x in ok(await api.get(f"/api/v1/servers/{s['id']}/snapshots"))]
-    assert kept == [ids[2], ids[1]]
+    assert kept == [added2, added]  # the oldest state fell out of the retention limit
+
+    history = ok(await api.get(f"/api/v1/servers/{s['id']}/history"))
+    assert [c["text"] for c in history[0]["changes"]] == ["lo: address 192.0.2.202/32 added"]
 
 
 @pytest.mark.skipif(not (NB_URL and NB_ADMIN), reason="live NetBox variables not set")

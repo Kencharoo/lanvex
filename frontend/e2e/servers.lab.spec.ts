@@ -56,6 +56,13 @@ test("add a server, verify its host key, read it, and refuse a changed key", asy
   await page.getByRole("button", { name: "Read now" }).click();
   await expect(page.getByText("Read the server's network state")).toBeVisible();
 
+  // History: the first state, the refused read, and the same state again once the key was trusted.
+  const history = page.locator("section", { has: page.getByRole("heading", { name: "History" }) }).last();
+  await expect(history.getByText("Readable again; nothing changed since the last successful read.")).toBeVisible();
+  await expect(history.getByText("Host key changed", { exact: true })).toBeVisible();
+  await expect(history.getByText("The oldest state kept.")).toBeVisible();
+  await expect(history.getByText("read by e2e-admin")).toHaveCount(3);
+
   await page.getByRole("button", { name: "Server actions" }).click();
   await page.getByRole("menuitem", { name: "Remove server" }).click();
   await page.getByLabel(`Type ${name} to confirm`).fill(name);

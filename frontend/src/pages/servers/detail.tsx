@@ -14,7 +14,7 @@ import { useSession } from "@/app/session";
 import { ChangesSection } from "./changes-section";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
-import type { Comparison, ComparisonRow, HostFacts, HostInterface, HostKeyScan, HostRoute, NetBoxRef, Server, Snapshot, SnapshotMeta } from "@/lib/types";
+import type { Comparison, ComparisonRow, HostFacts, HostInterface, HostKeyScan, HistoryEntry, HostRoute, NetBoxRef, Server, Snapshot } from "@/lib/types";
 import { absoluteTime, cn, relativeTime } from "@/lib/utils";
 import {
   ConnectionBadge,
@@ -40,7 +40,6 @@ export function ServerDetailPage() {
 
   const server = useQuery({ queryKey: ["servers", id], queryFn: () => api<Server>(`/servers/${id}`) });
   const latest = useQuery({ queryKey: ["servers", id, "latest"], queryFn: () => api<Snapshot | null>(`/servers/${id}/snapshots/latest`) });
-  const history = useQuery({ queryKey: ["servers", id, "history"], queryFn: () => api<SnapshotMeta[]>(`/servers/${id}/snapshots`) });
   const comparison = useQuery({
     queryKey: ["servers", id, "comparison"],
     queryFn: () => api<Comparison>(`/servers/${id}/comparison`),
@@ -179,7 +178,7 @@ export function ServerDetailPage() {
       {s && (
         <div className="mt-8 grid gap-8 lg:grid-cols-2">
           <AccessSection server={s} />
-          <HistorySection rows={history.data} loading={history.isPending} />
+          <HistorySection server={s} isAdmin={isAdmin} />
         </div>
       )}
 
@@ -596,16 +595,114 @@ function AccessSection({ server: s }: { server: Server }) {
   );
 }
 
-function HistorySection({ rows, loading }: { rows: SnapshotMeta[] | undefined; loading: boolean }) {
-  const columns: Column<SnapshotMeta>[] = [
-    { key: "t", header: "When", cell: (r) => <span title={absoluteTime(r.taken_at)}>{relativeTime(r.taken_at)}</span> },
-    { key: "s", header: "Result", cell: (r) => <ConnectionBadge status={r.status} /> },
-    { key: "d", header: "Took", cell: (r) => (r.duration_ms != null ? `${r.duration_ms} ms` : "—"), className: "tabular-nums text-muted" },
-    { key: "b", header: "By", cell: (r) => r.requested_by ?? "—", className: "text-muted" },
-  ];
+const INTERVALS: [string, string][] = [
+  ["", "Default"],
+  ["15", "Every 15 minutes"],
+  ["60", "Every hour"],
+  ["360", "Every 6 hours"],
+  ["1440", "Once a day"],
+  ["0", "Off"],
+];
+
+function every(minutes: number): string {
+  if (minutes % 1440 === 0) return minutes === 1440 ? "once a day" : `every ${minutes / 1440} days`;
+  if (minutes % 60 === 0) return minutes === 60 ? "every hour" : `every ${minutes / 60} hours`;
+  return `every ${minutes} minutes`;
+}
+
+function readBy(by: string | null): string {
+  if (by === "(schedule)") return "scheduled read";
+  return by ? `read by ${by}` : "read by Lanvex";
+}
+
+/** The server's states over time: each one is what a read found that differed from before. */
+function HistorySection({ server: s, isAdmin }: { server: Server; isAdmin: boolean }) {
+  const qc = useQueryClient();
+  const history = useQuery({ queryKey: ["servers", s.id, "history"], queryFn: () => api<HistoryEntry[]>(`/servers/${s.id}/history`) });
+  const schedule = useMutation({
+    mutationFn: (value: string) =>
+      api<Server>(`/servers/${s.id}`, { method: "PATCH", body: { read_interval_minutes: value === "" ? null : Number(value) } }),
+    onSuccess: () => {
+      toast.success("Schedule saved");
+      void qc.invalidateQueries({ queryKey: ["servers"] });
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+  const description = s.read_interval
+    ? `Read automatically ${every(s.read_interval)}${s.next_read_at ? `, next ${relativeTime(s.next_read_at)}` : ""}. Reads that find nothing new are not listed again.`
+    : "Not read on a schedule: only when someone chooses Read now. Reads that find nothing new are not listed again.";
+  const current = s.read_interval_minutes === null ? "" : String(s.read_interval_minutes);
   return (
-    <Section title="Reads" description="Each read is kept as a snapshot; older ones are pruned.">
-      <DataTable dense columns={columns} rows={rows} rowKey={(r) => r.id} loading={loading} empty={<p className="p-4 text-[13px] text-muted">Not read yet.</p>} />
+    <Section
+      title="History"
+      description={description}
+      actions={
+        isAdmin && (
+          <Select
+            aria-label="Read automatically"
+            className="w-auto"
+            value={INTERVALS.some(([v]) => v === current) ? current : "custom"}
+            disabled={schedule.isPending}
+            onChange={(e) => schedule.mutate(e.target.value)}
+          >
+            {!INTERVALS.some(([v]) => v === current) && <option value="custom">{every(s.read_interval)}</option>}
+            {INTERVALS.map(([v, label]) => (
+              <option key={v} value={v}>
+                {v === "" ? `Default (${s.read_interval_minutes === null && s.read_interval ? every(s.read_interval) : "installation setting"})` : label}
+              </option>
+            ))}
+          </Select>
+        )
+      }
+    >
+      {history.isPending ? (
+        <Skeleton className="h-24 w-full" />
+      ) : !history.data?.length ? (
+        <p className="text-[13px] text-muted">Not read yet.</p>
+      ) : (
+        <ol className="grid gap-0 rounded-[var(--radius-panel)] border border-line bg-surface">
+          {history.data.map((h) => (
+            <li key={h.snapshot_id} className="grid gap-1.5 border-b border-line px-4 py-3 last:border-b-0">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[13px]">
+                <span className="font-medium" title={absoluteTime(h.taken_at)}>
+                  {absoluteTime(h.taken_at)}
+                </span>
+                {h.status !== "ok" && <ConnectionBadge status={h.status} />}
+                <span className="text-muted">{readBy(h.requested_by)}</span>
+              </div>
+              {h.status !== "ok" ? (
+                <p className="text-[13px] text-muted">{h.message ?? "Could not be read."}</p>
+              ) : h.first ? (
+                <p className="text-[13px] text-muted">The oldest state kept.</p>
+              ) : h.changes.length === 0 ? (
+                <p className="text-[13px] text-muted">Readable again; nothing changed since the last successful read.</p>
+              ) : (
+                <ul className="grid gap-0.5 text-[13px]">
+                  {h.changes.map((c, i) => (
+                    <li key={i} className="flex items-baseline gap-2">
+                      <span
+                        aria-label={c.kind}
+                        className={cn(
+                          "w-3 shrink-0 text-center font-semibold",
+                          c.kind === "added" ? "text-ok" : c.kind === "removed" ? "text-danger" : "text-warn",
+                        )}
+                      >
+                        {c.kind === "added" ? "+" : c.kind === "removed" ? "−" : "~"}
+                      </span>
+                      <span>{c.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {h.confirmed_at && h.reads > 1 && (
+                <p className="text-[12px] text-muted" title={absoluteTime(h.confirmed_at)}>
+                  Same {h.status === "ok" ? "state" : "result"} on {h.reads} reads, the last one {relativeTime(h.confirmed_at)}.
+                </p>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
     </Section>
   );
 }

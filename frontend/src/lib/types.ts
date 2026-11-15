@@ -271,6 +271,9 @@ export interface Server {
   os_supported: boolean | null;
   network_stack: string | null;
   changes_enabled: boolean;
+  read_interval_minutes: number | null;
+  read_interval: number;
+  next_read_at: string | null;
   created_at: string;
 }
 
@@ -351,6 +354,21 @@ export interface SnapshotMeta {
   message: string | null;
   duration_ms: number | null;
   requested_by: string | null;
+  confirmed_at: string | null;
+  reads: number;
+}
+
+/** One state of a server and what differed from the readable state before it. */
+export interface HistoryEntry {
+  snapshot_id: string;
+  taken_at: string;
+  confirmed_at: string | null;
+  reads: number;
+  status: ConnectionStatus;
+  message: string | null;
+  requested_by: string | null;
+  first: boolean;
+  changes: { kind: "added" | "removed" | "changed"; text: string }[];
 }
 
 export interface Snapshot extends SnapshotMeta {

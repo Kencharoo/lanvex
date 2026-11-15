@@ -55,7 +55,10 @@ def reset(host: str) -> None:
     sh(host, "systemctl stop 'lanvex-rollback-*.timer' 2>/dev/null; rm -rf /var/lib/lanvex/changes; true")
     if host == "lab-netplan":
         docker("cp", str(LAB / "netplan-networkd" / "50-lab.yaml"), "lab-netplan:/etc/netplan/50-lab.yaml")
-        sh(host, "chmod 600 /etc/netplan/50-lab.yaml && netplan apply")
+        sh(
+            host,
+            "chown root:root /etc/netplan/50-lab.yaml && chmod 600 /etc/netplan/50-lab.yaml && netplan apply",
+        )
     else:
         for name in ("eth0.nmconnection", "eth1.nmconnection"):
             docker(
@@ -65,7 +68,8 @@ def reset(host: str) -> None:
             )
         sh(
             host,
-            "rm -f /etc/netplan/90-NM-*.yaml; chmod 600 /etc/NetworkManager/system-connections/*; "
+            "rm -f /etc/netplan/90-NM-*.yaml; chown root:root /etc/NetworkManager/system-connections/*; "
+            "chmod 600 /etc/NetworkManager/system-connections/*; "
             "nmcli connection reload && nmcli connection up storage >/dev/null && nmcli device reapply eth0",
         )
 
