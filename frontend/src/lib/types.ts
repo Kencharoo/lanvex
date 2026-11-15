@@ -335,6 +335,8 @@ export interface HostFacts {
   };
   interfaces: HostInterface[];
   routes: HostRoute[];
+  neighbors?: { address: string; family: 4 | 6; interface: string; mac: string | null; state: string; router: boolean }[];
+  lldp?: LldpNeighbor[];
   dns: {
     resolv_conf_servers: string[];
     resolv_conf_search: string[];
@@ -396,6 +398,69 @@ export interface RecordAction {
 /** NetBox writes that make the documentation match the server's last read (preview or result). */
 export interface RecordPlan {
   target: NetBoxRef;
+  actions: RecordAction[];
+  token: string;
+  applied: boolean;
+  done: RecordAction[];
+  failed: RecordAction | null;
+  error: string | null;
+}
+
+/** Hosts in servers' neighbour tables, and LLDP links (discovery). */
+export interface DiscoveredHost {
+  address: string;
+  family: 4 | 6;
+  mac: string | null;
+  router: boolean;
+  first_seen: string;
+  last_seen: string;
+  seen_by: { server_id: string; server_name: string; interface: string; mac: string | null; last_seen: string }[];
+  server: string | null;
+  server_id: string | null;
+  netbox: { id: number; address: string; assigned_to: string | null; url: string | null } | null;
+  record_as: string | null;
+}
+
+export interface DiscoveredHosts {
+  hosts: DiscoveredHost[];
+  total: number;
+  undocumented: number;
+  netbox_checked: boolean;
+}
+
+export interface LldpNeighbor {
+  interface: string;
+  source: "lldpd" | "networkd";
+  chassis_id: string | null;
+  system_name: string | null;
+  system_description: string | null;
+  port_id: string | null;
+  port_description: string | null;
+  management_addresses: string[];
+  capabilities: string[];
+}
+
+export interface DiscoveredLink {
+  key: string;
+  server_id: string;
+  server_name: string;
+  interface: string;
+  neighbor: LldpNeighbor;
+  seen_at: string;
+  status: "documented" | "different" | "undocumented" | "several" | "not_linked" | "virtual";
+  documented: string | null;
+  peer: string | null;
+  problem: string | null;
+}
+
+export interface DiscoveredLinks {
+  links: DiscoveredLink[];
+  servers_read: number;
+  servers_without_lldp: string[];
+}
+
+/** A preview of NetBox writes, or their result (discovery). */
+export interface WritePlan {
   actions: RecordAction[];
   token: string;
   applied: boolean;

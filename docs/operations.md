@@ -53,7 +53,7 @@ every start. For your own NetBox, create a user (for example `lanvex`) and grant
 | Extras: tags | view, add (Lanvex creates the `lanvex-gateway` tag once) |
 | IPAM: VRFs, roles, VLAN groups, IP ranges; DCIM: devices, sites, device roles, manufacturers; Tenancy: tenants | view |
 | Core: object changes | view (optional, for the overview's change feed) |
-| DCIM: cables | view (optional, for the topology map) |
+| DCIM: cables | view (optional, for the topology map); add (optional, recording a cable seen over LLDP) |
 | Virtualization: virtual machines, interfaces | view (optional, to link servers to VMs); add interfaces (optional, as for devices) |
 
 A read-only token works too; write actions then fail with NetBox's permission message, and Lanvex
@@ -80,12 +80,35 @@ can be set to 15 minutes to daily, or off, on its page). The server page's **His
 state the server was found in and what changed, in words: addresses, links, MTU, gateway, routes,
 DNS. A read that finds the same state is counted, not stored again; failed reads are listed too.
 
-The commands Lanvex runs to read a server are fixed and read-only: `ip -json` (addresses, routes), `cat` of
-`/etc/os-release`, `/etc/resolv.conf` and `/etc/network/interfaces[.d]`, `systemctl is-active`,
-`ls /etc/netplan`, and `nmcli`/`networkctl`/`resolvectl` status when those services run. The
+The commands Lanvex runs to read a server are fixed and read-only: `ip -json` (addresses, routes,
+neighbours), `cat` of `/etc/os-release`, `/etc/resolv.conf` and `/etc/network/interfaces[.d]`,
+`systemctl is-active`, `ls /etc/netplan`, and `nmcli`/`networkctl`/`resolvectl`/`lldpcli` status when
+those services run. The
 contents of `/etc/network/interfaces` are parsed but not stored, since they can contain secrets.
 For changes, the only other command is `sudo -n /usr/local/libexec/lanvex/lanvex-netapply
 <plan|apply|verify|confirm|rollback|status|version>`, with a JSON request on standard input.
+
+## Discovery
+
+Every read also notes what the server sees around it. **Discovery** lists it, compared with NetBox:
+
+- **Hosts seen**: the server's neighbour table (`ip neigh`: hosts it exchanged packets with recently).
+  Kept for `LANVEX_DISCOVERY_RETENTION_DAYS` after they were last seen. Hosts NetBox lacks can be
+  recorded as unassigned IP addresses, after a preview. A Lanvex server's own address is recorded from
+  its server page instead, where it is assigned to the right interface.
+- **Connections seen over LLDP**: what the switch (or other device) on each interface announces, compared
+  with the cable NetBox documents there (through patch panels, the far end). A missing cable can be
+  recorded when both interfaces exist in NetBox and neither has a cable. An interface that hears more
+  than one device is a shared segment and gets no cable.
+
+LLDP needs a receiver on the server. Either:
+
+- **systemd-networkd** (Ubuntu Server with netplan): receives LLDP from switches and routers by default,
+  and anyone may read it. Nothing to do.
+- **lldpd**: `apt install lldpd` (or `dnf install lldpd`). Lanvex asks it with `lldpcli`, which only
+  members of one group may run (`stat -c %G /usr/sbin/lldpcli`; `adm` on Debian and Ubuntu):
+  `sudo usermod -aG adm lanvex`. Note that `adm` also lets the account read system logs. Without it,
+  the server page says that lldpd runs but Lanvex may not ask it.
 
 ## Users
 

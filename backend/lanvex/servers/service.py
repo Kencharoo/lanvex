@@ -11,6 +11,7 @@ from typing import Any
 
 import asyncssh
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lanvex.auth.models import User
@@ -24,7 +25,13 @@ from lanvex.integrations.linux.facts import HostFacts
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.history import HistoryChange, fingerprint
 from lanvex.servers.history import changes as history_changes
-from lanvex.servers.models import AuthMethod, ConnectionStatus, Server, ServerSnapshot
+from lanvex.servers.models import (
+    AuthMethod,
+    ConnectionStatus,
+    DiscoveredAddress,
+    Server,
+    ServerSnapshot,
+)
 from lanvex.servers.record import Recorder, RecordPlan, check_addresses
 from lanvex.servers.schemas import (
     Comparison,
@@ -371,6 +378,7 @@ class ServerService:
             s.os_pretty_name = c.facts.system.os.pretty_name
             s.os_supported = c.facts.system.os.supported
             s.network_stack = c.facts.stack.primary
+            await self._remember_neighbors(s, c.facts)
         snap.fingerprint = fingerprint(snap.facts) if snap.facts else None
         latest = await self.db.scalar(
             select(ServerSnapshot)
@@ -392,6 +400,43 @@ class ServerService:
         await self.db.flush()
         await self._prune(s.id)
         return snap
+
+    async def _remember_neighbors(self, s: Server, facts: HostFacts) -> None:
+        """Keep the hosts in the server's neighbour table for discovery, and forget old ones."""
+        now = datetime.now(UTC)
+        rows = {
+            n.address: {
+                "id": uuid.uuid4(),
+                "server_id": s.id,
+                "address": n.address,
+                "family": n.family,
+                "interface": n.interface,
+                "mac": n.mac,
+                "router": n.router,
+                "first_seen": now,
+                "last_seen": now,
+            }
+            for n in facts.neighbors
+        }
+        if rows:
+            stmt = pg_insert(DiscoveredAddress).values(list(rows.values()))
+            await self.db.execute(
+                stmt.on_conflict_do_update(
+                    constraint="uq_discovered_addresses_server_address",
+                    set_={
+                        "interface": stmt.excluded.interface,
+                        "mac": stmt.excluded.mac,
+                        "router": stmt.excluded.router,
+                        "last_seen": stmt.excluded.last_seen,
+                    },
+                )
+            )
+        await self.db.execute(
+            delete(DiscoveredAddress).where(
+                DiscoveredAddress.server_id == s.id,
+                DiscoveredAddress.last_seen < now - timedelta(days=self.settings.discovery_retention_days),
+            )
+        )
 
     async def history(self, server_id: uuid.UUID, limit: int = 100) -> list[HistoryEntry]:
         """Newest first: each kept state and what differed from the readable state before it."""

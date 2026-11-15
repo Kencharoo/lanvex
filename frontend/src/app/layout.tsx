@@ -11,6 +11,7 @@ import {
   Network,
   Server,
   Settings,
+  Radar,
   Share2,
   Sun,
   SunMoon,
@@ -53,6 +54,7 @@ const NAV: NavItem[][] = [
   ],
   [
     { to: "/topology", label: "Topology", icon: Share2 },
+    { to: "/discovery", label: "Discovery", icon: Radar },
     { to: "/automation", label: "Automation", icon: Workflow, also: "/changes/" },
     { to: "/activity", label: "Activity & Audit Logs", icon: Activity },
   ],

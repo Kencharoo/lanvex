@@ -5,7 +5,14 @@ from datetime import UTC, datetime
 
 from lanvex.integrations.linux import parsers as P
 from lanvex.integrations.linux.commands import Cmd
-from lanvex.integrations.linux.facts import DNSInfo, HostFacts, Interface, NetworkStack, SystemInfo
+from lanvex.integrations.linux.facts import (
+    DNSInfo,
+    HostFacts,
+    Interface,
+    LldpNeighbor,
+    NetworkStack,
+    SystemInfo,
+)
 
 RESOLVED_STUB = "127.0.0.53"
 
@@ -167,6 +174,13 @@ def assemble(results: Results) -> HostFacts:
             warnings.append(
                 f"Several IPv{fam} default routes with the same metric; traffic may not take the path you expect."
             )
+    try:
+        neighbors = P.parse_neighbors(_out(results, Cmd.NEIGHBORS))
+    except ValueError:
+        neighbors = []
+        warnings.append("Neighbour data was not valid JSON.")
+    lldp = _lldp(results, warnings)
+
     if not os_info.supported:
         warnings.append(os_info.support_note)
     if stack.key == "unknown":
@@ -184,5 +198,29 @@ def assemble(results: Results) -> HostFacts:
         routes=routes,
         dns=dns,
         stack=stack,
+        neighbors=neighbors,
+        lldp=lldp,
         warnings=warnings,
     )
+
+
+def _lldp(results: Results, warnings: list[str]) -> list[LldpNeighbor]:
+    """LLDP neighbours from lldpd and systemd-networkd, whichever run. lldpd's are more detailed, so
+    when both saw the same neighbour on the same interface, lldpd's entry is kept."""
+    found: list[LldpNeighbor] = []
+    r = results.get(Cmd.LLDPCLI_NEIGHBORS)
+    if r is not None:
+        if r.ok:
+            found += P.parse_lldpcli(r.stdout)
+        elif r.exit_status == 126 or "denied" in r.stderr.lower():
+            warnings.append(
+                "lldpd runs, but this account may not ask it for LLDP neighbours. To include them, add it "
+                "to the group that may run lldpcli (adm on Debian and Ubuntu: stat -c %G /usr/sbin/lldpcli)."
+            )
+    r = results.get(Cmd.NETWORKCTL_LLDP)
+    if r is not None and r.ok:
+        seen = {(n.interface, n.chassis_id, n.port_id) for n in found}
+        found += [
+            n for n in P.parse_networkctl_lldp(r.stdout) if (n.interface, n.chassis_id, n.port_id) not in seen
+        ]
+    return sorted(found, key=lambda n: (n.interface, n.system_name or "", n.port_id or ""))

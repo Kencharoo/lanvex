@@ -52,7 +52,7 @@ export function changeSeedFor(r: ComparisonRow, facts: HostFacts, nbName: string
   return "Nothing to change.";
 }
 
-function ActionLine({ a, state }: { a: RecordAction; state?: "done" | "failed" | "skipped" }) {
+export function ActionLine({ a, state }: { a: RecordAction; state?: "done" | "failed" | "skipped" }) {
   const blocked = !!a.problem;
   return (
     <li className="flex items-start gap-2 text-[13px]">

@@ -30,6 +30,7 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 | `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; others plug in the same way | Run arbitrary commands |
 | `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state and their history, scheduled reads, comparison with NetBox, recording differences in NetBox | Write to servers |
 | `backend/lanvex/core_proxy.py` | Serves Lanvex Core at `/core/` to signed-in users: checks the Lanvex session, sends who they are and their role with the shared proxy secret, strips anything the browser sent under those names, serves Lanvex Core's static files | Let anyone without a Lanvex session through; forward `Authorization` or Lanvex's session cookie |
+| `backend/lanvex/discovery` | What servers see around them (neighbour tables, LLDP) compared with NetBox; recording hosts and cables through a previewed plan | Write to NetBox without an administrator's confirmed plan |
 | `backend/lanvex/topology` | The topology map's data: devices and circuits as nodes, documented cables as links, one site or all, Lanvex servers marked | Claim a cable exists because it is drawn: links are documented state |
 | `backend/lanvex/changes` | Server changes: preparation and safety rules, approval, the runner that applies, verifies, confirms or rolls back | Change anything without an approved, previewed change |
 
@@ -152,6 +153,7 @@ five NetBox files carry small, listed changes (`FORK.md`). It adds no database m
 `audit_events` (actor, action, target type/id/repr, outcome, detail JSON, IP, request id, time) ·
 `servers` (address, user, auth method, encrypted credential, public key, pinned host key, NetBox link, last status, summary, read interval, next read) ·
 `server_snapshots` (server, time, status, facts JSON, raw output, duration, requested by, fingerprint, confirmed at, reads) ·
+`discovered_addresses` (server, address, interface, MAC, router flag, first and last seen; one row per server and address) ·
 `server_changes` (number, server, interface, request, state before, helper preview, status, approvals,
 deadline, checks, log, outcome; one open change per server).
 Migrations: Alembic in `backend/alembic`.

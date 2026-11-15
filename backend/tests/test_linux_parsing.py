@@ -310,3 +310,78 @@ def test_ifupdown_sources_and_comments() -> None:
         "# iface fake inet static\nsource /etc/network/interfaces.d/*\nauto lo\niface lo inet loopback\niface ens3 inet dhcp\niface ens3 inet6 auto\n"
     )
     assert names == ["ens3"] and sources
+
+
+# ---- discovery: neighbour tables and LLDP (real lab output) -------------------------------------
+# In the lab, lab-nm and lab-ifup run lldpd; the lab bridge forwards LLDP. lab-netplan receives it
+# through systemd-networkd; lanvex may run lldpcli on lab-ifup (adm group) but not on lab-nm.
+
+
+def test_neighbour_table() -> None:
+    f = assemble(load("netplan"))
+    assert sorted((n.address, n.interface, n.family) for n in f.neighbors) == [
+        ("172.30.0.12", "eth0", 4),
+        ("172.30.0.13", "eth0", 4),
+    ]
+    assert all(n.mac and n.state in ("REACHABLE", "STALE", "DELAY", "PROBE") for n in f.neighbors)
+
+
+def test_lldp_through_systemd_networkd() -> None:
+    f = assemble(load("netplan"))
+    assert [(n.interface, n.system_name, n.port_description, n.source) for n in f.lldp] == [
+        ("eth0", "lab-ifup", "eth0", "networkd"),
+        ("eth0", "lab-nm", "eth0", "networkd"),
+    ]
+    assert f.lldp[1].capabilities == ["Router"] and f.lldp[1].chassis_id == f.lldp[1].port_id
+
+
+def test_lldp_through_lldpd() -> None:
+    f = assemble(load("ifup"))
+    [n] = f.lldp
+    assert (n.interface, n.system_name, n.port_description, n.source) == ("eth0", "lab-nm", "eth0", "lldpd")
+    assert n.management_addresses == ["172.30.0.12"] and n.capabilities == ["Router"]
+    assert n.system_description and n.system_description.startswith("Ubuntu 24.04")
+    assert not any("lldp" in w.lower() for w in f.warnings)
+
+
+def test_lldpd_this_account_may_not_ask_is_a_warning() -> None:
+    f = assemble(load("nm"))
+    assert f.lldp == []
+    assert any("may not ask it for LLDP neighbours" in w for w in f.warnings)
+
+
+def test_networkctl_lldp_columns_follow_the_header() -> None:
+    """constructed: a system name with a space, and a long port description, in networkctl's layout."""
+    text = (
+        "LINK CHASSIS-ID        SYSTEM-NAME   CAPS        PORT-ID     PORT-DESCRIPTION\n"
+        "eno1 00:11:22:33:44:55 core sw 01    ..b.r...... Gi1/0/12    GigabitEthernet1/0/12 uplink\n"
+        "\n"
+        "1 neighbors listed.\n"
+    )
+    [n] = P.parse_networkctl_lldp(text)
+    assert (n.system_name, n.port_id, n.port_description) == (
+        "core sw 01",
+        "Gi1/0/12",
+        "GigabitEthernet1/0/12 uplink",
+    )
+    assert n.capabilities == ["Bridge", "Router"]
+    assert P.parse_networkctl_lldp("") == [] and P.parse_lldpcli("") == [] and P.parse_lldpcli("{}") == []
+
+
+def test_neighbour_entries_without_a_host_are_skipped() -> None:
+    """constructed: failed lookups and multicast entries name no host."""
+    text = json.dumps(
+        [
+            {"dst": "192.0.2.9", "dev": "eth0", "state": ["FAILED"]},
+            {
+                "dst": "192.0.2.10",
+                "dev": "eth0",
+                "lladdr": "AA:BB:CC:DD:EE:FF",
+                "router": None,
+                "state": ["STALE"],
+            },
+            {"dst": "ff02::1", "dev": "eth0", "lladdr": "33:33:00:00:00:01", "state": ["NOARP"]},
+        ]
+    )
+    [n] = P.parse_neighbors(text)
+    assert (n.address, n.mac, n.router) == ("192.0.2.10", "aa:bb:cc:dd:ee:ff", True)

@@ -99,6 +99,31 @@ class NetworkStack(BaseModel):
     evidence: list[str] = Field(default_factory=list)
 
 
+class Neighbor(BaseModel):
+    """A host this server exchanged packets with recently (ARP for IPv4, neighbour discovery for IPv6)."""
+
+    address: str
+    family: Literal[4, 6]
+    interface: str
+    mac: str | None = None
+    state: str  # REACHABLE, STALE, DELAY, PROBE, PERMANENT, …
+    router: bool = False
+
+
+class LldpNeighbor(BaseModel):
+    """What the device on the other end of an interface announces about itself with LLDP."""
+
+    interface: str  # this server's interface
+    source: Literal["lldpd", "networkd"]
+    chassis_id: str | None = None
+    system_name: str | None = None
+    system_description: str | None = None
+    port_id: str | None = None
+    port_description: str | None = None
+    management_addresses: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)  # enabled ones: Bridge, Router, …
+
+
 class HostFacts(BaseModel):
     collected_at: datetime
     system: SystemInfo
@@ -106,4 +131,7 @@ class HostFacts(BaseModel):
     routes: list[Route]
     dns: DNSInfo
     stack: NetworkStack
+    # Discovery. Older snapshots have neither.
+    neighbors: list[Neighbor] = Field(default_factory=list)
+    lldp: list[LldpNeighbor] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

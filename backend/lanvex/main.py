@@ -24,6 +24,7 @@ from lanvex.core.logging import configure_logging, get_logger
 from lanvex.core.ratelimit import MemoryRateLimiter, RedisRateLimiter
 from lanvex.dashboard.router import router as dashboard_router
 from lanvex.devices.router import router as devices_router
+from lanvex.discovery.router import router as discovery_router
 from lanvex.ipam.router import router as ipam_router
 from lanvex.lookups.router import router as lookups_router
 from lanvex.netbox.client import NetBoxClient
@@ -145,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         servers_router,
         changes_router,
         topology_router,
+        discovery_router,
     ):
         api.include_router(r)
     app.include_router(api)

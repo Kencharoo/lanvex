@@ -1,0 +1,8 @@
+LINK CHASSIS-ID        SYSTEM-NAME CAPS        PORT-ID           PORT-DESCRIPTION
+eth0 66:6b:db:50:dc:c3 lab-ifup    ..b.r...... 66:6b:db:50:dc:c3 eth0
+eth0 6a:16:4d:c8:e1:75 lab-nm      ....r...... 6a:16:4d:c8:e1:75 eth0
+
+Capability Flags:
+b - Bridge; r - Router
+
+2 neighbors listed.

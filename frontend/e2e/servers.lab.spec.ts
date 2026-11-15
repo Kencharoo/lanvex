@@ -53,6 +53,7 @@ test("add a server, verify its host key, read it, and refuse a changed key", asy
   await expect(page.getByText(fingerprint(), { exact: true })).toBeVisible();
   await page.getByLabel("I compared the fingerprints and they match").check();
   await page.getByRole("button", { name: "Trust new key" }).click();
+  sh("ping -c1 -W1 172.30.0.12 >/dev/null; true"); // traffic to lab-nm, so the neighbour table lists it
   await page.getByRole("button", { name: "Read now" }).click();
   await expect(page.getByText("Read the server's network state")).toBeVisible();
 
@@ -62,6 +63,13 @@ test("add a server, verify its host key, read it, and refuse a changed key", asy
   await expect(history.getByText("Host key changed", { exact: true })).toBeVisible();
   await expect(history.getByText("The oldest state kept.")).toBeVisible();
   await expect(history.getByText("read by e2e-admin")).toHaveCount(3);
+
+  // Discovery: lab-ifup's lldpd reports lab-nm on eth0, and its neighbour table the other lab hosts.
+  await expect(page.getByText("↔ lab-nm / eth0")).toBeVisible();
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Discovery" }).click();
+  await expect(page.getByRole("row", { name: new RegExp(`${name} / eth0.*lab-nm / eth0.*Server not linked`) })).toBeVisible();
+  await expect(page.getByRole("row", { name: new RegExp(`172\\.30\\.0\\.12.*${name} on eth0.*Not recorded`) })).toBeVisible();
+  await page.getByRole("row", { name: new RegExp(`${name} / eth0`) }).getByRole("link", { name }).click();
 
   await page.getByRole("button", { name: "Server actions" }).click();
   await page.getByRole("menuitem", { name: "Remove server" }).click();

@@ -297,6 +297,13 @@ function InterfacesSection({ facts }: { facts: HostFacts }) {
             {i.vlan_id != null && ` ${i.vlan_id} on ${i.parent}`}
             {i.master && `, member of ${i.master}`}
           </span>
+          {(facts.lldp ?? [])
+            .filter((n) => n.interface === i.name)
+            .map((n) => (
+              <span key={`${n.chassis_id}-${n.port_id}`} className="text-xs text-muted" title={`Announced over LLDP (${n.source === "lldpd" ? "lldpd" : "systemd-networkd"})`}>
+                ↔ {n.system_name ?? n.chassis_id} / {n.port_description ?? n.port_id}
+              </span>
+            ))}
         </span>
       ),
     },
@@ -740,7 +747,7 @@ function HistorySection({ server: s, isAdmin }: { server: Server; isAdmin: boole
         <p className="text-[13px] text-muted">Not read yet.</p>
       ) : (
         <ol className="grid gap-0 rounded-[var(--radius-panel)] border border-line bg-surface">
-          {history.data.map((h) => (
+          {history.data.map((h, idx) => (
             <li key={h.snapshot_id} className="grid gap-1.5 border-b border-line px-4 py-3 last:border-b-0">
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[13px]">
                 <span className="font-medium" title={absoluteTime(h.taken_at)}>
@@ -754,7 +761,11 @@ function HistorySection({ server: s, isAdmin }: { server: Server; isAdmin: boole
               ) : h.first ? (
                 <p className="text-[13px] text-muted">The oldest state kept.</p>
               ) : h.changes.length === 0 ? (
-                <p className="text-[13px] text-muted">Readable again; nothing changed since the last successful read.</p>
+                <p className="text-[13px] text-muted">
+                  {history.data[idx + 1] && history.data[idx + 1].status !== "ok"
+                    ? "Readable again; nothing changed since the last successful read."
+                    : "Details changed that this list does not describe (for example a network manager's own state)."}
+                </p>
               ) : (
                 <ul className="grid gap-0.5 text-[13px]">
                   {h.changes.map((c, i) => (

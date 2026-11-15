@@ -1,0 +1,94 @@
+{
+  "lldp": [
+    {
+      "interface": [
+        {
+          "name": "eth0",
+          "via": "LLDP",
+          "rid": "1",
+          "age": "0 day, 00:00:23",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "6a:16:4d:c8:e1:75"
+                }
+              ],
+              "name": [
+                {
+                  "value": "lab-nm"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Ubuntu 24.04 LTS Linux 6.18.44-fc-v470 #1 SMP PREEMPT_DYNAMIC @0 x86_64"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "172.30.0.12"
+                }
+              ],
+              "mgmt-iface": [
+                {
+                  "value": "2"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "6a:16:4d:c8:e1:75"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "eth0"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": false,
+                  "enabled": false,
+                  "current": [
+                    {
+                      "value": "10GbaseT - Four-pair Category 6A or better, full duplex mode only"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+

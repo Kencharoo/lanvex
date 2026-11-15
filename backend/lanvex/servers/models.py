@@ -3,7 +3,19 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -119,3 +131,30 @@ class ServerSnapshot(Base):
     reads: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
 
     server: Mapped[Server] = relationship(back_populates="snapshots")
+
+
+class DiscoveredAddress(Base):
+    """A host a server had in its neighbour table (ARP / IPv6 neighbour discovery) during a read.
+
+    One row per server and address, kept while it keeps being seen and for
+    LANVEX_DISCOVERY_RETENTION_DAYS after. Actual state, like snapshots: never written to NetBox
+    unless an administrator records it.
+    """
+
+    __tablename__ = "discovered_addresses"
+    __table_args__ = (
+        UniqueConstraint("server_id", "address", name="uq_discovered_addresses_server_address"),
+        Index("ix_discovered_addresses_address", "address"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    server_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("servers.id", ondelete="CASCADE"), nullable=False
+    )
+    address: Mapped[str] = mapped_column(String(64), nullable=False)
+    family: Mapped[int] = mapped_column(Integer, nullable=False)
+    interface: Mapped[str] = mapped_column(String(64), nullable=False)
+    mac: Mapped[str | None] = mapped_column(String(64))
+    router: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

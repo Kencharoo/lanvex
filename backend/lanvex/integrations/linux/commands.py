@@ -30,6 +30,10 @@ class Cmd(StrEnum):
     NETWORKCTL_LIST = "networkctl_list"
     RESOLVECTL_DNS = "resolvectl_dns"
     RESOLVECTL_DOMAIN = "resolvectl_domain"
+    NEIGHBORS = "neighbors"
+    LLDPD_STATE = "lldpd_state"
+    LLDPCLI_NEIGHBORS = "lldpcli_neighbors"
+    NETWORKCTL_LLDP = "networkctl_lldp"
     HELPER_VERSION = "helper_version"
     HELPER_PLAN = "helper_plan"
     HELPER_APPLY = "helper_apply"
@@ -65,6 +69,12 @@ COMMANDS: dict[Cmd, str] = {
     Cmd.NETWORKCTL_LIST: _ENV + "networkctl list --no-legend --no-pager",
     Cmd.RESOLVECTL_DNS: _ENV + "resolvectl dns",
     Cmd.RESOLVECTL_DOMAIN: _ENV + "resolvectl domain",
+    # Discovery: hosts this server talked to recently (ARP / neighbour discovery), and what its
+    # neighbours announce with LLDP, from lldpd or from systemd-networkd.
+    Cmd.NEIGHBORS: _ENV + "ip -json neigh show",
+    Cmd.LLDPD_STATE: _ENV + "systemctl is-active lldpd",
+    Cmd.LLDPCLI_NEIGHBORS: _ENV + "lldpcli -f json0 show neighbors details",
+    Cmd.NETWORKCTL_LLDP: _ENV + "networkctl lldp --no-pager",
     Cmd.HELPER_VERSION: _HELPER + "version",
     Cmd.HELPER_PLAN: _HELPER + "plan",
     Cmd.HELPER_APPLY: _HELPER + "apply",
@@ -100,7 +110,10 @@ BASE_COMMANDS = (
     Cmd.NETPLAN_FILES,
     Cmd.IFUPDOWN_CONFIG,
     Cmd.IFUPDOWN_INCLUDES,
+    Cmd.NEIGHBORS,
+    Cmd.LLDPD_STATE,
 )
 NETWORKMANAGER_COMMANDS = (Cmd.NMCLI_DEVICES,)
-NETWORKD_COMMANDS = (Cmd.NETWORKCTL_LIST,)
+NETWORKD_COMMANDS = (Cmd.NETWORKCTL_LIST, Cmd.NETWORKCTL_LLDP)
+LLDPD_COMMANDS = (Cmd.LLDPCLI_NEIGHBORS,)
 RESOLVED_COMMANDS = (Cmd.RESOLVECTL_DNS, Cmd.RESOLVECTL_DOMAIN)

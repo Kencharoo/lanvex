@@ -11,7 +11,15 @@ import shlex
 from typing import Any
 
 from lanvex.integrations.linux.commands import STACK_UNITS
-from lanvex.integrations.linux.facts import Address, Interface, OSInfo, ResolverScope, Route
+from lanvex.integrations.linux.facts import (
+    Address,
+    Interface,
+    LldpNeighbor,
+    Neighbor,
+    OSInfo,
+    ResolverScope,
+    Route,
+)
 
 FOREVER = 4294967295  # iproute2's "forever" lifetime
 
@@ -311,3 +319,126 @@ def is_ip(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+# ---- discovery ----------------------------------------------------------------------------------
+
+# States of an entry that names a real, recently seen host (not FAILED/INCOMPLETE lookups, not NOARP).
+_SEEN = {"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"}
+
+
+def parse_neighbors(text: str) -> list[Neighbor]:
+    """`ip -json neigh show`: hosts with a known link-layer address."""
+    out: list[Neighbor] = []
+    for n in _json_list(text):
+        dst, dev, mac = n.get("dst"), n.get("dev"), n.get("lladdr")
+        state = next((x for x in n.get("state") or [] if x in _SEEN), None)
+        if not dst or not dev or not mac or state is None:
+            continue
+        try:
+            ip = ipaddress.ip_address(dst)
+        except ValueError:
+            continue
+        if ip.is_multicast:
+            continue
+        out.append(
+            Neighbor(
+                address=str(ip),
+                family=4 if ip.version == 4 else 6,
+                interface=dev,
+                mac=mac.lower(),
+                state=state,
+                router="router" in n,
+            )
+        )
+    return out
+
+
+def _first(items: Any, key: str = "value") -> str | None:
+    """lldpcli's json0 format wraps every value in a list of objects."""
+    if isinstance(items, list) and items and isinstance(items[0], dict):
+        v = items[0].get(key)
+        return str(v) if v not in (None, "") else None
+    return None
+
+
+def parse_lldpcli(text: str) -> list[LldpNeighbor]:
+    """`lldpcli -f json0 show neighbors details`"""
+    try:
+        data = json.loads(text) if text.strip() else {}
+    except ValueError:
+        return []
+    out: list[LldpNeighbor] = []
+    for block in data.get("lldp") or []:
+        for i in (block or {}).get("interface") or []:
+            chassis = (i.get("chassis") or [{}])[0]
+            port = (i.get("port") or [{}])[0]
+            if not i.get("name"):
+                continue
+            out.append(
+                LldpNeighbor(
+                    interface=i["name"],
+                    source="lldpd",
+                    chassis_id=_first(chassis.get("id")),
+                    system_name=_first(chassis.get("name")),
+                    system_description=_first(chassis.get("descr")),
+                    port_id=_first(port.get("id")),
+                    port_description=_first(port.get("descr")),
+                    management_addresses=[
+                        str(m["value"]) for m in chassis.get("mgmt-ip") or [] if m.get("value")
+                    ],
+                    capabilities=[
+                        str(c["type"]) for c in chassis.get("capability") or [] if c.get("enabled")
+                    ],
+                )
+            )
+    return out
+
+
+# networkctl's capability letters (systemd: src/libsystemd-network/lldp-neighbor.c)
+_CAPS = {
+    "o": "Other",
+    "p": "Repeater",
+    "b": "Bridge",
+    "w": "WLAN",
+    "r": "Router",
+    "t": "Telephone",
+    "d": "DOCSIS",
+    "a": "Station",
+    "c": "Customer VLAN",
+    "s": "Service VLAN",
+    "m": "Two-port MAC relay",
+}
+
+
+def parse_networkctl_lldp(text: str) -> list[LldpNeighbor]:
+    """`networkctl lldp --no-pager`: a table whose columns are aligned under its header."""
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith("LINK"):
+        return []
+    header = lines[0]
+    names = header.split()
+    starts = [header.index(n) for n in names]
+    out: list[LldpNeighbor] = []
+    for line in lines[1:]:
+        if not line.strip():
+            break
+        cells = {
+            n: line[s : (starts[k + 1] if k + 1 < len(starts) else None)].strip()
+            for k, (n, s) in enumerate(zip(names, starts, strict=True))
+        }
+        if not cells.get("LINK"):
+            continue
+        caps = cells.get("CAPS", "")
+        out.append(
+            LldpNeighbor(
+                interface=cells["LINK"],
+                source="networkd",
+                chassis_id=cells.get("CHASSIS-ID") or None,
+                system_name=cells.get("SYSTEM-NAME") or None,
+                port_id=cells.get("PORT-ID") or None,
+                port_description=cells.get("PORT-DESCRIPTION") or None,
+                capabilities=[_CAPS[c] for c in caps if c in _CAPS],
+            )
+        )
+    return out

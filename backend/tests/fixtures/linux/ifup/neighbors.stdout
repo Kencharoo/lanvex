@@ -1,0 +1,1 @@
+[{"dst":"172.30.0.12","dev":"eth0","lladdr":"6a:16:4d:c8:e1:75","state":["DELAY"]},{"dst":"172.30.0.11","dev":"eth0","lladdr":"de:cd:5c:37:f0:bf","state":["DELAY"]}]

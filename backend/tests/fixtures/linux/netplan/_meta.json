@@ -23,11 +23,27 @@
   "exit_status": 0,
   "stderr": ""
  },
+ "lldpcli_neighbors": {
+  "exit_status": 127,
+  "stderr": "env: 'lldpcli': No such file or directory\n"
+ },
+ "lldpd_state": {
+  "exit_status": 4,
+  "stderr": ""
+ },
+ "neighbors": {
+  "exit_status": 0,
+  "stderr": ""
+ },
  "netplan_files": {
   "exit_status": 0,
   "stderr": ""
  },
  "networkctl_list": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "networkctl_lldp": {
   "exit_status": 0,
   "stderr": ""
  },

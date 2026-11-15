@@ -13,11 +13,18 @@
   - changed on the server: the change form opens with that difference undone, followed by the usual
     preview, approval, verification and automatic rollback.
 - After a successful change, its page says whether NetBox documents the result and offers to record it.
+- **Discovery.** A new page lists what servers see around them, compared with NetBox:
+  - hosts in their neighbour tables (kept for 30 days after last seen), and which of them NetBox lacks;
+    those can be recorded as unassigned addresses after a preview;
+  - devices announcing themselves over LLDP on each server interface (from systemd-networkd or lldpd),
+    compared with the documented cable, through patch panels. A missing cable can be recorded.
+  The server page shows each interface's LLDP neighbour, and the history notes when it changes.
+  docs/operations.md explains how to let Lanvex read LLDP.
 - `LANVEX_SERVER_SNAPSHOT_RETENTION` now counts different states and defaults to 200 (was 20 reads).
 - New settings `LANVEX_SERVER_READ_INTERVAL_MINUTES` (default 60, `0` = off) and
-  `LANVEX_READ_SCHEDULER_ENABLED`. Recording an interface the device lacks needs *add* on interfaces
-  for your own NetBox's token (docs/operations.md). Lanvex Core 0.6.0 gives its service account
-  exactly that (view, add and change on device and VM interfaces).
+  `LANVEX_READ_SCHEDULER_ENABLED`, `LANVEX_DISCOVERY_RETENTION_DAYS` (default 30). Recording an interface the device lacks needs *add* on interfaces
+  for your own NetBox's token, recording a cable *add* on cables (docs/operations.md). Lanvex Core
+  0.6.0 gives its service account exactly that.
 - The SSH lab (three real Ubuntu servers with netplan, NetworkManager and ifupdown) now runs in CI.
 
 ## 0.5.0 — 2026-11-15

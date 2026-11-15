@@ -23,6 +23,18 @@
   "exit_status": 0,
   "stderr": ""
  },
+ "lldpcli_neighbors": {
+  "exit_status": 126,
+  "stderr": "env: 'lldpcli': Permission denied\n"
+ },
+ "lldpd_state": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "neighbors": {
+  "exit_status": 0,
+  "stderr": ""
+ },
  "netplan_files": {
   "exit_status": 0,
   "stderr": ""
@@ -30,6 +42,10 @@
  "networkctl_list": {
   "exit_status": 0,
   "stderr": "systemd-networkd is not running, output might be incomplete.\n"
+ },
+ "networkctl_lldp": {
+  "exit_status": 0,
+  "stderr": ""
  },
  "nmcli_devices": {
   "exit_status": 0,

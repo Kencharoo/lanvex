@@ -9,7 +9,7 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from lanvex.integrations.linux.facts import HostFacts, Interface, Route
+from lanvex.integrations.linux.facts import HostFacts, Interface, LldpNeighbor, Route
 from lanvex.schemas import ApiModel
 
 ChangeKind = Literal["added", "removed", "changed"]
@@ -22,7 +22,16 @@ class HistoryChange(ApiModel):
 
 def _comparable(facts: dict[str, Any]) -> dict[str, Any]:
     """The facts without what changes on every read or means nothing for the configuration."""
-    out = {k: v for k, v in facts.items() if k not in ("collected_at", "warnings")}
+    # The neighbour table changes with every conversation the server has; discovery keeps it instead.
+    out = {k: v for k, v in facts.items() if k not in ("collected_at", "warnings", "neighbors")}
+    # Only when there is something: facts from before LLDP was read have no such key, and a server
+    # without LLDP neighbours must keep the fingerprint it had.
+    out.pop("lldp", None)
+    if facts.get("lldp"):
+        out["lldp"] = sorted(
+            ({k: v for k, v in n.items() if k != "source"} for n in facts.get("lldp", [])),
+            key=lambda n: json.dumps(n, sort_keys=True),
+        )
     out["interfaces"] = [
         {
             **{k: v for k, v in i.items() if k != "index"},
@@ -137,6 +146,24 @@ def changes(old: HostFacts, new: HostFacts) -> list[HistoryChange]:
         out.append(HistoryChange(kind="added", text=f"Route {_route_text(others['new'][k])} added"))
     for k in sorted(others["old"].keys() - others["new"].keys(), key=str):
         out.append(HistoryChange(kind="removed", text=f"Route {_route_text(others['old'][k])} removed"))
+
+    def peer(n: LldpNeighbor) -> tuple[Any, ...]:
+        return (n.interface, n.chassis_id, n.port_id)
+
+    def peer_text(n: LldpNeighbor) -> str:
+        port = n.port_description or n.port_id
+        return f"{n.system_name or n.chassis_id or 'a device'}" + (f" (port {port})" if port else "")
+
+    lldp_before = {peer(n): n for n in old.lldp}
+    lldp_after = {peer(n): n for n in new.lldp}
+    for k in sorted(lldp_after.keys() - lldp_before.keys(), key=str):
+        n = lldp_after[k]
+        out.append(HistoryChange(kind="added", text=f"{n.interface}: {peer_text(n)} seen over LLDP"))
+    for k in sorted(lldp_before.keys() - lldp_after.keys(), key=str):
+        n = lldp_before[k]
+        out.append(
+            HistoryChange(kind="removed", text=f"{n.interface}: {peer_text(n)} no longer seen over LLDP")
+        )
 
     if old.dns.effective_servers != new.dns.effective_servers:
         was = ", ".join(old.dns.effective_servers) or "none"

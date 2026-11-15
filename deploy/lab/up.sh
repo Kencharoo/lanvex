@@ -26,6 +26,10 @@ docker network inspect lanvex-lab >/dev/null 2>&1 || \
 docker network inspect lanvex-lab-b >/dev/null 2>&1 || \
   docker network create --driver bridge --subnet 172.31.0.0/24 --gateway 172.31.0.1 lanvex-lab-b >/dev/null
 
+# Linux bridges drop LLDP frames (01:80:c2:00:00:0e) unless told to forward them; the hosts announce
+# themselves to each other with LLDP, as servers on a switch would.
+echo 0x4000 > "/sys/class/net/br-$(docker network inspect -f '{{.Id}}' lanvex-lab | cut -c1-12)/bridge/group_fwd_mask"
+
 run lab-netplan lanvex-target:netplan-networkd 172.30.0.11
 run lab-nm      lanvex-target:networkmanager   172.30.0.12
 run lab-ifup    lanvex-target:ifupdown         172.30.0.13

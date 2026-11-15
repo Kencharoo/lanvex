@@ -9,6 +9,10 @@ the Linux adapter is tested against real tools rather than sample text:
 | `lab-nm` | 172.30.0.12 (+ 172.31.0.12) | NetworkManager | Fedora Server's stack. `eth1` is "connected (externally)": its profile never activated |
 | `lab-ifup` | 172.30.0.13 | ifupdown (`/etc/network/interfaces`) | Classic Debian stack |
 
+`lab-nm` and `lab-ifup` run lldpd and announce themselves with LLDP; `up.sh` lets the lab bridge
+forward LLDP. `lab-netplan` receives it through systemd-networkd; on `lab-ifup`, `lanvex` is in the
+group that may run `lldpcli` (`adm`) and asks lldpd; on `lab-nm` it is not, so Lanvex reports that.
+
 Each has an unprivileged `lanvex` user (key login) and an `ops` user with password `ops-lab-password-1`.
 Host keys are generated on first boot, so each container has its own.
 

@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # schedule off for every server.
     server_read_interval_minutes: int = Field(default=60, ge=0, le=10080)
     read_scheduler_enabled: bool = True  # run scheduled reads in this process; tests drive them directly
+    # Hosts seen in servers' neighbour tables are kept this long after they were last seen.
+    discovery_retention_days: int = Field(default=30, ge=1, le=3650)
 
     # Changing server configuration. Off unless explicitly enabled; each server must also be opted in.
     automation_enabled: bool = False

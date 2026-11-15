@@ -5,6 +5,7 @@ regenerating host keys). The comparison test also needs the live NetBox variable
 test_integration_netbox.py, and removes any NetBox IP records for the addresses in OWNED_ADDRESSES.
 """
 
+import asyncio
 import os
 import secrets
 import subprocess
@@ -200,6 +201,53 @@ async def test_unchanged_reads_confirm_changed_reads_are_kept(api: httpx.AsyncCl
 
     history = ok(await api.get(f"/api/v1/servers/{s['id']}/history"))
     assert [c["text"] for c in history[0]["changes"]] == ["lo: address 192.0.2.202/32 added"]
+
+
+async def test_discovery_from_real_hosts(api: httpx.AsyncClient) -> None:
+    """Neighbour tables and LLDP as the lab hosts report them: systemd-networkd on lab-netplan, lldpd
+    on lab-ifup, and lldpd on lab-nm, which lanvex may not ask (deploy/lab/README.md)."""
+    for _ in range(40):  # lldpd announces every 30 seconds; after the lab starts, wait for the first round
+        if "lab-nm" in sh("lab-ifup", "lldpcli show neighbors 2>/dev/null; true") and "lab-ifup" in sh(
+            "lab-netplan", "networkctl lldp --no-pager 2>/dev/null; true"
+        ):
+            break
+        await asyncio.sleep(3)
+    for h in HOSTS:
+        sh(h, "for a in 11 12 13; do ping -c1 -W1 172.30.0.$a >/dev/null; done; true")
+    facts = {}
+    names = {}
+    for h in HOSTS:
+        srv = await register(api, h)
+        authorize(h, srv["authorized_keys_line"])
+        names[h] = srv["name"]
+        facts[h] = ok(await api.post(f"/api/v1/servers/{srv['id']}/collect"))["facts"]
+
+    def peers(h: str) -> list[tuple[str, str | None, str | None, str]]:
+        return sorted(
+            (n["interface"], n["system_name"], n["port_description"], n["source"]) for n in facts[h]["lldp"]
+        )
+
+    assert peers("lab-netplan") == [
+        ("eth0", "lab-ifup", "eth0", "networkd"),
+        ("eth0", "lab-nm", "eth0", "networkd"),
+    ]
+    assert ("eth0", "lab-nm", "eth0", "lldpd") in peers("lab-ifup")
+    assert peers("lab-nm") == [] and any("may not ask it for LLDP" in w for w in facts["lab-nm"]["warnings"])
+    for h, me in HOSTS.items():
+        assert {n["address"] for n in facts[h]["neighbors"]} >= set(HOSTS.values()) - {me}
+
+    hosts = {x["address"]: x for x in ok(await api.get("/api/v1/discovery/hosts"))["hosts"]}
+    for h, address in HOSTS.items():
+        assert hosts[address]["server"] == names[h]
+        assert {s["server_name"] for s in hosts[address]["seen_by"]} == {names[o] for o in HOSTS if o != h}
+        assert hosts[address]["record_as"] == f"{address}/24"
+    links = ok(await api.get("/api/v1/discovery/links"))
+    assert {(x["server_name"], x["neighbor"]["system_name"]) for x in links["links"]} >= {
+        (names["lab-netplan"], "lab-nm"),
+        (names["lab-netplan"], "lab-ifup"),
+        (names["lab-ifup"], "lab-nm"),
+    }
+    assert names["lab-nm"] in links["servers_without_lldp"]
 
 
 @pytest.mark.skipif(not (NB_URL and NB_ADMIN), reason="live NetBox variables not set")

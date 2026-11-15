@@ -13,6 +13,7 @@ import { TooltipProvider } from "@/components/ui/misc";
 import { ApiError } from "@/lib/api";
 import { ActivityPage } from "@/pages/activity";
 import { DeviceDetailPage, DevicesPage } from "@/pages/devices";
+import { DiscoveryPage } from "@/pages/discovery";
 import { IPAddressesPage } from "@/pages/ip-addresses";
 import { LoginPage } from "@/pages/login";
 import { LoginRedirect, SignOutPage } from "@/pages/session-routes";
@@ -58,6 +59,7 @@ const router = createBrowserRouter([
       { path: "devices/:id", element: <DeviceDetailPage /> },
       { path: "servers", element: <ServersPage /> },
       { path: "servers/:id", element: <ServerDetailPage /> },
+      { path: "discovery", element: <DiscoveryPage /> },
       { path: "topology", element: <Suspense fallback={<Skeleton className="h-96 w-full" />}><TopologyPage /></Suspense> },
       { path: "automation", element: <AutomationPage /> },
       { path: "changes/:id", element: <ChangeDetailPage /> },

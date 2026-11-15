@@ -13,6 +13,7 @@ from lanvex.integrations.linux import transport
 from lanvex.integrations.linux.assemble import Results, assemble, detect_stack
 from lanvex.integrations.linux.commands import (
     BASE_COMMANDS,
+    LLDPD_COMMANDS,
     NETWORKD_COMMANDS,
     NETWORKMANAGER_COMMANDS,
     RESOLVED_COMMANDS,
@@ -28,6 +29,7 @@ CAPABILITIES = {
     Capability.READ_ROUTES,
     Capability.READ_DNS,
     Capability.READ_NETWORK_STACK,
+    Capability.READ_NEIGHBORS,
     Capability.CHANGE_INTERFACE_IPV4,
 }
 register(NAME, CAPABILITIES)
@@ -77,6 +79,9 @@ async def collect(target: transport.Target, connect_timeout: float, command_time
             extra += NETWORKD_COMMANDS
         if units.get("systemd-resolved") == "active":
             extra += RESOLVED_COMMANDS
+        lldpd = results.get(Cmd.LLDPD_STATE)
+        if lldpd is not None and lldpd.stdout.strip() == "active":
+            extra += LLDPD_COMMANDS
         if extra:
             await _run_many(conn, extra, command_timeout, results)
     facts = assemble(results)

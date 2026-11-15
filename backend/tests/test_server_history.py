@@ -106,6 +106,22 @@ def test_link_and_switch_state() -> None:
     ]
 
 
+def test_neighbour_tables_are_not_changes_but_lldp_neighbours_are() -> None:
+    old = real_facts()
+    busy = old.model_copy(update={"neighbors": [*old.neighbors[:1]]})
+    assert fingerprint(busy.model_dump(mode="json")) == fingerprint(old.model_dump(mode="json"))
+    # Facts read before Lanvex read LLDP have no such key; a server without neighbours keeps its fingerprint.
+    before = old.model_copy(update={"lldp": []}).model_dump(mode="json")
+    before.pop("lldp")
+    before.pop("neighbors")
+    assert fingerprint(before) == fingerprint(old.model_copy(update={"lldp": []}).model_dump(mode="json"))
+
+    gone = old.model_copy(update={"lldp": [n for n in old.lldp if n.system_name != "lab-nm"]})
+    assert fingerprint(gone.model_dump(mode="json")) != fingerprint(old.model_dump(mode="json"))
+    assert [c.text for c in changes(old, gone)] == ["eth0: lab-nm (port eth0) no longer seen over LLDP"]
+    assert [c.text for c in changes(gone, old)] == ["eth0: lab-nm (port eth0) seen over LLDP"]
+
+
 # ---- reads and history --------------------------------------------------------------------------
 
 
