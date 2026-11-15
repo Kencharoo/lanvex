@@ -14,8 +14,20 @@ async function signIn(page: Page) {
 
 const device = (page: Page, name: string) => page.locator(".react-flow__node-device", { hasText: name });
 
-test.beforeEach(async ({ request }) => {
+const browserErrors: string[] = [];
+
+test.beforeEach(async ({ request, page }) => {
   await request.post(`${NETBOX}/__reset__`);
+  browserErrors.length = 0;
+  page.on("pageerror", (e) => browserErrors.push(`page error: ${e.message}`));
+  page.on("console", (m) => m.type() === "error" && browserErrors.push(`console: ${m.text()}`));
+});
+
+// When a map test fails, say what the page showed: CI logs are often all there is to go on.
+test.afterEach(async ({ page }, info) => {
+  if (info.status === info.expectedStatus) return;
+  console.log(`--- page at ${page.url()} ---\n${await page.locator("main").innerText().catch(() => "(no main)")}`);
+  console.log(`--- browser errors ---\n${browserErrors.join("\n") || "(none)"}`);
 });
 
 test("draws documented devices, sites and cables, with details on click", async ({ page }) => {
