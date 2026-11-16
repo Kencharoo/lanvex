@@ -19,7 +19,7 @@ not the target: nothing in Lanvex is specific to it.
 | **Changes to the server Lanvex runs on are confirmed by the administrator's browser.** The server keeps a change only if the browser still reaches Lanvex over that server's own network before the deadline; otherwise its timer restores the previous configuration | Lanvex in a container on the same machine reaches it only through loopback, which proves nothing. This is how Netzverwaltung confirms its changes too |
 | **VLANs and DHCP first**, then access rules, then DNS filtering | The first two are needed for any new network; access rules build on the zones they create |
 | **Every common server stack, one after another, each tested on a real host in CI.** NetworkManager with firewalld (Fedora, RHEL; 0.7), then netplan (Ubuntu Server) and ifupdown (Debian) with ufw or no firewall (0.8), then Kea next to dnsmasq | The model is the same everywhere; only the files written and the commands run differ. A stack counts as supported once a real DHCP client gets its address through a new VLAN on it in the lab |
-| **Lanvex writes its own files and never edits another tool's.** `/etc/dnsmasq.d/lanvex.conf`, NetworkManager profiles named `lanvex-…`, firewalld zones and policies named `lanvex-…` | The same rule Netzverwaltung follows with `nv-`. A conflict (another file serving the same interface) is shown and refused, never overwritten |
+| **Lanvex writes its own files and never edits another tool's.** `/etc/dnsmasq.d/lanvex.conf`, NetworkManager profiles named `lanvex-…`, `/etc/netplan/60-lanvex.yaml`, `/etc/network/interfaces.d/lanvex`, firewalld zones `lx-…`, ufw rules marked `lanvex:` | The same rule Netzverwaltung follows with `nv-`. A conflict (another file serving the same interface) is shown and refused, never overwritten |
 
 ## What a server router needs (Netzverwaltung's features as the checklist)
 
@@ -59,17 +59,16 @@ work; what is not verified yet is in [status.md](status.md).
 **Done when** a new VLAN network with DHCP can be documented in Lanvex and brought to a NetworkManager
 server in one approved change, a client on that VLAN gets an address, and a broken change is rolled back.
 
-### 0.8: Ubuntu Server and Debian
+### 0.8: Ubuntu Server and Debian (released 2026-11-16)
 
-- VLAN interfaces with netplan (Ubuntu Server's default, systemd-networkd), in a netplan file Lanvex
-  owns; VLAN interfaces netplan leaves behind are removed.
-- VLAN interfaces with ifupdown (Debian's default), in a file under `/etc/network/interfaces.d/`.
-- dnsmasq next to systemd-resolved (Ubuntu), which holds the DNS port.
-- ufw: DHCP and DNS opened on Lanvex's networks, with rules Lanvex marks and removes again.
-- A Debian 12 host in the CI lab; the same real DHCP client test on Ubuntu with netplan and on Debian.
-- Then Kea as an alternative DHCP server.
+Built: helper version 3 creates VLAN interfaces with netplan (`/etc/netplan/60-lanvex.yaml`, Ubuntu
+Server) and ifupdown (`/etc/network/interfaces.d/lanvex`, Debian) as well as NetworkManager, and lists
+them in `/etc/lanvex/networks.json`; dnsmasq runs next to systemd-resolved and goes back to how it
+ran once the last pool is removed; ufw rules for DHCP and DNS, marked `lanvex:<interface>`. In CI the
+0.7 test (a real DHCP client on a new VLAN, removal, rollback, the server's own timer, another tool's
+configuration refused) runs on Fedora 44, Ubuntu 24.04 and Debian 12, and through an active ufw.
 
-**Done when** the 0.7 test passes on Ubuntu Server (netplan) and Debian (ifupdown) as on Fedora.
+**Next in this line: Kea** as an alternative DHCP server, for servers that already run it.
 
 ### 0.9: Access rules
 

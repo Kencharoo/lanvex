@@ -1,4 +1,4 @@
-# Status of Lanvex 0.7.0
+# Status of Lanvex 0.8.0
 
 Last updated 2026-11-16. "Verified" means it was run, not just written.
 
@@ -16,6 +16,27 @@ Fedora 44 server running NetworkManager was registered over SSH:
 | Host key and helper | The fingerprint shown matched the server's; the helper's checksum was identical in the API, the download, on the server and in the release source |
 | Logs | No errors in `lanvex` and `core` during the whole test |
 | Problems found | Fourteen, fixed in 0.6.1 or explained ([CHANGELOG.md](../CHANGELOG.md)). The serious one: with Lanvex running on the server it changes, the connection went through the server's loopback, so a change could have cut off the server's real network and still passed verification |
+
+### Networks on Ubuntu Server and Debian (new in 0.8)
+
+On every push, in the CI lab, the same five tests run on three real hosts, each with a real DHCP
+client (`lab-nm`) on the new VLAN:
+
+| Host | What it is | Result |
+|---|---|---|
+| Fedora 44 | NetworkManager, firewalld, dnsmasq installed but off | VLAN as a NetworkManager profile with its firewalld zone; dnsmasq enabled and started; the client gets its fixed address |
+| Ubuntu 24.04 | netplan with systemd-networkd, systemd-resolved on port 53, dnsmasq enabled but failing next to it, ufw | VLAN in `/etc/netplan/60-lanvex.yaml`; dnsmasq starts with `bind-dynamic` and answers DNS on the VLAN address next to systemd-resolved; the client gets its fixed address. With ufw active (SSH allowed, everything else denied) the client still gets its address through Lanvex's marked rules; removing the network removes exactly those rules, and a rollback brings them back |
+| Debian 12 | ifupdown sourcing `interfaces.d`, dnsmasq running on every interface | VLAN in `/etc/network/interfaces.d/lanvex`, created by its own stanza; Lanvex's pool added without restricting dnsmasq; the client gets its fixed address |
+
+On each: the same request again is not a change; removing the network and rolling that back restores
+the interface, its address and dnsmasq (enabled and running); an unconfirmed change is undone by the
+server's own timer, with dnsmasq exactly as before; another tool's VLAN (a NetworkManager profile, a
+netplan file, an ifupdown file) and another dnsmasq file for the same interface are refused (13 lab
+tests). Also in the lab, by hand on the Ubuntu and ifupdown hosts: a change whose VLAN cannot be
+created is undone completely (ifupdown), and removing the last pool stops dnsmasq again where it did
+not run before (netplan). Unit tests cover the files written for each system, choosing the system,
+the dnsmasq modes and the ufw rules (6 tests); API tests cover networks on netplan and ifupdown servers,
+ownership through the helper's list, and interface changes refused on ifupdown and on Lanvex's own VLANs.
 
 ### Networks: VLANs and DHCP on a server (new in 0.7)
 
@@ -137,7 +158,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Gateway that drops ping | Accepted when it answers ARP on the link (a host ignoring ICMP echo stands in for a firewall) |
 | Lost connection | A change that cuts Lanvex off (a /32 mask on the management interface): Lanvex does not confirm, the server's own timer restores the configuration, Lanvex finds out afterwards and reports *Rolled back* |
 | Drift | A file edited after the preview is not overwritten; nothing changes |
-| Hosts that cannot take changes | ifupdown host: refused with the reason; missing sudo rule and missing Python reported distinctly; helper upload over SFTP |
+| Hosts that cannot take changes | ifupdown host: interface settings refused with the reason (networks only); missing sudo rule and missing Python reported distinctly; helper upload over SFTP |
 | UI end to end | Browser test: install the helper with the commands the dialog shows, enable, prepare, review the diff, approve by typing the name, watch it apply and verify, see it under Automation and on the server page |
 | Lanvex restarts, second-admin rule, cancellation, unreachable servers, indirect connections, protected interfaces, browser confirmation, networks changes, every runner path | 42 API tests against a scripted server with a controllable clock |
 
@@ -154,8 +175,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | Why | How to close it |
 |---|---|---|
-| Debian hosts | Their package mirrors were unreachable from the build environment; detection of Debian is unit-tested | Add a Debian 12 host to the lab (CI can reach the registry, as for Fedora), or run Lanvex against one |
-| Interface changes on Fedora; networks on anything but Fedora 44 | The Fedora lab host tests networks; interface changes run on the Ubuntu hosts. Older netplan (Ubuntu 20.04/22.04) and NetworkManager versions are untested | Run a change on a test server of each kind before relying on it |
+| Reading and interface changes on Debian | The Debian 12 lab host (0.8) runs the networks tests through the helper; Lanvex's SSH reads and interface changes run on the Ubuntu hosts | Read a Debian server with Lanvex before relying on it |
+| Interface changes on Fedora; networks on other versions | Networks are tested on Fedora 44, Ubuntu 24.04 and Debian 12; interface changes on the Ubuntu hosts. Older netplan (Ubuntu 20.04/22.04), ifupdown and NetworkManager versions, RHEL, and Ubuntu with NetworkManager for networks are untested | Run a change on a test server of each kind before relying on it |
 | Changes on real hardware and real routers | The lab is containers on one bridge | Try on a non-critical server first, with console access at hand |
 | A networks change through Lanvex against a live Lanvex Core, end to end | The CI lab has no Lanvex Core; the pieces were verified separately (helper on Fedora in CI, Lanvex Core locally, the flow with stand-ins) | A network on KlassenServer or a test server, from Add network to a device with a lease |
 | Netzverwaltung and Lanvex side by side on KlassenServer | Lanvex leaves `nv-` files, Netzverwaltung's profiles and zones alone (tested with stand-ins on Fedora), but not with Netzverwaltung itself | Add a Lanvex network on a free VLAN there, then run netzverwaltung-apply and check both still serve DHCP |
@@ -172,8 +193,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 - **Access rules** for networks (firewalld policies, nftables, ufw), DNS filtering, and importing an
   existing setup such as Netzverwaltung's ([roadmap.md](roadmap.md)).
-- **More kinds of server change.** VLAN interfaces with netplan; bonds and bridges; IPv6; static
-  routes; changes on ifupdown servers; Kea instead of dnsmasq.
+- **More kinds of server change.** Bonds and bridges; IPv6; static routes; interface settings on
+  ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
 - Discovery from the network side (SNMP, switch MAC tables) and of devices Lanvex does not read; a
   deployment wizard; monitoring and alerts.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
