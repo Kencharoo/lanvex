@@ -101,16 +101,17 @@ every start. For your own NetBox, create a user (for example `lanvex`) and grant
 
 | Objects | Actions |
 |---|---|
-| IPAM: prefixes, IP addresses, VLANs | view, add, change, delete |
-| DCIM: interfaces | view, change (802.1Q mode and VLANs), add (optional: recording a server interface the device lacks) |
-| Extras: tags | view, add (Lanvex creates the `lanvex-gateway` tag once) |
-| IPAM: VRFs, roles, VLAN groups, IP ranges; DCIM: devices, sites, device roles, manufacturers; Tenancy: tenants | view |
+| IPAM: prefixes, IP addresses, VLANs, IP ranges | view, add, change, delete (IP ranges: only to change for [networks](networks.md), otherwise view) |
+| DCIM: interfaces | view, change (802.1Q mode and VLANs), add and delete (optional: recording a server interface the device lacks, adding and removing [networks](networks.md)) |
+| Extras: tags | view, add (Lanvex creates the `lanvex-gateway` and `lanvex-dhcp` tags once) |
+| IPAM: VRFs, roles, VLAN groups; DCIM: devices, sites, device roles, manufacturers; Tenancy: tenants | view |
 | Core: object changes | view (optional, for the overview's change feed) |
 | DCIM: cables | view (optional, for the topology map); add (optional, recording a cable seen over LLDP) |
 | Virtualization: virtual machines, interfaces | view (optional, to link servers to VMs); add interfaces (optional, as for devices) |
 
 A read-only token works too; write actions then fail with NetBox's permission message, and Lanvex
-records the failure in its audit log.
+records the failure in its audit log. [Networks](networks.md#your-own-netbox-instead-of-lanvex-core)
+also need two custom fields; Lanvex Core creates them itself.
 
 ## Adding a server
 

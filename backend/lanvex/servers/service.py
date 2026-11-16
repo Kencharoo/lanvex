@@ -448,9 +448,25 @@ class ServerService:
         s.next_read_at = datetime.now(UTC) + timedelta(minutes=minutes) if minutes else None
 
     async def _remember_neighbors(self, s: Server, facts: HostFacts) -> None:
-        """Keep the hosts in the server's neighbour table for discovery, and forget old ones."""
+        """Keep the hosts in the server's neighbour table, and the devices its DHCP gave an address, for
+        discovery; forget old ones."""
         now = datetime.now(UTC)
         rows = {
+            lease.ip: {
+                "id": uuid.uuid4(),
+                "server_id": s.id,
+                "address": lease.ip,
+                "family": 4,
+                "interface": iface,
+                "mac": lease.mac,
+                "router": False,
+                "first_seen": now,
+                "last_seen": now,
+            }
+            for lease in (facts.dhcp.leases if facts.dhcp else [])
+            if (iface := _lease_interface(facts, lease.ip))  # leases of Lanvex's own pools only
+        }
+        rows |= {
             n.address: {
                 "id": uuid.uuid4(),
                 "server_id": s.id,
@@ -717,3 +733,16 @@ class ServerService:
             rows=rows,
             counts=counts,
         )
+
+
+def _lease_interface(facts: HostFacts, ip: str) -> str | None:
+    """The interface of the DHCP pool a lease's address belongs to."""
+    address = ipaddress.ip_address(ip)
+    for p in facts.dhcp.pools if facts.dhcp else []:
+        if p.router and p.netmask:
+            try:
+                if address in ipaddress.ip_network(f"{p.router}/{p.netmask}", strict=False):
+                    return p.interface
+            except ValueError:
+                continue
+    return None

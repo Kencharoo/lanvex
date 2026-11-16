@@ -324,6 +324,11 @@ async def test_the_server_in_line_with_its_leases(
         ("192.168.50.150", False),
     ]
     assert [x["ip"] for x in view["other_leases"]] == ["10.9.9.9"]
+    # Devices with a lease are discovered hosts, seen by the server that gave them their address.
+    hosts = {h["address"]: h for h in (await admin.get("/api/v1/discovery/hosts")).json()["hosts"]}
+    laptop = hosts["192.168.50.150"]
+    assert [x["server_name"] for x in laptop["seen_by"]] == ["router-01"]
+    assert laptop["seen_by"][0]["interface"] == "vlan50" and laptop["seen_by"][0]["mac"] == "aa:bb:cc:00:00:07"
     r = await admin.post(f"/api/v1/servers/{sid}/networks/change")
     assert r.status_code == 409 and r.json()["error"]["code"] == "no_change"
 

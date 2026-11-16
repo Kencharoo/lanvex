@@ -2,8 +2,9 @@
 
 Lanvex can change the IPv4 configuration of one interface on a Linux server: its static
 addresses (or switching to DHCP), its default gateway, and optionally its DNS servers and search
-domains. Every change is previewed, approved by an administrator, applied by the server itself,
-verified, and rolled back automatically if anything fails or Lanvex loses contact.
+domains. It can also give a server VLAN networks with DHCP, from the documentation in Lanvex Core:
+see [networks.md](networks.md). Every change is previewed, approved by an administrator, applied by
+the server itself, verified, and rolled back automatically if anything fails or Lanvex loses contact.
 
 Everything else on the interface stays as it is: IPv6, routes other than the default route, MTU,
 VLAN and bridge settings, and any other key in the file.
@@ -112,15 +113,35 @@ before preparing a change, and after every change it must reach the server there
 is rolled back.
 
 If Lanvex runs on the server it changes, it usually cannot reach that server's own addresses (a
-rootless container cannot reach its host's LAN address), so it cannot change that server. Run Lanvex
-on another machine for that.
+rootless container cannot reach its host's LAN address). For that server, let **your browser confirm
+changes** instead (below), or run Lanvex on another machine.
+
+### Confirmed in your browser
+
+For the server Lanvex runs on, turn on **My browser confirms changes** (Edit server; leave the
+verification address empty). A change then runs as usual, the helper checks the result on the server,
+and if every check passes, the change page asks **Does everything still work?** with *Keep the change*
+and *Undo it now*, and the seconds left. Only *Keep* makes Lanvex confirm the change.
+
+Use Lanvex through one of that server's own addresses (`http://192.168.178.2:8100`, not
+`localhost`): your Keep reaching Lanvex is then the proof that the server's network still works. The
+page says which address your browser uses; when it is not one of the server's, Keep needs an extra
+tick that you checked the network yourself. If the change cut your browser off, nobody can choose
+Keep, Lanvex does not confirm, and the server's timer restores the previous configuration. Every page
+shows a change waiting for your decision, and *Keep* and *Undo* are in the audit log with the address
+used.
+
+This is how Netzverwaltung confirms its changes too, with the same limit: it proves the network your
+browser is on, not every network the change touched. The helper's own checks (addresses, routes,
+gateway, DHCP) still run before you are asked.
 
 ### Protected interfaces
 
 Interfaces that another tool manages (a network-management script, Ansible, VLAN interfaces generated
 from a file) can be listed under **Protected interfaces** (Edit server), as names or patterns such as
 `vlan-*`. Lanvex never offers or prepares a change for them, so the two tools never fight over the
-same profile.
+same profile. This includes [networks](networks.md): a Lanvex network whose name is protected stays
+exactly as the server has it.
 
 ### Warnings
 
