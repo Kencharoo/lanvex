@@ -40,7 +40,11 @@ To refresh the parser fixtures in `backend/tests/fixtures/linux`, run every comm
 
 - The containers share the build machine's kernel. If it lacks IPv6, VLAN (8021q), bonding or dummy
   interfaces, those cannot appear in the lab; the parsers cover them with constructed samples instead.
-- Distribution coverage is Ubuntu only: Debian and Fedora package mirrors were not reachable where
-  the lab was built. Their network tools are the same upstream projects (ifupdown, NetworkManager),
+- Where a container registry is reachable (CI), `LANVEX_LAB_BASE_IMAGE=docker.io/library/ubuntu:24.04`
+  builds the Ubuntu base from Ubuntu's image instead of debootstrap (apt retries dropped downloads), and
+  `LANVEX_LAB_FEDORA=1` adds `lab-fedora` (172.30.0.14: NetworkManager, firewalld, dnsmasq, like
+  KlassenServer). The networks tests (`test_networks_lab.py`) need it and a kernel with 802.1Q.
+- Without a registry, distribution coverage is Ubuntu only: Debian and Fedora package mirrors were not
+  reachable where the lab was built. Their network tools are the same upstream projects (ifupdown, NetworkManager),
   and os-release detection is unit-tested, but neither distribution has been tested end to end.
 - `--privileged` is required for systemd as PID 1. Run the lab only on a development machine.

@@ -160,7 +160,7 @@ jobs:
           sudo modprobe 8021q
           # The runners' own Ubuntu mirror: archive.ubuntu.com stalled mid-download from them.
           sudo LANVEX_LAB_ROOTFS=/tmp/lanvex-lab/rootfs LANVEX_LAB_MIRROR=http://azure.archive.ubuntu.com/ubuntu \
-            LANVEX_LAB_FEDORA=1 deploy/lab/build.sh
+            LANVEX_LAB_BASE_IMAGE=docker.io/library/ubuntu:24.04 LANVEX_LAB_FEDORA=1 deploy/lab/build.sh
       - name: Start the lab
         run: sudo deploy/lab/up.sh
       - uses: actions/setup-python@v5

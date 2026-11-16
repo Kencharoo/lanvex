@@ -1,12 +1,18 @@
 #!/bin/sh
 # Build the Lanvex lab target images from an Ubuntu 24.04 rootfs. Needs root, debootstrap, Docker,
 # and HTTP access to an Ubuntu mirror (LANVEX_LAB_MIRROR, archive.ubuntu.com by default). No container
-# registry is used.
+# registry is used, unless LANVEX_LAB_BASE_IMAGE names Ubuntu's image to start from (CI) or
+# LANVEX_LAB_FEDORA=1 adds the Fedora host.
 set -eu
 cd "$(dirname "$0")"
 ROOT=${LANVEX_LAB_ROOTFS:-/srv/lanvex-lab/rootfs}
 MIRROR=${LANVEX_LAB_MIRROR:-http://archive.ubuntu.com/ubuntu}
 
+if ! docker image inspect lanvex-target:base >/dev/null 2>&1 && [ -n "${LANVEX_LAB_BASE_IMAGE:-}" ]; then
+  # Where a registry is reachable (CI): from Ubuntu's image, with apt retrying dropped downloads.
+  docker build --network host --build-arg BASE="$LANVEX_LAB_BASE_IMAGE" --build-arg MIRROR="$MIRROR" \
+    -t lanvex-target:base base
+fi
 if ! docker image inspect lanvex-target:base >/dev/null 2>&1; then
   if [ ! -x "$ROOT/sbin/init" ]; then
     mkdir -p "$(dirname "$ROOT")"

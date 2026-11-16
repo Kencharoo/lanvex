@@ -3,7 +3,8 @@
 FROM lanvex-target:base
 ENV DEBIAN_FRONTEND=noninteractive
 ARG MIRROR=http://archive.ubuntu.com/ubuntu
-RUN printf 'deb %s noble main universe\ndeb %s noble-updates main universe\n' "$MIRROR" "$MIRROR" > /etc/apt/sources.list \
+RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-lab-retries \
+ && printf 'deb %s noble main universe\ndeb %s noble-updates main universe\n' "$MIRROR" "$MIRROR" > /etc/apt/sources.list \
  && apt-get update -qq
 # lanvex: unprivileged account Lanvex logs in with (key auth). ops: password auth test account.
 RUN useradd -m -s /bin/bash lanvex && useradd -m -s /bin/bash ops && echo 'ops:ops-lab-password-1' | chpasswd \
