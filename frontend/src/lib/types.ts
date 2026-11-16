@@ -277,6 +277,8 @@ export interface Server {
   reads_paused: string | null;
   verify_address: string | null;
   protected_interfaces: string[];
+  /** Changes are kept only when an administrator confirms them in the browser (Lanvex runs on this server). */
+  confirm_in_browser: boolean;
   created_at: string;
 }
 
@@ -531,6 +533,8 @@ export interface ChangeOut {
   started_at: string | null;
   finished_at: string | null;
   outcome: string | null;
+  /** Applied and checked; kept only if an administrator keeps it in the browser in time. */
+  awaiting_browser: boolean;
 }
 
 export interface ChangeCheck {
@@ -566,6 +570,18 @@ export interface ChangeDetail extends ChangeOut {
   approve_blocker: string | null;
   can_cancel: boolean;
   can_recheck: boolean;
+  confirm_in_browser: boolean;
+  browser: {
+    waiting_since: string | null;
+    decision: "keep" | "undo" | null;
+    by: string | null;
+    at: string | null;
+    host: string | null;
+    on_server: boolean | null;
+  } | null;
+  can_decide: boolean;
+  /** How this browser reaches Lanvex, and whether that is one of the changed server's own addresses. */
+  your_address: { host: string; on_server: boolean } | null;
 }
 
 export type HelperState = "unknown" | "ok" | "outdated" | "missing" | "no_sudo" | "no_python" | "timeout" | "error";
@@ -587,6 +603,7 @@ export interface ChangeReadiness {
   /** Which of the server's interfaces carry Lanvex's connection, as of its last read. */
   connection: { address: string; interfaces: string[]; verify_address: string | null; verify_interfaces: string[] } | null;
   protected_interfaces: string[];
+  confirm_in_browser: boolean;
 }
 
 export interface HelperInstall {

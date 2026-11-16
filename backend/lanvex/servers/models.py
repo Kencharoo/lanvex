@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
     text,
 )
@@ -80,6 +81,11 @@ class Server(TimestampMixin, Base):
     # Interfaces Lanvex must never change (managed by other tooling); shell-style patterns.
     protected_interfaces: Mapped[list[str]] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    # Changes are confirmed by the administrator's browser instead of by Lanvex alone: for the server
+    # Lanvex runs on, which Lanvex reaches only through loopback.
+    confirm_in_browser: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
     )
 
     last_status: Mapped[ConnectionStatus | None] = mapped_column(

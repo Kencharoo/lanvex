@@ -8,7 +8,7 @@ import { DataTable, type Column } from "@/components/data-table";
 import { Facts, PageHeader, Section } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import { Field, Input, Select } from "@/components/ui/form";
+import { Checkbox, Field, Input, Select } from "@/components/ui/form";
 import { Badge, EmptyState, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Notice, Skeleton, type Tone } from "@/components/ui/misc";
 import { useSession } from "@/app/session";
 import { ChangesSection } from "./changes-section";
@@ -811,6 +811,7 @@ function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; ope
     username: s.username,
     verify_address: s.verify_address ?? "",
     protected: s.protected_interfaces.join(", "),
+    confirm_in_browser: s.confirm_in_browser,
   });
   const [f, setF] = React.useState(initial);
   React.useEffect(() => {
@@ -827,6 +828,7 @@ function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; ope
           username: f.username,
           verify_address: f.verify_address.trim() || null,
           protected_interfaces: f.protected.split(/[\s,]+/).filter(Boolean),
+          confirm_in_browser: f.confirm_in_browser,
         },
       }),
     onSuccess: () => {
@@ -850,6 +852,18 @@ function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; ope
               <Input id="ed-user" className="addr" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} required />
             </Field>
             <p className="pt-1 text-[13px] font-medium">For configuration changes</p>
+            <div className="grid gap-1">
+              <Checkbox
+                id="ed-browser"
+                label="My browser confirms changes"
+                checked={f.confirm_in_browser}
+                onChange={(e) => setF({ ...f, confirm_in_browser: e.target.checked })}
+              />
+              <p className="pl-6 text-xs text-muted">
+                For the server Lanvex runs on. Lanvex reaches it only through its own loopback, which shows nothing about the server's network. After a change, you choose Keep in
+                your browser; if the browser can no longer reach Lanvex, the server restores its previous configuration by itself.
+              </p>
+            </div>
             <Field
               label="Verification address"
               htmlFor="ed-verify"

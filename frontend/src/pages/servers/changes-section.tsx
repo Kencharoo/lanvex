@@ -147,7 +147,7 @@ export function ChangesSection({
                   )}
                 </span>
               </Requirement>
-              {r.connection && <ConnectionRequirement c={r.connection} name={s.name} />}
+              {r.connection && <ConnectionRequirement c={r.connection} name={s.name} browser={r.confirm_in_browser} />}
               {r.protected_interfaces.length > 0 && (
                 <li className="pl-6 text-xs text-muted">
                   Protected, never changed by Lanvex: <span className="addr">{r.protected_interfaces.join(", ")}</span>
@@ -565,7 +565,24 @@ export function isProtected(name: string, patterns: string[]): boolean {
   });
 }
 
-function ConnectionRequirement({ c, name }: { c: NonNullable<ChangeReadiness["connection"]>; name: string }) {
+function ConnectionRequirement({ c, name, browser }: { c: NonNullable<ChangeReadiness["connection"]>; name: string; browser: boolean }) {
+  if (browser) {
+    return (
+      <Requirement ok label="Your browser confirms changes">
+        {c.interfaces.length > 0 ? (
+          <>
+            Lanvex reaches {name} at <span className="addr">{c.address}</span> on {c.interfaces.join(", ")}.
+          </>
+        ) : (
+          <>
+            Lanvex reaches {name} through <span className="addr">{c.address}</span>, which is not one of its addresses, so it cannot check a change from outside.
+          </>
+        )}{" "}
+        After every change you choose Keep in your browser. Use Lanvex through one of {name}'s own addresses, so that reaching Lanvex shows its network still works; without a decision in
+        time, the server restores its previous configuration.
+      </Requirement>
+    );
+  }
   if (c.interfaces.length > 0) {
     return (
       <Requirement ok label="Lanvex knows which interface it relies on">
@@ -582,7 +599,8 @@ function ConnectionRequirement({ c, name }: { c: NonNullable<ChangeReadiness["co
         </>
       ) : (
         <>
-          Lanvex connects through <span className="addr">{c.address}</span>, which is not one of the server's addresses (port forwarding, NAT, or Lanvex running on this server). Set a verification address in Edit server.
+          Lanvex connects through <span className="addr">{c.address}</span>, which is not one of the server's addresses (port forwarding, NAT, or Lanvex running on this server). In Edit server, set a
+          verification address, or, if Lanvex runs on this server, let your browser confirm changes.
         </>
       )}
     </Requirement>

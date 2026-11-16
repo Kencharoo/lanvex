@@ -99,6 +99,7 @@ def to_out(s: Server, netbox: NetBoxRef | None = None) -> ServerOut:
         reads_paused=s.reads_paused,
         verify_address=s.verify_address,
         protected_interfaces=list(s.protected_interfaces or []),
+        confirm_in_browser=s.confirm_in_browser,
         created_at=s.created_at,
     )
 
@@ -297,6 +298,8 @@ class ServerService:
             s.verify_address = data.verify_address
         if data.protected_interfaces is not None:
             s.protected_interfaces = data.protected_interfaces
+        if data.confirm_in_browser is not None:
+            s.confirm_in_browser = data.confirm_in_browser
         if data.unlink_netbox:
             s.netbox_object_type = s.netbox_object_id = None
         elif "netbox" in sent and data.netbox is not None:

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Identity, Index, Integer, String, text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Identity, Index, Integer, String, false, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -84,6 +84,14 @@ class ServerChange(TimestampMixin, Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     runner: Mapped[str | None] = mapped_column(String(100))
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # server-side rollback
+
+    # Kept or undone in the administrator's browser rather than by Lanvex alone (copied from the server
+    # when the change is prepared). `browser` records the wait and the decision:
+    # {"waiting_since", "decision": "keep" | "undo", "by", "at", "host", "on_server"}.
+    confirm_in_browser: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    browser: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     checks: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     log: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)

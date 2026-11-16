@@ -156,6 +156,28 @@ class ApproveRequest(ApiModel):
     confirm_name: str = Field(min_length=1, max_length=100)
 
 
+class BrowserDecision(ApiModel):
+    decision: Literal["keep", "undo"]
+    # Keep even though this browser reaches Lanvex through an address that is not the server's own.
+    acknowledge_indirect: bool = False
+
+
+class BrowserState(ApiModel):
+    waiting_since: datetime | None = None
+    decision: Literal["keep", "undo"] | None = None
+    by: str | None = None
+    at: datetime | None = None
+    host: str | None = None
+    on_server: bool | None = None
+
+
+class BrowserAddress(ApiModel):
+    """How this browser reaches Lanvex, and whether that goes through the changed server's network."""
+
+    host: str
+    on_server: bool
+
+
 class HelperStatus(ApiModel):
     state: HelperStateName
     version: int | None
@@ -179,6 +201,8 @@ class ChangeOut(ApiModel):
     started_at: datetime | None
     finished_at: datetime | None
     outcome: str | None
+    # Applied and checked; kept only if an administrator confirms it in the browser in time.
+    awaiting_browser: bool = False
 
 
 class ConnectionPath(ApiModel):
@@ -206,6 +230,7 @@ class Readiness(ApiModel):
     open_change: ChangeOut | None
     connection: ConnectionPath | None = None
     protected_interfaces: list[str] = []
+    confirm_in_browser: bool = False
 
 
 class HelperInstall(ApiModel):
@@ -254,3 +279,7 @@ class ChangeDetail(ChangeOut):
     approve_blocker: str | None
     can_cancel: bool
     can_recheck: bool
+    confirm_in_browser: bool = False
+    browser: BrowserState | None = None
+    can_decide: bool = False
+    your_address: BrowserAddress | None = None

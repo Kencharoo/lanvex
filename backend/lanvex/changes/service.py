@@ -10,8 +10,8 @@ import difflib
 import fnmatch
 import ipaddress
 import uuid
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lanvex.auth.models import User
 from lanvex.changes.models import OPEN_STATUSES, ChangeStatus, ServerChange
 from lanvex.changes.schemas import (
+    BrowserAddress,
+    BrowserState,
     ChangeDetail,
     ChangeOut,
     ChangeRequest,
@@ -39,6 +41,9 @@ from lanvex.servers.models import Server
 from lanvex.servers.service import ServerService
 
 SUPPORTED_STACKS = {"netplan-networkd", "netplan-networkmanager", "networkmanager"}
+# Lanvex stops verifying, and stops taking a decision from the browser, this long before the server's
+# own rollback deadline, so a confirmation never races the server's timer.
+CONFIRM_MARGIN = timedelta(seconds=15)
 
 
 def utcnow() -> datetime:
@@ -48,6 +53,11 @@ def utcnow() -> datetime:
 def note(c: ServerChange, message: str, level: str = "info") -> None:
     """Append to a change's timeline. Reassigned so SQLAlchemy sees the JSONB change."""
     c.log = [*(c.log or []), {"at": utcnow().isoformat(), "level": level, "message": message[:1000]}]
+
+
+def awaiting_browser(c: ServerChange) -> bool:
+    b = c.browser or {}
+    return c.status == ChangeStatus.VERIFYING and bool(b.get("waiting_since")) and not b.get("decision")
 
 
 def to_out(c: ServerChange) -> ChangeOut:
@@ -66,6 +76,7 @@ def to_out(c: ServerChange) -> ChangeOut:
         started_at=c.started_at,
         finished_at=c.finished_at,
         outcome=c.outcome,
+        awaiting_browser=awaiting_browser(c),
     )
 
 
@@ -79,7 +90,9 @@ def approve_blocker(c: ServerChange, user: User, settings: Settings) -> str | No
     return None
 
 
-def to_detail(c: ServerChange, user: User, settings: Settings) -> ChangeDetail:
+def to_detail(
+    c: ServerChange, user: User, settings: Settings, your_address: BrowserAddress | None = None
+) -> ChangeDetail:
     admin = user.role == "admin"
     blocker = approve_blocker(c, user, settings)
     preview = None
@@ -106,6 +119,10 @@ def to_detail(c: ServerChange, user: User, settings: Settings) -> ChangeDetail:
         approve_blocker=blocker,
         can_cancel=admin and c.status in (ChangeStatus.PENDING_APPROVAL, ChangeStatus.APPROVED),
         can_recheck=admin and c.status == ChangeStatus.NEEDS_ATTENTION,
+        confirm_in_browser=c.confirm_in_browser,
+        browser=BrowserState.model_validate(c.browser) if c.browser else None,
+        can_decide=admin and awaiting_browser(c),
+        your_address=your_address,
     )
 
 
@@ -224,15 +241,15 @@ class ChangeService:
         if not s.changes_enabled:
             blockers.append("Changes are not enabled for this server.")
         path = await self.connection(s, facts) if facts else None
-        if path is not None and not path.interfaces:
+        if path is not None and not path.interfaces and not s.confirm_in_browser:
             if not s.verify_address:
                 blockers.append(
                     f"Lanvex reaches {s.name} at {s.address}, which is not an address of any of its interfaces "
                     "(port forwarding, NAT, or Lanvex running on this same server, for example through "
                     "host.containers.internal). Lanvex then cannot tell which interface its connection uses, and "
                     "signing in again after a change would not show that the server is still reachable on its "
-                    "network. Set a verification address in the server's settings: one of its own addresses that "
-                    "Lanvex reaches directly."
+                    "network. In the server's settings, set a verification address (one of its own addresses that "
+                    "Lanvex reaches directly), or, if Lanvex runs on this server, let your browser confirm changes."
                 )
             elif not path.verify_interfaces:
                 blockers.append(
@@ -262,6 +279,7 @@ class ChangeService:
             open_change=to_out(open_change) if open_change else None,
             connection=path,
             protected_interfaces=list(s.protected_interfaces or []),
+            confirm_in_browser=s.confirm_in_browser,
         )
 
     async def connection(self, s: Server, facts: HostFacts) -> ConnectionPath:
@@ -371,6 +389,12 @@ class ChangeService:
                 fields={"interface": ["Not changeable."]},
             )
         warnings = await self._safety(s, req, before)
+        if s.confirm_in_browser:
+            warnings.append(
+                f"You confirm this change in your browser. After it is applied and checked, keep its page open and "
+                f"choose Keep within {self.settings.change_rollback_seconds} seconds of the start; if this browser "
+                "cannot reach Lanvex any more, the server restores its previous configuration by itself."
+            )
         unresolved = await self.db.scalar(
             select(ServerChange.number)
             .where(ServerChange.server_id == s.id, ServerChange.status == ChangeStatus.NEEDS_ATTENTION)
@@ -394,7 +418,8 @@ class ChangeService:
                 raise Conflict(
                     f"Lanvex cannot reach {s.name} at its verification address {s.verify_address}: {e.message} "
                     "It only changes a server it can check on one of the server's own addresses afterwards. If Lanvex runs "
-                    "on this server itself, it cannot do that: run Lanvex on another machine to change this server.",
+                    "on this server itself, it cannot do that: let your browser confirm changes instead (in the server's "
+                    "settings, without a verification address), or run Lanvex on another machine.",
                     code="cannot_verify",
                 ) from e
         try:
@@ -429,6 +454,7 @@ class ChangeService:
             },
             status=ChangeStatus.PENDING_APPROVAL,
             rollback_seconds=self.settings.change_rollback_seconds,
+            confirm_in_browser=s.confirm_in_browser,
             requested_by_id=user.id,
             requested_by_name=user.username,
             log=[],
@@ -476,6 +502,65 @@ class ChangeService:
         if before["method"] == "dhcp" and req.method == "static":
             warnings.append(f"{req.interface} stops using DHCP.")
         return warnings
+
+    # ---- confirmation in the browser ---------------------------------------------------------------
+
+    async def browser_address(self, c: ServerChange, host: str) -> BrowserAddress:
+        """Whether `host` (how this browser reaches Lanvex) is one of the changed server's own addresses:
+        only then does reaching Lanvex show that the server's network still works."""
+        _, facts = await self.servers.latest_facts(c.server_id)
+        own = {
+            str(ipaddress.ip_interface(a.address).ip)
+            for i in (facts.interfaces if facts else [])
+            for a in i.addresses
+            if not ipaddress.ip_interface(a.address).ip.is_loopback
+        }
+        name = host.strip("[]")
+        try:
+            addresses = [str(ipaddress.ip_address(name))]
+        except ValueError:
+            try:
+                addresses = await transport.resolve(name)
+            except transport.SSHError:
+                addresses = []
+        return BrowserAddress(host=name, on_server=bool(own & set(addresses)))
+
+    async def decide(
+        self,
+        c: ServerChange,
+        user: User,
+        decision: Literal["keep", "undo"],
+        where: BrowserAddress,
+        acknowledge_indirect: bool,
+    ) -> ServerChange:
+        await self.db.refresh(c, with_for_update=True)  # one decision, even with two browsers
+        b = c.browser or {}
+        if not awaiting_browser(c):
+            if b.get("decision"):
+                raise Conflict(
+                    f"Change #{c.number} was already {'kept' if b['decision'] == 'keep' else 'undone'} by {b.get('by')}."
+                )
+            raise Conflict(f"Change #{c.number} is not waiting for a decision in the browser.")
+        if c.deadline_at and utcnow() > c.deadline_at - CONFIRM_MARGIN:
+            raise Conflict(
+                "Too late: the server is restoring its previous configuration by itself.", code="too_late"
+            )
+        if decision == "keep" and not where.on_server and not acknowledge_indirect:
+            raise Conflict(
+                f"This browser reaches Lanvex at {where.host}, which is not one of {c.server_name}'s own addresses, "
+                f"so reaching Lanvex from here does not show that {c.server_name}'s network still works. Keep it "
+                "anyway only if you checked that yourself.",
+                code="indirect_browser",
+            )
+        c.browser = {
+            **b,
+            "decision": decision,
+            "by": user.username,
+            "at": utcnow().isoformat(),
+            "host": where.host,
+            "on_server": where.on_server,
+        }
+        return c
 
     # ---- approval --------------------------------------------------------------------------------
 

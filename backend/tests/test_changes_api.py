@@ -6,7 +6,7 @@ runs in milliseconds. test_changes_lab.py runs the same flow against real netpla
 NetworkManager hosts.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -47,12 +47,16 @@ BR0_SECONDARY = {
 class FakeClock(Clock):
     def __init__(self) -> None:
         self.t = datetime.now(UTC)
+        # Runs whenever the runner sleeps: lets a test act at that moment (a decision in the browser).
+        self.on_sleep: Callable[[], Awaitable[None]] | None = None
 
     def now(self) -> datetime:
         return self.t
 
     async def sleep(self, seconds: float) -> None:
         self.t += timedelta(seconds=max(seconds, 0.001))
+        if self.on_sleep is not None:
+            await self.on_sleep()
 
 
 class FakeServer:
@@ -760,3 +764,142 @@ async def test_protected_interfaces_are_never_changed(
     assert Cmd.HELPER_PLAN not in fake.commands()
     bad = await admin.patch(f"/api/v1/servers/{ready_server}", json={"protected_interfaces": ["eth0; rm"]})
     assert bad.status_code == 422
+
+
+# ---- confirmed in the browser ------------------------------------------------------------------------
+# Lanvex on the server it changes reaches it only through loopback. The change is kept only if an
+# administrator keeps it in a browser that reaches Lanvex, ideally over the server's own address.
+
+ON_SERVER = {"Host": f"{MGMT}:8100"}  # the browser uses one of the server's own addresses
+
+
+async def browser_server(admin: httpx.AsyncClient) -> str:
+    sid = await forwarded_server(admin)
+    s = (await admin.patch(f"/api/v1/servers/{sid}", json={"confirm_in_browser": True})).json()
+    assert s["confirm_in_browser"] is True
+    return sid
+
+
+def decide_when_asked(
+    admin: httpx.AsyncClient, clock: FakeClock, change_id: str, body: dict[str, Any], headers: dict[str, str]
+) -> list[httpx.Response]:
+    """Answers in the browser as soon as the change waits for it, once; returns the responses."""
+    answers: list[httpx.Response] = []
+
+    async def act() -> None:
+        if answers:
+            return
+        detail = (await admin.get(f"/api/v1/changes/{change_id}", headers=headers)).json()
+        if detail["can_decide"]:
+            answers.append(
+                await admin.post(f"/api/v1/changes/{change_id}/decision", json=body, headers=headers)
+            )
+
+    clock.on_sleep = act
+    return answers
+
+
+async def test_browser_confirmation_replaces_the_verification_address(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await forwarded_server(admin)
+    r = (await admin.get(f"/api/v1/servers/{sid}/changes/readiness")).json()
+    assert r["ready"] is False and any("let your browser confirm changes" in b for b in r["blockers"])
+    s = (await admin.patch(f"/api/v1/servers/{sid}", json={"confirm_in_browser": True})).json()
+    assert s["confirm_in_browser"] is True
+    r = (await admin.get(f"/api/v1/servers/{sid}/changes/readiness")).json()
+    assert r["ready"] is True and r["confirm_in_browser"] is True, r["blockers"]
+    change = await prepare(admin, sid)
+    assert change["confirm_in_browser"] is True
+    assert any("You confirm this change in your browser" in w for w in change["preview"]["warnings"])
+
+
+async def test_kept_in_the_browser_over_the_servers_address(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner, clock: FakeClock
+) -> None:
+    sid = await browser_server(admin)
+    change = await prepare(admin, sid)
+    answers = decide_when_asked(admin, clock, change["id"], {"decision": "keep"}, ON_SERVER)
+    done = await approve_and_run(admin, runner, change)
+    assert answers and answers[0].status_code == 200, answers and answers[0].text
+    assert done["status"] == "succeeded", done["log"]
+    assert done["browser"]["decision"] == "keep" and done["browser"]["on_server"] is True
+    assert done["browser"]["host"] == MGMT and done["browser"]["by"] == "admin"
+    browser = next(c for c in done["checks"] if c["id"] == "browser")
+    assert browser["ok"] is True and "one of the server's addresses" in browser["detail"]
+    assert Cmd.HELPER_CONFIRM in fake.commands()
+    event = (await admin.get("/api/v1/audit-events", params={"action": "server.change.keep"})).json()
+    assert event["results"][0]["detail"]["on_server"] is True
+
+
+async def test_keeping_from_another_address_needs_an_acknowledgement(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner, clock: FakeClock
+) -> None:
+    sid = await browser_server(admin)
+    change = await prepare(admin, sid)
+    elsewhere = {"Host": "lanvex.example.net"}  # resolves to nothing the server has
+    answers = decide_when_asked(admin, clock, change["id"], {"decision": "keep"}, elsewhere)
+    retry: list[httpx.Response] = []
+    first = clock.on_sleep
+
+    async def act() -> None:
+        assert first is not None
+        await first()
+        if answers and not retry:
+            assert answers[0].status_code == 409 and answers[0].json()["error"]["code"] == "indirect_browser"
+            body = {"decision": "keep", "acknowledge_indirect": True}
+            retry.append(
+                await admin.post(f"/api/v1/changes/{change['id']}/decision", json=body, headers=elsewhere)
+            )
+
+    clock.on_sleep = act
+    done = await approve_and_run(admin, runner, change)
+    assert retry and retry[0].status_code == 200, retry and retry[0].text
+    assert done["status"] == "succeeded"
+    assert done["browser"]["on_server"] is False
+    assert (
+        "not one of the server's addresses"
+        in next(c for c in done["checks"] if c["id"] == "browser")["detail"]
+    )
+
+
+async def test_undone_in_the_browser(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner, clock: FakeClock
+) -> None:
+    sid = await browser_server(admin)
+    change = await prepare(admin, sid)
+    answers = decide_when_asked(admin, clock, change["id"], {"decision": "undo"}, ON_SERVER)
+    done = await approve_and_run(admin, runner, change)
+    assert answers[0].status_code == 200
+    assert done["status"] == "rolled_back" and done["outcome"].startswith("Undone in the browser by admin.")
+    assert Cmd.HELPER_ROLLBACK in fake.commands() and Cmd.HELPER_CONFIRM not in fake.commands()
+    again = await admin.post(
+        f"/api/v1/changes/{change['id']}/decision", json={"decision": "keep"}, headers=ON_SERVER
+    )
+    assert again.status_code == 409
+
+
+async def test_no_decision_in_the_browser_is_never_confirmed(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await browser_server(admin)
+    change = await prepare(admin, sid)
+    done = await approve_and_run(admin, runner, change)  # nobody answers: the browser lost Lanvex
+    assert done["status"] == "rolled_back", done["log"]
+    assert done["outcome"].startswith("Nobody kept the change in the browser in time")
+    assert Cmd.HELPER_CONFIRM not in fake.commands()
+    assert next(c for c in done["checks"] if c["id"] == "browser")["ok"] is False
+    late = await admin.post(
+        f"/api/v1/changes/{change['id']}/decision", json={"decision": "keep"}, headers=ON_SERVER
+    )
+    assert late.status_code == 409
+
+
+async def test_a_failed_check_is_rolled_back_without_asking_the_browser(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await browser_server(admin)
+    change = await prepare(admin, sid)
+    fake.verify_passed = False
+    done = await approve_and_run(admin, runner, change)
+    assert done["status"] == "rolled_back" and done["browser"] is None

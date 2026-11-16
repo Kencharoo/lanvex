@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookCheck, RefreshCw, ShieldCheck, Undo2 } from "lucide-react";
+import { BookCheck, Check, RefreshCw, ShieldCheck, Undo2 } from "lucide-react";
 import * as React from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
 import { PageHeader, Section } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import { Field, Input } from "@/components/ui/form";
+import { Checkbox, Field, Input } from "@/components/ui/form";
 import { Notice, Skeleton } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
@@ -52,7 +52,7 @@ export function ChangeDetailPage() {
 
   const c = q.data;
   const pending = c?.status === "pending_approval";
-  if (q.error) {
+  if (q.error && !c) {
     return (
       <>
         <PageHeader crumbs={[{ label: "Automation", to: "/automation" }, { label: "Change" }]} title="Change" />
@@ -104,6 +104,13 @@ export function ChangeDetailPage() {
       />
 
       <div className="grid gap-8">
+        {q.error && isActive(c.status) && (
+          <Notice tone="danger" title="This browser cannot reach Lanvex right now">
+            {errorMessage(q.error)}. If the change cut this connection, the server restores its previous configuration
+            {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""} unless the change was confirmed. This page updates as soon as Lanvex answers again.
+          </Notice>
+        )}
+        {c.can_decide && <BrowserDecision change={c} onDecided={refresh} />}
         <Outcome change={c} />
         {c.status === "succeeded" && isAdmin && <Documentation change={c} />}
 
@@ -230,9 +237,22 @@ function Outcome({ change: c }: { change: ChangeDetail }) {
     case "running":
       return <Notice title="Applying on the server">The server has backed up its configuration and armed its rollback timer.</Notice>;
     case "verifying":
+      if (c.browser?.waiting_since && !c.browser.decision) {
+        return c.can_decide ? null : (
+          <Notice title="Applied and checked; waiting for an administrator to keep it">
+            An administrator keeps or undoes this change in the browser. Without a decision, the server restores its previous configuration
+            {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
+          </Notice>
+        );
+      }
+      if (c.browser?.decision) {
+        return (
+          <Notice title={c.browser.decision === "keep" ? `Kept by ${c.browser.by}; Lanvex is confirming it on the server` : `Undone by ${c.browser.by}; the server is restoring its previous configuration`} />
+        );
+      }
       return (
         <Notice title="Applied; Lanvex is checking the result">
-          Unless every check passes and Lanvex confirms, the server restores its previous configuration
+          Unless every check passes and {c.confirm_in_browser ? "an administrator keeps it in the browser" : "Lanvex confirms"}, the server restores its previous configuration
           {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
         </Notice>
       );
@@ -259,6 +279,73 @@ function Outcome({ change: c }: { change: ChangeDetail }) {
         </Notice>
       );
   }
+}
+
+/** Seconds left until `until`, updated every second. */
+function useSecondsLeft(until: number | null): number | null {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    if (until === null) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [until]);
+  return until === null ? null : Math.max(0, Math.floor((until - now) / 1000));
+}
+
+/** The change is applied and checked; Lanvex reaches this server only through loopback, so an administrator
+ * keeps it here. That the Keep request reaches Lanvex at all shows this browser's way to Lanvex still works. */
+function BrowserDecision({ change: c, onDecided }: { change: ChangeDetail; onDecided: () => void }) {
+  const [ack, setAck] = React.useState(false);
+  // Lanvex takes no decision in the last 15 seconds before the server's own deadline.
+  const left = useSecondsLeft(c.deadline_at ? new Date(c.deadline_at).getTime() - 15_000 : null);
+  const where = c.your_address;
+  const decide = useMutation({
+    mutationFn: (decision: "keep" | "undo") =>
+      api<ChangeDetail>(`/changes/${c.id}/decision`, { method: "POST", body: { decision, acknowledge_indirect: ack } }),
+    onSuccess: (_, decision) => {
+      toast.success(decision === "keep" ? "Kept. Lanvex confirms the change on the server." : "Undoing: the server restores its previous configuration.");
+      onDecided();
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+  const expired = left === 0;
+  return (
+    <section aria-label="Keep or undo the change" className="grid gap-3 rounded-[var(--radius-panel)] border-2 border-accent bg-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-[15px] font-semibold">Does everything still work?</h2>
+        {left !== null && (
+          <span className="addr text-[13px] tabular-nums text-muted" aria-live="polite">
+            {expired ? "Time is up" : `${left} s left`}
+          </span>
+        )}
+      </div>
+      <p className="text-[13px] text-muted">
+        The change is applied on {c.server_name} and every check there passed. Keep it only if what you need still works. Without a decision, the server restores its previous configuration
+        {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
+      </p>
+      {where &&
+        (where.on_server ? (
+          <p className="text-[13px]">
+            You use Lanvex at <span className="addr">{where.host}</span>, one of {c.server_name}'s own addresses, so this page still answering shows that address still works.
+          </p>
+        ) : (
+          <Notice tone="warn" title={`${where.host} is not one of ${c.server_name}'s addresses`}>
+            <p>Reaching Lanvex from here does not show that {c.server_name}'s network still works. Open Lanvex through one of the server's own addresses, or check it yourself.</p>
+            <div className="pt-2">
+              <Checkbox id="ack-indirect" label="I checked that the server's network still works" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+            </div>
+          </Notice>
+        ))}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" disabled={expired || (where !== null && !where.on_server && !ack)} loading={decide.isPending && decide.variables === "keep"} onClick={() => decide.mutate("keep")}>
+          <Check /> Keep the change
+        </Button>
+        <Button variant="secondary" disabled={expired} loading={decide.isPending && decide.variables === "undo"} onClick={() => decide.mutate("undo")}>
+          <Undo2 /> Undo it now
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function ApproveDialog({ change: c, open, onClose, onApproved }: { change: ChangeDetail; open: boolean; onClose: () => void; onApproved: () => void }) {
@@ -291,7 +378,11 @@ function ApproveDialog({ change: c, open, onClose, onApproved }: { change: Chang
             <ol className="grid list-decimal gap-1.5 pl-5 text-[13px] text-muted">
               <li>The server backs up {c.preview?.files.map((f) => f.path).join(", ")} and arms a {c.rollback_seconds}-second rollback timer.</li>
               <li>It writes the new configuration and applies it.</li>
-              <li>Lanvex signs in again and checks the result. Only if every check passes does it confirm the change.</li>
+              <li>
+                {c.confirm_in_browser
+                  ? "Lanvex checks the result. If every check passes, you choose Keep on this page; only then does Lanvex confirm the change."
+                  : "Lanvex signs in again and checks the result. Only if every check passes does it confirm the change."}
+              </li>
               <li>Otherwise, or if Lanvex cannot reach the server, the previous configuration comes back automatically.</li>
             </ol>
             {approve.error && !fieldError(approve.error, "confirm_name") && <Notice tone="danger">{errorMessage(approve.error)}</Notice>}

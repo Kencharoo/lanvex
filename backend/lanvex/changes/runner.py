@@ -4,6 +4,8 @@ For each change:
   1. The helper on the server backs up the configuration, arms a rollback timer, and applies the change.
   2. Lanvex opens a new SSH connection and asks the helper to verify the result.
   3. If every check passes, Lanvex confirms and the timer is cancelled: the change is permanent.
+     For a server whose changes are confirmed in the browser (Lanvex runs on it and reaches it only
+     through loopback), Lanvex confirms only once an administrator keeps the change there in time.
      If a check fails, Lanvex asks the helper to roll back now.
      If Lanvex cannot reach the server, it does not confirm, and the server's timer restores the
      previous configuration on its own.
@@ -31,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lanvex.audit.models import AuditEvent
 from lanvex.changes.models import IN_PROGRESS, ChangeStatus, ServerChange
 from lanvex.changes.schemas import ChangeRequest
-from lanvex.changes.service import note
+from lanvex.changes.service import CONFIRM_MARGIN, note
 from lanvex.core.config import Settings
 from lanvex.core.db import Database
 from lanvex.core.logging import get_logger
@@ -44,7 +46,6 @@ from lanvex.servers.service import ServerService
 
 log = get_logger("lanvex.changes")
 
-CONFIRM_MARGIN = timedelta(seconds=15)  # stop verifying this long before the server's deadline
 AFTER_DEADLINE = timedelta(seconds=20)  # give the server's rollback this long before checking on it
 STALE_AFTER = timedelta(seconds=120)  # a running change whose runner went quiet this long is reconciled
 RETRY_SECONDS = 5.0
@@ -233,6 +234,7 @@ class _Execution:
         self.servers = ServerService(db, runner.settings, runner.netbox())
         self.request = ChangeRequest.model_validate(c.request)
         self.id = c.id.hex
+        self.lead: str | None = None  # why Lanvex did not confirm, when it lost track afterwards
 
     async def save(self) -> None:
         self.c.heartbeat_at = self.r.clock.now()
@@ -340,7 +342,8 @@ class _Execution:
         await clock.sleep(2)
         stop_at = c.deadline_at - CONFIRM_MARGIN
         last_error: Exception | None = None
-        while clock.now() < stop_at:
+        ask_browser = False
+        while clock.now() < stop_at and not ask_browser:
             remaining = (stop_at - clock.now()).total_seconds()
             try:
                 async with self.connect(
@@ -368,9 +371,11 @@ class _Execution:
                         checks.insert(1, direct)
                     c.checks = checks
                     await self.save()
-                    if result.get("passed") and (direct is None or direct["ok"]):
+                    if not (result.get("passed") and (direct is None or direct["ok"])):
+                        return await self.roll_back(conn, checks)
+                    if not c.confirm_in_browser:
                         return await self.confirm(conn)
-                    return await self.roll_back(conn, checks)
+                    ask_browser = True  # leave the session; the decision can take a while
             except _NotYet as e:
                 last_error = e
             except helper.HelperRefused as e:
@@ -385,8 +390,13 @@ class _Execution:
                 if last_error is None:
                     note(c, f"Lanvex cannot reach the server yet: {_why(e)}", "warning")
                 last_error = e
+            if ask_browser:
+                break
             await self.save()
             await clock.sleep(min(RETRY_SECONDS, max((stop_at - clock.now()).total_seconds(), 0)))
+
+        if ask_browser:
+            return await self.wait_for_browser(target, stop_at)
 
         # Out of time without a verdict: do not confirm. The server's timer restores the old configuration.
         c.checks = [
@@ -407,6 +417,98 @@ class _Execution:
         await self.save()
         await self.wait_until(c.deadline_at + AFTER_DEADLINE)
         await self.settle_from_server(after_loss=True)
+
+    async def wait_for_browser(self, target: transport.Target, stop_at: datetime) -> None:
+        """Every check passed. Lanvex reaches this server only through loopback, so that proves little:
+        the change is kept only if an administrator, whose browser reaches Lanvex over the server's network,
+        keeps it before the deadline. Without a decision, Lanvex does not confirm and the server's timer
+        restores the previous configuration."""
+        c, clock = self.c, self.r.clock
+        assert c.deadline_at is not None
+        c.browser = {"waiting_since": clock.now().isoformat()}
+        self._browser_check(
+            None, f"Waiting for an administrator to keep or undo the change before {_local(stop_at)}."
+        )
+        note(
+            c,
+            f"Every check passed. Waiting for an administrator to keep the change in the browser before "
+            f"{_local(stop_at)}; otherwise the server restores its previous configuration at {_local(c.deadline_at)}.",
+        )
+        await self.save()
+        decision: dict[str, Any] = {}
+        while clock.now() < stop_at:
+            await self.db.refresh(c)  # the decision arrives through the API, in another session
+            decision = c.browser or {}
+            if decision.get("decision"):
+                break
+            await clock.sleep(min(1.0, max((stop_at - clock.now()).total_seconds(), 0)))
+            await self.save()
+        who, host = decision.get("by"), decision.get("host")
+        if decision.get("decision") == "keep":
+            via = f" from a browser that reaches Lanvex at {host}" + (
+                ", one of the server's addresses"
+                if decision.get("on_server")
+                else " (not one of the server's addresses)"
+            )
+            self._browser_check(True, f"Kept by {who}{via}.")
+            note(c, f"Kept by {who}{via}.")
+            await self.save()
+            return await self._confirm_when_reachable(target, stop_at)
+        if decision.get("decision") == "undo":
+            self._browser_check(False, f"Undone by {who}.")
+            note(c, f"{who} chose to undo the change.", "warning")
+            await self.save()
+            return await self._undo(target, stop_at, f"Undone in the browser by {who}.")
+        self._browser_check(False, f"No decision in the browser before {_local(stop_at)}.")
+        self.lead = "Nobody kept the change in the browser in time, so Lanvex did not confirm it. "
+        note(
+            c,
+            f"Nobody kept the change in the browser before {_local(stop_at)}, so Lanvex did not confirm it. The "
+            f"server restores its previous configuration at {_local(c.deadline_at)}.",
+            "warning",
+        )
+        await self.save()
+        await self.wait_until(c.deadline_at + AFTER_DEADLINE)
+        await self.settle_from_server(after_loss=True)
+
+    def _browser_check(self, ok: bool | None, detail: str) -> None:
+        check = {"id": "browser", "label": "Kept in the browser", "ok": ok, "detail": detail}
+        self.c.checks = [*(x for x in (self.c.checks or []) if x.get("id") != "browser"), check]
+
+    async def _confirm_when_reachable(self, target: transport.Target, stop_at: datetime) -> None:
+        last_error: Exception | None = None
+        while self.r.clock.now() < stop_at:
+            try:
+                async with self.connect(target) as conn:
+                    return await self.confirm(conn)
+            except CONNECT_ERRORS as e:
+                last_error = e
+            await self.save()
+            await self.r.clock.sleep(
+                min(RETRY_SECONDS, max((stop_at - self.r.clock.now()).total_seconds(), 0))
+            )
+        note(
+            self.c,
+            f"Lanvex could not reach the server to confirm the change ({_why(last_error)}).",
+            "warning",
+        )
+        await self.save()
+        await self.wait_until(self.c.deadline_at + AFTER_DEADLINE)  # type: ignore[operator]
+        await self.settle_from_server(after_loss=True)
+
+    async def _undo(self, target: transport.Target, stop_at: datetime, outcome: str) -> None:
+        try:
+            async with self.connect(target) as conn:
+                result = await helper.call(conn, Cmd.HELPER_ROLLBACK, {"id": self.id})
+        except CONNECT_ERRORS + (helper.HelperRefused,) as e:
+            note(self.c, f"The request to undo did not complete ({_why(e)}).", "warning")
+            await self.save()
+            await self.wait_until(self.c.deadline_at + AFTER_DEADLINE)  # type: ignore[operator]
+            return await self.settle_from_server(after_loss=True)
+        await self.finish(
+            ChangeStatus.ROLLED_BACK, f"{outcome} " + _restored(result.get("reason")), "warning"
+        )
+        await self.refresh()
 
     async def check_direct(self, target: transport.Target, stop_at: datetime) -> dict[str, Any] | None:
         """When Lanvex connects through an address that is not the server's own (NAT, port forwarding, a
@@ -533,7 +635,11 @@ class _Execution:
                 "The server reports the change as confirmed. The new configuration is permanent.",
             )
         elif name == "rolled_back":
-            lead = "Lanvex could not verify the change, so it did not confirm it. " if after_loss else ""
+            lead = (
+                (self.lead or "Lanvex could not verify the change, so it did not confirm it. ")
+                if after_loss
+                else ""
+            )
             await self.finish(
                 ChangeStatus.ROLLED_BACK,
                 f"{lead}The server restored its previous configuration" + (f": {reason}" if reason else "."),

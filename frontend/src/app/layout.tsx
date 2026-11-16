@@ -20,11 +20,11 @@ import {
   Waypoints,
 } from "lucide-react";
 import * as React from "react";
-import { NavLink, Outlet, useLocation } from "react-router";
+import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { Wordmark } from "@/components/logo";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Tooltip } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { NetBoxStatus } from "@/lib/types";
+import type { ChangeOut, NetBoxStatus } from "@/lib/types";
 import { useNetBoxLabel, useSystemInfo } from "@/lib/system";
 import { cn } from "@/lib/utils";
 import { useSession } from "./session";
@@ -232,6 +232,7 @@ export function AppLayout() {
       </aside>
       <main id="main" ref={mainRef} tabIndex={-1} className="min-w-0 flex-1 outline-none">
         <div className="mx-auto max-w-[1280px] px-6 py-6 lg:px-8">
+          <AwaitingDecision />
           <Outlet />
         </div>
       </main>
@@ -239,3 +240,32 @@ export function AppLayout() {
   );
 }
 
+
+/** Changes applied on a server Lanvex runs on wait for an administrator to keep them in the browser. If
+ * nobody does in time, the server undoes them, so they are shown on every page, not only their own. */
+function AwaitingDecision() {
+  const { isAdmin: admin } = useSession();
+  const { pathname } = useLocation();
+  const q = useQuery({
+    queryKey: ["changes", "awaiting-browser"],
+    queryFn: () => api<ChangeOut[]>("/changes?status=verifying&limit=20"),
+    enabled: admin,
+    refetchInterval: 4000,
+  });
+  const waiting = (q.data ?? []).filter((c) => c.awaiting_browser && !pathname.startsWith(`/changes/${c.id}`));
+  if (!admin || waiting.length === 0) return null;
+  return (
+    <div className="mb-4 grid gap-2">
+      {waiting.map((c) => (
+        <div key={c.id} role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-control)] border-2 border-accent bg-surface px-3 py-2 text-[13px]">
+          <span>
+            <strong>Change #{c.number} on {c.server_name}</strong> is applied and waits for you to keep it. Without a decision, the server undoes it shortly.
+          </span>
+          <Link to={`/changes/${c.id}`} className="font-medium text-accent hover:underline">
+            Keep or undo
+          </Link>
+        </div>
+      ))}
+    </div>
+  );
+}

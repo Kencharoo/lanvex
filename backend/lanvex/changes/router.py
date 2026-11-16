@@ -7,6 +7,7 @@ from lanvex.changes.models import ChangeStatus
 from lanvex.changes.runner import ChangeRunner
 from lanvex.changes.schemas import (
     ApproveRequest,
+    BrowserDecision,
     ChangeDetail,
     ChangeOut,
     ChangeRequest,
@@ -14,7 +15,7 @@ from lanvex.changes.schemas import (
     HelperInstall,
     Readiness,
 )
-from lanvex.changes.service import ChangeService, to_detail, to_out
+from lanvex.changes.service import ChangeService, awaiting_browser, to_detail, to_out
 from lanvex.core.errors import Conflict
 from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
 from lanvex.integrations.linux import helper
@@ -147,11 +148,49 @@ async def list_changes(
     return [to_out(c) for c in changes]
 
 
+def _host(request: Request) -> str:
+    """The host name or address this browser uses for Lanvex (the Host header, without the port)."""
+    return request.url.hostname or ""
+
+
 @router.get("/changes/{change_id}", response_model=ChangeDetail)
 async def get_change(
     change_id: uuid.UUID, request: Request, db: DB, settings: SettingsDep, user: CurrentUser
 ) -> ChangeDetail:
-    return to_detail(await _svc(request, db, settings).get(change_id), user, settings)
+    svc = _svc(request, db, settings)
+    c = await svc.get(change_id)
+    where = await svc.browser_address(c, _host(request)) if awaiting_browser(c) else None
+    return to_detail(c, user, settings, where)
+
+
+@router.post("/changes/{change_id}/decision", response_model=ChangeDetail)
+async def decide_change(
+    change_id: uuid.UUID,
+    body: BrowserDecision,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    user: AdminUser,
+    audit: Audit,
+) -> ChangeDetail:
+    """Keep or undo an applied change whose server is confirmed in the browser. That this request arrives
+    at all is the point: it shows the browser still reaches Lanvex after the change."""
+    svc = _svc(request, db, settings)
+    c = await svc.get(change_id)
+    where = await svc.browser_address(c, _host(request))
+    async with audit.track(
+        "server.change.keep" if body.decision == "keep" else "server.change.undo",
+        "server_change",
+        target_id=c.id,
+        target_repr=f"#{c.number} {c.server_name} {c.interface}",
+    ) as t:
+        t.detail.update(host=where.host, on_server=where.on_server)
+        await svc.decide(c, user, body.decision, where, body.acknowledge_indirect)
+        await db.commit()
+    runner = _runner(request)
+    if runner is not None:
+        runner.wake()
+    return to_detail(c, user, settings)
 
 
 @router.post("/changes/{change_id}/approve", response_model=ChangeDetail)

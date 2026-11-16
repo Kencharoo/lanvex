@@ -115,6 +115,8 @@ class ServerUpdate(ApiModel):
     verify_address: str | None = None
     # Interfaces Lanvex must not change, as names or shell-style patterns (vlan-*).
     protected_interfaces: list[str] | None = Field(default=None, max_length=50)
+    # Changes are kept only when the administrator's browser confirms them (Lanvex on this server).
+    confirm_in_browser: bool | None = None
 
     @field_validator("verify_address")
     @classmethod
@@ -199,6 +201,7 @@ class ServerOut(ApiModel):
     reads_paused: str | None  # why scheduled reads stopped by themselves; null = they run
     verify_address: str | None
     protected_interfaces: list[str]
+    confirm_in_browser: bool
     created_at: datetime
 
 
