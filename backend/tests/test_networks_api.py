@@ -358,7 +358,13 @@ async def test_the_server_in_line_with_its_leases(
     view = r.json()
     (n,) = view["networks"]
     assert n["status"] == "removed" and n["dhcp"] == "removed"
-    assert view["change"] == {"kind": "networks", "vlans": [], "dhcp": {"pools": []}, "access": {"rules": []}}
+    assert view["change"] == {
+        "kind": "networks",
+        "vlans": [],
+        "dhcp": {"pools": []},
+        "access": {"rules": []},
+        "takeover": None,
+    }
     assert not core.t("dcim/interfaces").get(n.get("netbox_interface_id") or 0)
     assert not core.t("ipam/ip-ranges")
     prepared = (await admin.post(f"/api/v1/servers/{sid}/networks/change")).json()
