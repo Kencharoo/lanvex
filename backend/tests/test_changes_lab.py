@@ -305,7 +305,8 @@ async def test_hosts_that_cannot_take_changes_say_why(lab) -> None:  # type: ign
         assert r["helper"]["state"] == "no_python" and "Python 3" in r["helper"]["message"]
     finally:
         sh("lab-ifup", "rm -rf /usr/local/libexec/lanvex /etc/sudoers.d/lanvex")
-    assert any("ifupdown" in b for b in r["blockers"])
+    # ifupdown: networks (VLANs, DHCP) only, no interface settings.
+    assert r["stack_supported"] is True and r["interface_changes"] is False
 
     # Uploading the helper puts the exact file in the user's home, with a checksum to verify.
     up = ok(await api.post(f"/api/v1/servers/{s['id']}/changes/helper/upload"))

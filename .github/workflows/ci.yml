@@ -151,7 +151,7 @@ jobs:
           --health-cmd "pg_isready -U lanvex" --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@v4
-      - name: Build the lab (Ubuntu 24.04 with each network stack, and Fedora 44 like KlassenServer)
+      - name: Build the lab (Ubuntu 24.04 with each network stack, Fedora 44 and Debian 12)
         # Normally 3 to 5 minutes; a stalled mirror download should fail the job, not use up its time.
         timeout-minutes: 20
         run: |
@@ -181,7 +181,7 @@ jobs:
         working-directory: backend
         env:
           LANVEX_TEST_LAB: "1"
-        run: uv run pytest -m lab -q
+        run: uv run pytest -m lab -q -rs
       - name: Browser tests against the lab
         working-directory: frontend
         env:

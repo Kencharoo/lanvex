@@ -49,7 +49,7 @@ import sys
 import tempfile
 import time
 
-HELPER_VERSION = 2
+HELPER_VERSION = 3
 STATE_DIR = "/var/lib/lanvex/changes"
 LOCK_FILE = "/run/lanvex-netapply.lock"
 NETPLAN_DIR = "/etc/netplan"
@@ -1771,8 +1771,8 @@ def networks_restore(state: dict) -> None:
         run(["ufw", "reload"], timeout=60)  # the restored rule files
     d = n.get("dnsmasq")
     if d is not None:
-        if not d["enabled"]:
-            run(["systemctl", "disable", "dnsmasq"], timeout=30)
+        # Both ways: the change may have enabled it (first pool) or disabled it (last pool removed).
+        run(["systemctl", "enable" if d["enabled"] else "disable", "dnsmasq"], timeout=30)
         if d["active"]:
             run(["systemctl", "restart", "dnsmasq"], timeout=60)
         else:

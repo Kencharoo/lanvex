@@ -19,7 +19,7 @@ It is **off by default**, three times over: for the installation, for each serve
 | netplan → systemd-networkd (Ubuntu Server default) | Yes | The netplan file that defines the interface |
 | netplan → NetworkManager (Ubuntu Desktop / NM with netplan, 23.10+) | Yes | The netplan file NetworkManager's profile is generated from |
 | NetworkManager with keyfiles (Fedora, RHEL, Debian with NM) | Yes | `/etc/NetworkManager/system-connections/<profile>.nmconnection` |
-| ifupdown (`/etc/network/interfaces`) | No | — Lanvex reads these servers but cannot change them |
+| ifupdown (`/etc/network/interfaces`) | Networks only | Interface settings: no. VLAN networks with DHCP: yes, in `/etc/network/interfaces.d/lanvex` ([networks.md](networks.md)) |
 | NetworkManager profiles that exist only in memory | No | Refused with an explanation |
 | netplan definitions that match many interfaces (`match: {name: "en*"}`) | No | Refused; only definitions for exactly this interface are edited |
 
@@ -217,7 +217,11 @@ applied finishes, including its verification and rollback.
 - Reads the network configuration and runs `netplan generate --root-dir` (validation in a temporary
   directory), `netplan generate`, `netplan apply`, `nmcli` (connection list, load, reapply, up),
   `ip -json`, `ping`, `resolvectl`, `getent`, and `systemd-run`/`systemctl` for its own timer units.
-- Writes only the file shown in the preview, with mode 0600, owned by root.
+  For networks also `ifup`/`ifdown`, `ip link add`/`delete` for its own VLAN interfaces,
+  `dnsmasq --test`, `firewall-cmd --reload`, `ufw` (its own marked rules), `nft -j list chains`
+  (read only) and `systemctl` for dnsmasq.
+- Writes only the files shown in the preview, owned by root (0600 for netplan and NetworkManager
+  files, which refuse anything else).
 - Keeps a backup and a state file per change in `/var/lib/lanvex/changes/<id>/` (the last 20
   changes), and a lock in `/run/lanvex-netapply.lock`.
 - Takes JSON on stdin; nothing from the request is passed to a shell. It validates every value

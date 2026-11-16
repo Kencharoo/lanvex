@@ -234,9 +234,12 @@ def test_removing_a_vlan_and_rolling_it_back(host: str) -> None:
     assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
     # The interface, its zone and DHCP are back exactly as they were.
     deadline = time.monotonic() + 30  # systemd-networkd creates it in the background
-    while "vlan50" not in links(host) and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if "vlan50" in links(host) and "192.168.50.1/24" in sh(host, "ip -4 -o address show dev vlan50"):
+            break
         time.sleep(1)
     assert "192.168.50.1/24" in sh(host, "ip -4 -o address show dev vlan50")
+    assert unit(host, "is-enabled") == "enabled"
     if BACKENDS[host] == "networkmanager":
         assert sh(host, "firewall-cmd --get-zone-of-interface=vlan50").strip() == "lx-vlan50"
     assert unit(host, "is-active") == "active"

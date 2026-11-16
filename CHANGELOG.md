@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.0 — 2026-11-16
+
+Networks on the other common server systems, not only NetworkManager ([docs/networks.md](docs/networks.md)).
+
+- **Ubuntu Server and Debian.** VLAN networks with DHCP on servers whose network netplan (with
+  systemd-networkd) or ifupdown configures: Lanvex writes `/etc/netplan/60-lanvex.yaml` or
+  `/etc/network/interfaces.d/lanvex`, linked to the trunk's own definition, and removes the VLAN
+  devices those tools leave behind. NetworkManager servers work as before. Each kind is tested on a
+  real host in CI with a real DHCP client on the new VLAN (Fedora 44, Ubuntu 24.04, Debian 12).
+- **dnsmasq next to systemd-resolved.** Where dnsmasq does not run yet and nothing else chooses its
+  interfaces, Lanvex's file binds only the interfaces it serves, so dnsmasq starts on Ubuntu, where
+  systemd-resolved holds port 53. Where dnsmasq already answers on every interface (Debian's default),
+  Lanvex adds its pools without restricting that. When the last pool is removed, dnsmasq goes back
+  to how it ran before Lanvex's first pool.
+- **ufw.** Where ufw is active, DHCP and DNS are allowed on each network Lanvex serves, with rules
+  marked `lanvex:<interface>` that leave with the network; a rollback restores ufw's rules. A
+  hand-written nftables firewall that drops incoming traffic is pointed out in the preview.
+- **Helper version 3.** Lists the VLANs it manages in `/etc/lanvex/networks.json`, which every read
+  of a server now includes (with Lanvex's DHCP configuration and leases, on every system). Interface
+  settings are not offered for Lanvex's own VLANs, which change as networks.
+- ifupdown servers can be prepared for changes (networks only); changing interface settings stays
+  limited to netplan and NetworkManager.
+- Lab: a Debian 12 host (CI); the Ubuntu host has dnsmasq and ufw installed as Ubuntu leaves them.
+
+**Updating:** every server's change helper shows as outdated (version 3); install it again from the
+server page.
+
 ## 0.7.0 — 2026-11-16
 
 The first step towards doing what Netzverwaltung does on KlassenServer, in general form
