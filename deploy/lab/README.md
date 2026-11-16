@@ -17,7 +17,7 @@ Each has an unprivileged `lanvex` user (key login) and an `ops` user with passwo
 Host keys are generated on first boot, so each container has its own.
 
 ```bash
-sudo ./build.sh   # debootstrap + docker build; needs archive.ubuntu.com, no registry
+sudo ./build.sh   # debootstrap + docker build; needs archive.ubuntu.com (or LANVEX_LAB_MIRROR), no registry
 sudo ./up.sh      # start the three hosts on the lanvex-lab network
 ```
 

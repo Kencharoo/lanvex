@@ -2,7 +2,8 @@
 # (see deploy/lab/README.md). Boots systemd as PID 1.
 FROM lanvex-target:base
 ENV DEBIAN_FRONTEND=noninteractive
-RUN printf 'deb http://archive.ubuntu.com/ubuntu noble main universe\ndeb http://archive.ubuntu.com/ubuntu noble-updates main universe\n' > /etc/apt/sources.list \
+ARG MIRROR=http://archive.ubuntu.com/ubuntu
+RUN printf 'deb %s noble main universe\ndeb %s noble-updates main universe\n' "$MIRROR" "$MIRROR" > /etc/apt/sources.list \
  && apt-get update -qq
 # lanvex: unprivileged account Lanvex logs in with (key auth). ops: password auth test account.
 RUN useradd -m -s /bin/bash lanvex && useradd -m -s /bin/bash ops && echo 'ops:ops-lab-password-1' | chpasswd \
