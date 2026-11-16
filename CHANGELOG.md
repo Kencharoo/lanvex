@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.0 — 2026-11-16
+
+The first step towards doing what Netzverwaltung does on KlassenServer, in general form
+([docs/roadmap.md](docs/roadmap.md)): VLAN networks with DHCP on a Linux server, from the
+documentation.
+
+- **Networks on a server** ([docs/networks.md](docs/networks.md)). A server page's new *Networks*
+  section lists the VLAN networks Lanvex Core documents for the server (a VLAN interface of its device
+  with an address, a DHCP pool as an IP range tagged `lanvex-dhcp`, fixed addresses as IP addresses
+  with a MAC address) next to what the server has, and prepares the one change that brings the server
+  in line. Add a network, edit its DHCP pool, add fixed addresses (also from a lease with one click),
+  or remove it; Lanvex Core is updated at once, the server only through the approved change.
+- **Helper version 2** creates, changes and removes VLAN interfaces as NetworkManager profiles
+  (`lanvex-*`), gives each a firewalld zone (`lx-*`) that allows DHCP and DNS on the server, and
+  serves DHCP with dnsmasq (`/etc/dnsmasq.d/lanvex.conf`, enabling the service with the first pool).
+  It writes only its own files, refuses another tool's VLAN or dnsmasq setting for the same
+  interface, serves DHCP only on VLANs it created, checks dnsmasq's syntax first, and restores files,
+  profiles, zones and the dnsmasq service on rollback. Protected interfaces are never touched.
+- **Changes confirmed in your browser.** For the server Lanvex runs on, which it reaches only through
+  loopback: with *My browser confirms changes*, a change that passed every check is kept only when an
+  administrator chooses *Keep* in time, from a browser that reaches Lanvex (ideally over one of the
+  server's own addresses, which Lanvex tells). Without a decision the server undoes the change. Every
+  page shows a change waiting for a decision.
+- **Leases** of Lanvex's DHCP pools appear on the server page and in Discovery.
+- Reads of NetworkManager servers include Lanvex's DHCP configuration and dnsmasq's leases; leases do
+  not count as a new state in the history.
+- Lanvex Core 0.7.0: custom fields `mac_address` (IP addresses) and `dhcp_lease_time` (IP ranges); the
+  service account may manage IP ranges and remove interfaces.
+- Lab: a Fedora 44 host like KlassenServer (NetworkManager, firewalld, dnsmasq) in CI, with a real VLAN
+  and a real DHCP client; the lab builds from the runners' Ubuntu mirror and retries a failed
+  download on another.
+
+**Updating:** after the update, every server's change helper shows as outdated (version 2). Install it
+again from the server page, as the first time. Devices on new networks reach the server's DHCP and DNS;
+access to other networks and the Internet comes with access rules (0.9).
+
 ## 0.6.1 — 2026-11-16
 
 Fixes from the first installation on Fedora Server with rootless Podman (KlassenServer).

@@ -33,11 +33,13 @@ until Lanvex can take over its whole setup.
 
 ## Stages
 
-### 0.7: VLANs and DHCP (in progress)
+### 0.7: VLANs and DHCP (released 2026-11-16)
 
 Built: browser confirmation; helper version 2 with VLAN interfaces, firewalld zones and dnsmasq; the
 custom fields and permissions in Lanvex Core; the server page's *Networks* section with fixed addresses
-and leases; leases in Discovery ([networks.md](networks.md)).
+and leases; leases in Discovery ([networks.md](networks.md)). On a Fedora 44 host in CI, a real DHCP
+client gets its fixed address through a new VLAN, and removals, rollbacks and the server's own timer
+work; what is not verified yet is in [status.md](status.md).
 
 - Browser confirmation for changes to the server Lanvex runs on (or reaches only indirectly).
 - The helper (version 2) creates, changes and removes VLAN interfaces as NetworkManager profiles,

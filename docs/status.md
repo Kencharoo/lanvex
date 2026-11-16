@@ -1,4 +1,4 @@
-# Status of Lanvex 0.6.1
+# Status of Lanvex 0.7.0
 
 Last updated 2026-11-16. "Verified" means it was run, not just written.
 
@@ -16,6 +16,23 @@ Fedora 44 server running NetworkManager was registered over SSH:
 | Host key and helper | The fingerprint shown matched the server's; the helper's checksum was identical in the API, the download, on the server and in the release source |
 | Logs | No errors in `lanvex` and `core` during the whole test |
 | Problems found | Fourteen, fixed in 0.6.1 or explained ([CHANGELOG.md](../CHANGELOG.md)). The serious one: with Lanvex running on the server it changes, the connection went through the server's loopback, so a change could have cut off the server's real network and still passed verification |
+
+### Networks: VLANs and DHCP on a server (new in 0.7)
+
+| What | How |
+|---|---|
+| On a real Fedora 44 host like KlassenServer (CI) | NetworkManager, firewalld (zone FedoraServer) and dnsmasq, in the lab on every push. The helper plans, applies, verifies and confirms a new VLAN interface on eth0 with its firewalld zone and a DHCP pool with a fixed address; a real DHCP client on another host, on VLAN 50, gets its fixed address through the zone; dnsmasq is enabled. Removing the network and rolling that back restores profile, zone and dnsmasq; an unconfirmed change is undone by the server's own timer, including dnsmasq's service state; another tool's VLAN profile and dnsmasq file are refused (4 lab tests) |
+| Helper rules | Validation of VLANs, pools, leases, fixed addresses; the files it renders; dnsmasq's config directory on Fedora and Debian; conflicts with other dnsmasq files (18 unit tests) |
+| Lanvex's side | Documenting a network in Lanvex Core (VLAN, prefix, virtual interface, gateway address, tagged pool with lease time), fixed addresses, statuses against the server's read, leases and Discovery, protected Lanvex VLANs kept as they are, removal, the prepared change; safety rules (protected names, another tool's interface, missing parent, the VLAN carrying Lanvex's connection) (6 API tests against a Lanvex Core stand-in and a scripted server) |
+| Against Lanvex Core 4.7.5 (locally) | A network documented through the Lanvex API, with its fixed address in the custom field; the change prepared from it by the real helper on the NetworkManager lab host, shown in the browser. The service account's new permissions and both custom fields are tested in Lanvex Core |
+| Ubuntu with NetworkManager | Found by trying it: Ubuntu installs only the dnsmasq program with NetworkManager (dnsmasq-base); the helper now asks for the dnsmasq service |
+
+### Changes confirmed in the browser (new in 0.7)
+
+| What | How |
+|---|---|
+| On a real host | A server reached through a forwarded port (like Lanvex on KlassenServer): the change applied on the netplan lab host, the page asked to keep it with the seconds left and the browser's address (not the server's, so an extra tick), Keep confirmed it on the server. The banner on other pages |
+| Every path | Keep over the server's address, keep from another address only with acknowledgement, undo, no decision (never confirmed, the server restores), a failed check never asks, a decision after the deadline refused, audit (6 API tests) |
 
 ### Change safety when Lanvex reaches a server indirectly (new in 0.6.1)
 
@@ -122,26 +139,28 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Drift | A file edited after the preview is not overwritten; nothing changes |
 | Hosts that cannot take changes | ifupdown host: refused with the reason; missing sudo rule and missing Python reported distinctly; helper upload over SFTP |
 | UI end to end | Browser test: install the helper with the commands the dialog shows, enable, prepare, review the diff, approve by typing the name, watch it apply and verify, see it under Automation and on the server page |
-| Lanvex restarts, second-admin rule, cancellation, unreachable servers, indirect connections, protected interfaces, every runner path | 33 API tests against a scripted server with a controllable clock |
+| Lanvex restarts, second-admin rule, cancellation, unreachable servers, indirect connections, protected interfaces, browser confirmation, networks changes, every runner path | 42 API tests against a scripted server with a controllable clock |
 
 ### Everywhere
 
 | What | How |
 |---|---|
-| Backend | 290 tests: 269 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 13 SSH lab (6 reading, discovery and recording; 7 changes). The lab tests run in CI on every push; the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Backend | 326 tests: 301 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 17 SSH lab (6 reading, discovery and recording; 7 changes; 4 networks on Fedora). The lab tests run in CI on every push; the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
 | Frontend | Type check, 30 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core) |
-| Lanvex Core | 0.6.1: its own tests (permissions of the service account and its CSRF cookie for scripts included) |
+| Lanvex Core | 0.7.0: its own tests (permissions of the service account, the DHCP custom fields, and its CSRF cookie for scripts included) |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
 ## Not verified yet
 
 | What | Why | How to close it |
 |---|---|---|
-| Debian hosts, and changes on Fedora | Their package mirrors were unreachable from the build environment, so the lab is Ubuntu-only. Reading a Fedora 44 server was verified on a real installation (above); detection of Debian is unit-tested | Add a Debian 12 and a Fedora host to the lab, or run a change against a test server |
-| Changes on anything but Ubuntu 24.04 | Same reason. Older netplan (Ubuntu 20.04/22.04) and NetworkManager versions are untested | Run a change on a test server of each kind before relying on it |
-| Changes on real hardware and real routers | The lab is containers on one bridge; DHCP was not tested (no DHCP server in the lab) | Try on a non-critical server first, with console access at hand |
+| Debian hosts | Their package mirrors were unreachable from the build environment; detection of Debian is unit-tested | Add a Debian 12 host to the lab (CI can reach the registry, as for Fedora), or run Lanvex against one |
+| Interface changes on Fedora; networks on anything but Fedora 44 | The Fedora lab host tests networks; interface changes run on the Ubuntu hosts. Older netplan (Ubuntu 20.04/22.04) and NetworkManager versions are untested | Run a change on a test server of each kind before relying on it |
+| Changes on real hardware and real routers | The lab is containers on one bridge | Try on a non-critical server first, with console access at hand |
+| A networks change through Lanvex against a live Lanvex Core, end to end | The CI lab has no Lanvex Core; the pieces were verified separately (helper on Fedora in CI, Lanvex Core locally, the flow with stand-ins) | A network on KlassenServer or a test server, from Add network to a device with a lease |
+| Netzverwaltung and Lanvex side by side on KlassenServer | Lanvex leaves `nv-` files, Netzverwaltung's profiles and zones alone (tested with stand-ins on Fedora), but not with Netzverwaltung itself | Add a Lanvex network on a free VLAN there, then run netzverwaltung-apply and check both still serve DHCP |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
-| IPv6, VLAN and bond interfaces on servers | The lab kernel has no IPv6, 8021q or bonding | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
+| IPv6 and bond interfaces on servers | The lab kernel has no IPv6 or bonding (CI loads 8021q for VLANs) | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
 | Updating an existing installation (0.4.0 → 0.4.2) | Every automatic run installs from scratch | Update the test server as in docs/core.md (*Updating*), then `scripts/check-install.sh "" admin` |
 | In the browser on a real installation: creating and editing data, read-only users, servers over SSH, server changes | Not part of the first installation test | A walkthrough on the test server |
 | Backup and restore of a Docker installation | Not tried yet | The commands in docs/core.md (*Backups*) on the test server, restored into a fresh installation |
@@ -151,8 +170,10 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 ## Not built yet
 
-- **More kinds of server change.** Creating VLAN interfaces, bonds and bridges; IPv6; static routes;
-  changes on ifupdown servers.
+- **Access rules** for networks (firewalld policies, nftables, ufw), DNS filtering, and importing an
+  existing setup such as Netzverwaltung's ([roadmap.md](roadmap.md)).
+- **More kinds of server change.** VLAN interfaces with netplan; bonds and bridges; IPv6; static
+  routes; changes on ifupdown servers; Kea instead of dnsmasq.
 - Discovery from the network side (SNMP, switch MAC tables) and of devices Lanvex does not read; a
   deployment wizard; monitoring and alerts.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
@@ -167,9 +188,10 @@ with the helper installed through sudo exactly as documented. Only lab container
 - Utilization counts IP records; NetBox counts distinct hosts. They differ only when the same host
   is recorded twice in one VRF. Like NetBox, Lanvex counts an IP range only when it is marked
   *utilized*: a DHCP range that is not marked adds nothing.
-- Under rootless Podman, a container cannot reach its own host's LAN address. Lanvex can read the
-  server it runs on (through `host.containers.internal`), but it refuses to change it, because it
-  could not check the result from outside; run Lanvex on another machine for that (docs/changes.md).
+- Under rootless Podman, a container cannot reach its own host's LAN address. Lanvex reads the server
+  it runs on through `host.containers.internal`; to change it, turn on browser confirmation
+  (docs/changes.md): it proves the network your browser is on, not every network the change touched.
+- Devices on a Lanvex network reach only the server's DHCP and DNS until access rules exist (0.9).
 - Moving a server to another address in the UI means removing and re-adding it (the API supports a
   move with a re-verified host key). Removing a server also removes its change history from the
   Automation list; the audit log keeps every change.

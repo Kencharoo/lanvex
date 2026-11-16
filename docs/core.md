@@ -169,8 +169,8 @@ was tested with in `core.lock` and contains it in `./core`. To update:
 
 ```bash
 # back up first (above), then:
-unzip lanvex-0.6.1.zip && cp lanvex-0.6.0/.env lanvex-0.6.1/
-cd lanvex-0.6.1 && docker compose up -d --build   # Podman: podman-compose up -d --build
+unzip lanvex-0.7.0.zip && cp lanvex-0.6.1/.env lanvex-0.7.0/
+cd lanvex-0.7.0 && docker compose up -d --build   # Podman: podman-compose up -d --build
 ```
 
 The Compose project is always called `lanvex`, so the new directory uses the same containers,
