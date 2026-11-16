@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.0 — 2026-11-16
+
+Access rules: what devices on each Lanvex network may reach ([docs/networks.md](docs/networks.md#what-devices-may-reach)).
+
+- **Per network:** the Internet (forwarded and masqueraded out of the uplink; private networks stay
+  closed), other Lanvex networks, other networks and single addresses on every port or only some
+  (the main LAN, a switch's web interface), and services on the server besides DHCP and DNS.
+  Everything else stays closed, as before.
+- **A matrix on the server page**, one row per network like Netzverwaltung's, with an editor. Saved
+  in Lanvex Core (custom field *Access (Lanvex)* on the interface) at once, compared with what the
+  server last applied, and brought to the server in the same approved change as VLANs and DHCP.
+- **On every firewall:** firewalld policies (`lxf-…`) and zone ports; ufw rules marked
+  `lanvex:<interface>` with `ufw route` for forwarding; without either, Lanvex's own nftables table
+  `inet lanvex`, loaded at boot by `lanvex-firewall.service`. Masquerading towards networks that do not
+  route back through the server. IP forwarding in Lanvex's own sysctl file, and back to how it was
+  once no network needs it. firewalld's configuration is checked before it reloads.
+- A network that carries Lanvex's SSH connection always keeps SSH to the server.
+- **Helper version 4.** Without firewalld or ufw, new networks now get Lanvex's nftables table, so
+  their devices reach only DHCP and DNS on the server (before, every service on it).
+- Lanvex Core 0.9.0: the custom field `lanvex_access`; its image no longer declares a health check.
+- Lab: a real client on a Lanvex VLAN reaches exactly what its rules allow (an Internet stand-in, a
+  LAN host on one port, another VLAN, SSH on the server) and nothing else, before and after a
+  rollback, on Fedora (firewalld), Ubuntu (Lanvex's table, and ufw) and Debian.
+
+**Updating:** reinstall the helper on every server (version 4). Lanvex Core updates itself with the
+new field on start. With your own NetBox, add the custom field `lanvex_access` (JSON, on interfaces).
+
 ## 0.8.1 — 2026-11-16
 
 Fixes from updating KlassenServer to 0.7.0 (Fedora Server, rootless Podman).

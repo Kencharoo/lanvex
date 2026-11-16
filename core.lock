@@ -1,5 +1,5 @@
 # The Lanvex Core version this Lanvex release is built and tested with. scripts/fetch-core.sh puts
 # exactly this commit into ./core; release archives already contain it.
 commit=23f6b1889bfd3f772a59a1a4552f4ea90e85c53a
-tag=lanvex-core-0.7.0
+tag=lanvex-core-0.9.0
 netbox=v4.7.5

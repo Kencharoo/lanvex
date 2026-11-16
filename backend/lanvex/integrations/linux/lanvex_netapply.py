@@ -2081,9 +2081,8 @@ def networks_plan(change: dict) -> dict:
         forward_before = None
 
     # Removed with the last VLAN interface.
-    access_record = (
-        [by_name[n] for n in sorted(wanted)] if any(by_name[n] != default_rule(n) for n in wanted) else None
-    )
+    # Only the rules that differ from the default (DHCP and DNS on the server, nothing else).
+    access_record = [by_name[n] for n in sorted(wanted) if by_name[n] != default_rule(n)] or None
     manifest = (
         render_manifest(backend, list(wanted), dnsmasq_before, access_record, forward_before)
         if wanted

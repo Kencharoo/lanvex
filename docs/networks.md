@@ -5,8 +5,9 @@ the switch, an address in each, and DHCP handing out addresses to the devices th
 up from the network documentation, with the same safety as every other server change.
 
 New in Lanvex 0.7 on servers whose network NetworkManager manages (Fedora, RHEL); since 0.8 also on
-Ubuntu Server (netplan with systemd-networkd) and Debian (ifupdown). Access rules (what each network
-may reach) follow in 0.9; see [roadmap.md](roadmap.md).
+Ubuntu Server (netplan with systemd-networkd) and Debian (ifupdown); since 0.9 with
+[access rules](#what-devices-may-reach): the Internet, other networks, destinations with ports and
+services on the server, per network.
 
 ## How it works
 
@@ -27,6 +28,7 @@ may reach) follow in 0.9; see [roadmap.md](roadmap.md).
 | An IPv4 address on that interface | The server's address in the network; devices get it as gateway and DNS server |
 | An IP range in that network, tagged `lanvex-dhcp`; custom field *DHCP lease time* (empty: 12h) | The DHCP pool (`/etc/dnsmasq.d/lanvex.conf`) |
 | An IP address in that network with the custom field *MAC address* | A fixed address: that device always gets this address |
+| The custom field *Access (Lanvex)* on the interface | What devices on the network may reach (below) |
 
 The server page shows the leases devices hold (as of the last read), and *Make fixed* turns one into a
 fixed address. Devices with a lease also appear in *Discovery*.
@@ -85,7 +87,7 @@ servers; on ifupdown servers Lanvex manages networks only.
   Ubuntu, installing dnsmasq next to systemd-resolved leaves it failed until Lanvex's first pool; that
   is expected.
 - dnsmasq reads `/etc/dnsmasq.d` (the default on Fedora, RHEL, Debian and Ubuntu).
-- The change helper in version 3 (Lanvex 0.8), with Python 3. After updating Lanvex, every
+- The change helper in version 4 (Lanvex 0.9), with Python 3. After updating Lanvex, every
   server's helper shows as outdated: copy the new file to the server from the server page
   (*Configuration changes*) and run the commands shown there as an administrator of the server, as
   the first time ([changes.md](changes.md#2-on-each-server-install-the-helper)).
@@ -93,16 +95,42 @@ servers; on ifupdown servers Lanvex manages networks only.
   Lanvex does not configure switches.
 - If dnsmasq already serves other networks on the server (Netzverwaltung's, for example), Lanvex's
   first pool restarts it: their DHCP and DNS pause for a moment, and the preview says so.
-- Firewall: with firewalld, Lanvex puts each network in its own zone; with ufw, it adds its rules.
-  A hand-written nftables firewall that drops incoming traffic is pointed out in the preview: allow
-  DHCP (UDP 67) and DNS (port 53) on the new interfaces yourself until Lanvex 0.9.
+- A firewall Lanvex can use: firewalld, ufw, or the `nft` command (package nftables) for its own
+  table. Without any of them Lanvex still creates networks, but cannot limit what their devices reach
+  and refuses access rules that forward traffic. A hand-written nftables ruleset that drops incoming
+  or forwarded traffic is pointed out in the preview: Lanvex's table cannot override it.
 
-## Devices on the new network
+## What devices may reach
 
-They get an address, the server as gateway and DNS server, and reach DHCP and DNS on the server. That
-is all for now: reaching other networks, the main LAN or the Internet through the server needs access
-rules, which come with Lanvex 0.9. Until then, add firewalld policies (or ufw route rules) for a
-Lanvex network yourself if you need them; Lanvex leaves rules it did not write alone.
+Devices on a Lanvex network get an address, the server as gateway and DNS server, and reach DHCP and
+DNS on the server. Everything else is closed until you allow it: on the server page, *Networks*, the
+table *What devices on each network may reach* has a row per network (like Netzverwaltung's matrix),
+and *Edit* sets:
+
+| Setting | Means |
+|---|---|
+| **The Internet** | Forwarded out of the server's uplink (the interface of its default route) and masqueraded. Private networks (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16) stay closed, unless allowed below |
+| **Another Lanvex network** on the server | Everything there, without masquerading (the server routes for both) |
+| **Other networks and addresses** | A network (`192.168.178.0/24`, the main LAN) or one address (`192.168.178.3`, a switch's web interface), on every port or only on the ones listed (`443/tcp, 80/tcp`). Masqueraded, so answers come back through the server even where that network does not route to Lanvex's networks |
+| **On the server itself** | Ports besides DHCP and DNS: SSH, a web interface, `8100/tcp` for Lanvex on KlassenServer |
+
+Answers to allowed connections always come back; a rule is about who may start a connection. Rules
+are one way: allowing VLAN 50 to reach VLAN 60 does not let VLAN 60 reach VLAN 50. Saved rules are
+documented in Lanvex Core at once and reach the server with the next change you prepare and approve,
+like everything else here. A network that carries Lanvex's own SSH connection must keep SSH to the
+server; Lanvex refuses rules that would cut it off.
+
+On the server, by the firewall it runs:
+
+| Firewall | Lanvex writes |
+|---|---|
+| firewalld | The network's zone `lx-…` lists the ports; a policy `lxf-<network>-<code>` from that zone to each zone the network may reach, with masquerade towards zones that are not Lanvex's. The configuration is checked (`firewall-cmd --check-config`) before firewalld reloads it |
+| ufw (active) | Rules marked `lanvex:<interface>`: `ufw allow in on …` for the server, `ufw route …` for forwarding, in the order ufw needs (it takes the first match). Masquerading in Lanvex's own nftables table, since ufw has no command for it |
+| Neither | Lanvex's own nftables table `inet lanvex` (`/etc/lanvex/firewall.nft`, loaded at boot by `lanvex-firewall.service`): input and forwarding for Lanvex's networks only, masquerading. Other traffic is not touched |
+
+IP forwarding is switched on in `/etc/sysctl.d/60-lanvex.conf` while a network may reach beyond the
+server, and goes back to how it was once none does. On ufw, ufw's own defaults also let ping
+(ICMP echo) through between networks; Lanvex does not change ufw's files.
 
 ## Lanvex on the server it changes
 
@@ -113,13 +141,14 @@ your browser, through one of the server's own addresses; without that, the serve
 
 ## Your own NetBox instead of Lanvex Core
 
-Lanvex Core has everything set up. With your own NetBox, create two custom fields (text, not required)
+Lanvex Core has everything set up. With your own NetBox, create three custom fields (not required)
 and give Lanvex's token these permissions:
 
 | What | Details |
 |---|---|
-| Custom field `mac_address` on *IPAM > IP address* | Validation `^([0-9a-f]{2}:){5}[0-9a-f]{2}$` |
-| Custom field `dhcp_lease_time` on *IPAM > IP range* | Validation `^([1-9][0-9]{0,4}[mhd]\|infinite)$` |
+| Custom field `mac_address` on *IPAM > IP address* | Type *Text*, validation `^([0-9a-f]{2}:){5}[0-9a-f]{2}$` |
+| Custom field `dhcp_lease_time` on *IPAM > IP range* | Type *Text*, validation `^([1-9][0-9]{0,4}[mhd]\|infinite)$` |
+| Custom field `lanvex_access` on *DCIM > Interface* | Type *JSON*; Lanvex writes and checks it |
 | IP ranges | view, add, change, delete |
 | Interfaces | view, add, change, delete |
 | VLANs, prefixes, IP addresses | view, add, change, delete (already needed) |

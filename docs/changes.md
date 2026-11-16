@@ -225,8 +225,10 @@ applied finishes, including its verification and rollback.
   directory), `netplan generate`, `netplan apply`, `nmcli` (connection list, load, reapply, up),
   `ip -json`, `ping`, `resolvectl`, `getent`, and `systemd-run`/`systemctl` for its own timer units.
   For networks also `ifup`/`ifdown`, `ip link add`/`delete` for its own VLAN interfaces,
-  `dnsmasq --test`, `firewall-cmd --reload`, `ufw` (its own marked rules), `nft -j list chains`
-  (read only) and `systemctl` for dnsmasq.
+  `dnsmasq --test`, `firewall-cmd --check-config` and `--reload`, `ufw` (its own marked rules),
+  `nft -c`/`-f` for its own table and `nft delete table inet lanvex`, `nft -j list chains` (read
+  only), `ip route` (read only), `sysctl -w net.ipv4.ip_forward`, and `systemctl` for dnsmasq and
+  `lanvex-firewall.service`.
 - Writes only the files shown in the preview, owned by root (0600 for netplan and NetworkManager
   files, which refuse anything else).
 - Keeps a backup and a state file per change in `/var/lib/lanvex/changes/<id>/` (the last 20
