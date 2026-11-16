@@ -112,6 +112,8 @@ def reset(host: str) -> None:
         "for l in vlan50 vlan60; do ip link del $l 2>/dev/null; done; "
         # Access rules: Lanvex's nftables table and its unit, firewalld policies, forwarding as built.
         "nft delete table inet lanvex 2>/dev/null; systemctl disable lanvex-firewall 2>/dev/null; "
+        "systemctl disable --now 'lanvex-dns@*' 2>/dev/null; rm -rf /etc/lanvex/dns "
+        "/etc/systemd/system/lanvex-dns@.service; ip link del lxdns 2>/dev/null; "
         "rm -f /etc/lanvex/firewall.nft /etc/systemd/system/lanvex-firewall.service /etc/sysctl.d/60-lanvex.conf "
         "/etc/firewalld/policies/lxf-*; systemctl daemon-reload; "
         "if command -v firewall-cmd >/dev/null; then firewall-cmd --reload >/dev/null; fi; "
@@ -436,3 +438,52 @@ def test_access_rules_let_devices_reach_exactly_what_is_allowed(host: str, ufw: 
     assert reaches(CLIENT, INTERNET)
     applied = json.loads(sh(host, "cat /etc/lanvex/networks.json"))["access"]
     assert applied == [{"interface": "vlan50", "internet": True, "destinations": [], "services": []}]
+
+
+def client_dns(server: str, name: str) -> tuple[int, int]:
+    """(answer code, number of answers) for an A query from the client, sent with bash alone."""
+    labels = "".join(f"\\x{len(p):02x}{p}" for p in name.split("."))
+    script = (
+        f"exec 3<>/dev/udp/{server}/53; "
+        f"printf '\\x4c\\x58\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00{labels}\\x00\\x00\\x01\\x00\\x01' >&3; "
+        "timeout 3 head -c 8 <&3 | od -An -tu1"
+    )
+    out = sh(CLIENT, f'bash -c "{script}" || true').split()
+    assert len(out) == 8, f"no answer from {server} for {name}"
+    return int(out[3]) & 0xF, int(out[6]) * 256 + int(out[7])
+
+
+def test_a_dns_filter_blocks_names_for_one_network(host: str) -> None:
+    mac = client_mac()
+    request = networks([pool(reservations=[{"mac": mac, "ip": "192.168.50.20", "name": "lab-nm"}])])
+    request["access"] = {
+        "rules": [{"interface": "vlan50", "dns_filter": {"block": ["blocked.lanvex.test"], "allow": []}}]
+    }
+    plan = call(host, "plan", request)
+    assert "systemctl restart lanvex-dns@vlan50" in plan["commands"]
+    cid, _ = apply(host, request)
+    result = call(host, "verify", {"id": cid})
+    assert result["passed"], result["checks"]
+    check = next(c for c in result["checks"] if c["id"] == "dns:vlan50")
+    assert "blocks blocked.lanvex.test" in check["detail"]
+    call(host, "confirm", {"id": cid})
+
+    # The client is told to ask the filter, which blocks the domain and every name below it, and hands
+    # everything else to the main dnsmasq (which knows the client's own name).
+    client_gets("192.168.50.20")
+    assert sh(CLIENT, "nmcli -g IP4.DNS device show eth0.50").strip() == "10.99.53.1"
+    sh(CLIENT, "ip route add 10.99.53.0/24 via 192.168.50.1 dev eth0.50")
+    assert client_dns("10.99.53.1", "blocked.lanvex.test") == (3, 0)
+    assert client_dns("10.99.53.1", "www.blocked.lanvex.test") == (3, 0)
+    code, answers = client_dns("10.99.53.1", "lab-nm")
+    assert code == 0 and answers >= 1
+
+    # Switched off again, and that rolled back: the filter is back as it was.
+    request["access"] = {"rules": []}
+    cid, _ = apply(host, request)
+    assert call(host, "verify", {"id": cid})["passed"]
+    assert sh(host, "systemctl is-active lanvex-dns@vlan50 || true").strip() != "active"
+    assert "lxdns" not in links(host)
+    assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
+    assert sh(host, "systemctl is-active lanvex-dns@vlan50 || true").strip() == "active"
+    assert client_dns("10.99.53.1", "blocked.lanvex.test") == (3, 0)

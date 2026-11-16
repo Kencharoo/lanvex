@@ -202,6 +202,8 @@ def _access_text(rule: Any) -> str:
     ]
     if rule.services:
         parts.append("server " + ", ".join(rule.services))
+    if rule.dns_filter is not None:
+        parts.append(f"DNS filter ({len(rule.dns_filter.block)} blocked)")
     return f"{rule.interface}: " + (", ".join(parts) or "DHCP and DNS only")
 
 

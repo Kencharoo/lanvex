@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Section } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import { Checkbox, Field, Input, Select } from "@/components/ui/form";
+import { Checkbox, Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Badge, Notice, Skeleton, type Tone } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
@@ -650,6 +650,7 @@ function AccessMatrix({ networks, isAdmin, onEdit }: { networks: ServerNetwork[]
               ))}
               <th className="px-3 py-2 font-medium">Elsewhere</th>
               <th className="px-3 py-2 font-medium">On the server</th>
+              <th className="px-3 py-2 font-medium">DNS filter</th>
               <th className="px-3 py-2 font-medium">State</th>
               {isAdmin && <th className="px-3 py-2" />}
             </tr>
@@ -689,6 +690,9 @@ function AccessMatrix({ networks, isAdmin, onEdit }: { networks: ServerNetwork[]
                   </td>
                   <td className="px-3 py-2">
                     {a ? ["DHCP", "DNS", ...a.services.map(serviceLabel)].join(", ") : "?"}
+                  </td>
+                  <td className="px-3 py-2">
+                    {!a ? "?" : a.dns_filter ? `${a.dns_filter.block.length} blocked${a.dns_filter.allow.length ? `, ${a.dns_filter.allow.length} exceptions` : ""}` : no}
                   </td>
                   <td className="px-3 py-2">
                     {n.access_status === "invalid" ? (
@@ -747,6 +751,9 @@ function AccessDialog({
   const [rows, setRows] = React.useState<DestinationRow[]>([]);
   const [services, setServices] = React.useState<string[]>([]);
   const [extra, setExtra] = React.useState("");
+  const [filtering, setFiltering] = React.useState(false);
+  const [blocked, setBlocked] = React.useState("");
+  const [allowed, setAllowed] = React.useState("");
   React.useEffect(() => {
     if (!n) return;
     const a: AccessSettings = n.access ?? n.access_on_server ?? { internet: false, destinations: [], services: [] };
@@ -760,6 +767,9 @@ function AccessDialog({
     );
     setServices(a.services.filter((p) => SERVICES.some((x) => x.port === p)));
     setExtra(a.services.filter((p) => !SERVICES.some((x) => x.port === p)).join(", "));
+    setFiltering(!!a.dns_filter);
+    setBlocked((a.dns_filter?.block ?? []).join("\n"));
+    setAllowed((a.dns_filter?.allow ?? []).join("\n"));
     save.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [n]);
@@ -775,6 +785,7 @@ function AccessDialog({
             ...rows.filter((r) => r.network.trim()).map((r) => ({ network: r.network.trim(), ports: split(r.ports) })),
           ],
           services: [...services, ...split(extra)],
+          dns_filter: filtering ? { block: split(blocked), allow: split(allowed) } : null,
         },
       }),
     onSuccess: (v) => {
@@ -836,6 +847,27 @@ function AccessDialog({
               <Field label="Other ports" htmlFor="ac-extra" error={fieldError(save.error, "services")}>
                 <Input id="ac-extra" className="addr" placeholder="8100/tcp, 5000-5010/udp" value={extra} onChange={(e) => setExtra(e.target.value)} />
               </Field>
+            </fieldset>
+            <fieldset className="grid gap-2">
+              <legend className="mb-1 text-xs font-medium text-muted">DNS filter</legend>
+              <Checkbox
+                id="ac-filter"
+                label={n?.pool ? "Block names for devices on this network" : "Block names for devices on this network (needs a DHCP pool here)"}
+                checked={filtering}
+                disabled={!n?.pool && !filtering}
+                onChange={(e) => setFiltering(e.target.checked)}
+              />
+              {filtering && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Blocked, with every name below" htmlFor="ac-block" hint="One domain per line">
+                    <Textarea id="ac-block" className="addr min-h-28" placeholder={"tiktok.com\ninstagram.com"} value={blocked} onChange={(e) => setBlocked(e.target.value)} />
+                  </Field>
+                  <Field label="Exceptions" htmlFor="ac-allow" hint="Answered despite a block above">
+                    <Textarea id="ac-allow" className="addr min-h-28" placeholder="edu.tiktok.com" value={allowed} onChange={(e) => setAllowed(e.target.value)} />
+                  </Field>
+                </div>
+              )}
+              {filtering && <p className="text-xs text-muted">Devices notice a block once their own DNS cache expires; switching Wi-Fi off and on again helps.</p>}
             </fieldset>
             {save.error && !fieldError(save.error, "services") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
           </DialogBody>

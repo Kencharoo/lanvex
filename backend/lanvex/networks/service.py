@@ -222,6 +222,12 @@ class NetworksService:
                 vlans.append(VlanSpec(name=name, parent=i["parent"]["name"], id=vid, addresses=addresses))  # type: ignore[arg-type]
                 # Unreadable documentation: the rules stay as the server has them until it is fixed.
                 wanted = access if access is not None else applied.get(name)
+                if wanted is not None and wanted.dns_filter is not None and pool is None:
+                    problem = (
+                        problem
+                        or f"The DNS filter on {name} needs a DHCP pool; it stays off until there is one."
+                    )
+                    wanted = wanted.model_copy(update={"dns_filter": None})
                 if wanted is not None and not wanted.is_default:
                     rules.append(AccessRule(interface=name, **wanted.model_dump()))
                 if pool is not None:
@@ -598,6 +604,11 @@ class NetworksService:
         n = await self._network(s, name)
         if not n.network:
             raise ValidationFailed(f"Document an IPv4 address on {name} first.")
+        if body.dns_filter is not None and n.pool is None:
+            raise ValidationFailed(
+                f"A DNS filter on {name} needs a DHCP pool there: devices learn the filter as their DNS server from it.",
+                fields={"dns_filter": ["Needs a DHCP pool."]},
+            )
         own = ipaddress.ip_network(n.network)
         for d in body.destinations:
             if ipaddress.ip_network(d.network).overlaps(own):
@@ -608,7 +619,11 @@ class NetworksService:
         await check_ssh_kept(s, {name: body}, {name: n.addresses})
         await self.nb.patch(
             f"{INTERFACES}{n.netbox_interface_id}/",
-            {"custom_fields": {ACCESS_FIELD: None if body.is_default else body.model_dump(mode="json")}},
+            {
+                "custom_fields": {
+                    ACCESS_FIELD: None if body.is_default else body.model_dump(mode="json", exclude_none=True)
+                }
+            },
         )
 
     async def set_pool(self, s: Server, name: str, start: str | None, end: str | None, lease: str) -> None:

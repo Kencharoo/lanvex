@@ -267,12 +267,41 @@ class Destination(ApiModel):
         return check_ports(v)
 
 
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+)
+
+
+def check_domains(v: list[str]) -> list[str]:
+    out = set()
+    for d in v:
+        name = d.strip().lower().lstrip("*").strip(".")
+        if not DOMAIN_RE.match(name):
+            raise ValueError(f"{d} is not a domain like example.com.")
+        out.add(name)
+    return sorted(out)
+
+
+class DnsFilter(ApiModel):
+    """Names devices on the network cannot look up: each domain with every name below it, except the
+    exceptions."""
+
+    block: list[str] = Field(default_factory=list, max_length=5000)
+    allow: list[str] = Field(default_factory=list, max_length=1000)
+
+    @field_validator("block", "allow")
+    @classmethod
+    def _domains(cls, v: list[str]) -> list[str]:
+        return check_domains(v)
+
+
 class AccessSettings(ApiModel):
     """What devices on one Lanvex network may reach. The default: DHCP and DNS on the server, nothing else."""
 
     internet: bool = False
     destinations: list[Destination] = Field(default_factory=list, max_length=64)
     services: list[str] = Field(default_factory=list, max_length=32)  # ports on the server itself
+    dns_filter: DnsFilter | None = None  # None: no DNS filter
 
     @field_validator("services")
     @classmethod
@@ -294,7 +323,7 @@ class AccessSettings(ApiModel):
 
     @property
     def is_default(self) -> bool:
-        return not self.internet and not self.destinations and not self.services
+        return not self.internet and not self.destinations and not self.services and self.dns_filter is None
 
 
 class AccessRule(AccessSettings):
@@ -351,6 +380,14 @@ class NetworksRequest(ApiModel):
             for d in r.destinations:
                 if ipaddress.ip_network(d.network).overlaps(own):
                     raise ValueError(f"{r.interface}: {d.network} is that network itself.")
+            if (
+                r.dns_filter is not None
+                and self.dhcp is not None
+                and r.interface not in {p.interface for p in self.dhcp.pools}
+            ):
+                raise ValueError(
+                    f"A DNS filter on {r.interface} needs a DHCP pool there: devices learn the filter as their DNS server from it."
+                )
         return self
 
     @property

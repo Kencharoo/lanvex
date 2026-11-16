@@ -546,6 +546,8 @@ export interface AccessSettings {
   internet: boolean;
   destinations: AccessDestination[];
   services: string[];
+  /** Names devices cannot look up (each with every name below it), except the exceptions. null: off. */
+  dns_filter?: { block: string[]; allow: string[] } | null;
 }
 
 export interface AccessRule extends AccessSettings {

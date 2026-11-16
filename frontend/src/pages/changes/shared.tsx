@@ -174,6 +174,7 @@ function NetworksBeforeAfter({ change }: { change: Extract<ChangeDetail, { kind:
       ...(r.internet ? ["Internet"] : []),
       ...r.destinations.map((d) => d.network.replace(/\/32$/, "") + (d.ports.length ? ` (${d.ports.join(", ")})` : "")),
       ...(r.services.length ? [`server ${r.services.join(", ")}`] : []),
+      ...(r.dns_filter ? [`DNS filter (${r.dns_filter.block.length} blocked)`] : []),
     ];
     return parts.join(" · ") || "DHCP and DNS only";
   };

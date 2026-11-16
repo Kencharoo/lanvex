@@ -129,7 +129,25 @@ On the server, by the firewall it runs:
 | Neither | Lanvex's own nftables table `inet lanvex` (`/etc/lanvex/firewall.nft`, loaded at boot by `lanvex-firewall.service`): input and forwarding for Lanvex's networks only, masquerading. Other traffic is not touched |
 
 IP forwarding is switched on in `/etc/sysctl.d/60-lanvex.conf` while a network may reach beyond the
-server, and goes back to how it was once none does. On ufw, ufw's own defaults also let ping
+server, and goes back to how it was once none does.
+
+## DNS filter
+
+In the same editor, **Block names for devices on this network** takes a list of domains (each blocks
+the domain and every name below it: `tiktok.com` also blocks `www.tiktok.com`) and exceptions that are
+answered anyway (`edu.tiktok.com`). Devices asking for a blocked name get "no such name".
+
+As in Netzverwaltung, dnsmasq cannot tell networks apart, so each filtered network gets a dnsmasq of its
+own (`lanvex-dns@<network>.service`, configured in `/etc/lanvex/dns/<network>.conf`). It answers on an
+address of Lanvex's dummy link `lxdns` (`10.99.53.1`, `.2`, … in the order of the networks' names),
+which DHCP hands to the network's devices as their DNS server, and passes every name it does not block
+to the main dnsmasq, so local device names keep working. The main dnsmasq is told to leave `lxdns`
+alone (and, where it would otherwise bind every address, to bind each interface's own addresses).
+
+- A DNS filter needs Lanvex's DHCP pool on the network: that is how devices learn to use it.
+- `10.99.53.0/24` must be free on the server; Lanvex refuses the filter otherwise and says what uses it.
+- Devices notice a new block once their own DNS cache expires. Devices with a DNS server set by hand,
+  or using DNS over HTTPS, are not filtered. On ufw, ufw's own defaults also let ping
 (ICMP echo) through between networks; Lanvex does not change ufw's files.
 
 ## Lanvex on the server it changes

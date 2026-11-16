@@ -414,11 +414,13 @@ async def test_access_rules_are_documented_compared_and_brought_to_the_server(
         ],
         "services": ["22/tcp"],
     }
-    assert n["access"] == stored and n["access_status"] is None  # comes with the new network
+    assert (
+        n["access"] == stored | {"dns_filter": None} and n["access_status"] is None
+    )  # comes with the network
     iface = next(i for i in core.t("dcim/interfaces").values() if i["name"] == "vlan50")
     assert iface["custom_fields"]["lanvex_access"] == stored  # documented in Lanvex Core
     change = r.json()["change"]
-    assert change["access"] == {"rules": [{"interface": "vlan50"} | stored]}
+    assert change["access"] == {"rules": [{"interface": "vlan50", "dns_filter": None} | stored]}
     r = await admin.post(f"/api/v1/servers/{sid}/networks/change")
     assert r.status_code == 201, r.text
     assert (
@@ -457,3 +459,36 @@ async def test_access_rules_are_documented_compared_and_brought_to_the_server(
     ):
         r = await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/access", json=bad)
         assert r.status_code == 422 and message in r.text, r.text
+
+
+async def test_a_dns_filter_is_documented_with_the_access_rules(
+    admin: httpx.AsyncClient, core: CoreStandIn, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await router_01(admin, fake)
+    await admin.post(f"/api/v1/servers/{sid}/networks", json=NEW)
+    rule = {
+        "internet": True,
+        "dns_filter": {"block": ["TikTok.com", "*.instagram.com"], "allow": ["edu.tiktok.com"]},
+    }
+    r = await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/access", json=rule)
+    assert r.status_code == 200, r.text
+    (n,) = r.json()["networks"]
+    assert n["access"]["dns_filter"] == {
+        "block": ["instagram.com", "tiktok.com"],
+        "allow": ["edu.tiktok.com"],
+    }
+    assert r.json()["change"]["access"]["rules"][0]["dns_filter"] == n["access"]["dns_filter"]
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/change")
+    assert r.status_code == 201 and "DNS filter (2 blocked)" in r.json()["summary"], r.text
+    await admin.post(f"/api/v1/changes/{r.json()['id']}/cancel")
+
+    # Without DHCP there, devices would never learn the filter.
+    await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/pool", json={"start": None, "end": None})
+    r = await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/access", json=rule)
+    assert r.status_code == 422 and "needs a DHCP pool" in r.text, r.text
+    view = (await admin.get(f"/api/v1/servers/{sid}/networks")).json()
+    (n,) = view["networks"]
+    assert "stays off until there is one" in n["access_problem"]
+    assert "dns_filter" not in (
+        view["change"]["access"]["rules"][0] if view["change"]["access"]["rules"] else {}
+    ) or (view["change"]["access"]["rules"][0]["dns_filter"] is None)

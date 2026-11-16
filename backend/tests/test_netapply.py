@@ -886,3 +886,49 @@ def test_lanvex_nftables_table():
     # Next to ufw: masquerading only.
     nat_only = h.render_nft(rules, pairs, "eth0", {"vlan50"}, ["vlan50", "vlan60"], filtering=False)
     assert "hook input" not in nat_only and "hook forward" not in nat_only and "masquerade" in nat_only
+
+
+def test_dns_filter_rules_and_files():
+    rule = h.validate_access(
+        {
+            "rules": [
+                {
+                    "interface": "vlan50",
+                    "dns_filter": {
+                        "block": ["TikTok.com", "*.instagram.com", "tiktok.com."],
+                        "allow": ["edu.tiktok.com"],
+                    },
+                }
+            ]
+        },
+        ACCESS_VLANS,
+    )["rules"][0]
+    assert rule["dns_filter"] == {"block": ["instagram.com", "tiktok.com"], "allow": ["edu.tiktok.com"]}
+    with pytest.raises(h.Refused, match="not a domain"):
+        h.validate_access(
+            {"rules": [{"interface": "vlan50", "dns_filter": {"block": ["no spaces.com"]}}]}, ACCESS_VLANS
+        )
+    # One address per filtered network on Lanvex's link, in the order of their names.
+    rules = [
+        rule,
+        h.default_rule("vlan60") | {"dns_filter": {"block": [], "allow": []}},
+        h.default_rule("vlan70"),
+    ]
+    assert h.dns_addresses(rules) == {"vlan50": "10.99.53.1", "vlan60": "10.99.53.2"}
+
+    conf = h.render_dns_filter("vlan50", "10.99.53.1", "192.168.50.1", rule["dns_filter"])
+    assert "\nlisten-address=10.99.53.1\nport=53\n" in conf and "\nbind-interfaces\n" in conf
+    assert "\nserver=192.168.50.1\n" in conf and "\nno-dhcp-interface=\n" in conf
+    assert "\nserver=/edu.tiktok.com/192.168.50.1\n" in conf
+    assert "\naddress=/instagram.com/\naddress=/tiktok.com/\n" in conf
+    unit = h.render_dns_unit()
+    assert (
+        "address replace ${LANVEX_DNS_ADDRESS}/32 dev lxdns" in unit
+        and "EnvironmentFile=/etc/lanvex/dns/%i.env" in unit
+    )
+
+    pools = h.validate_networks(networks(pools=[TEST_POOL]))["dhcp"]["pools"]
+    main = h.render_dnsmasq(pools, True, True, {"vlan50": "10.99.53.1"})
+    assert "\nexcept-interface=lxdns\n" in main  # the main dnsmasq leaves the filters' addresses alone
+    assert "dhcp-option=tag:lx-vlan50,option:dns-server,10.99.53.1\n" in main  # devices ask the filter
+    assert "except-interface" not in h.render_dnsmasq(pools, True, True)

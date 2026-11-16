@@ -157,7 +157,7 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq debootstrap >/dev/null
           # VLAN interfaces in the lab containers need the host kernel's 802.1Q module.
-          sudo modprobe 8021q
+          sudo modprobe 8021q && sudo modprobe dummy
           # The runners' own Ubuntu mirror: archive.ubuntu.com stalled mid-download from them.
           sudo LANVEX_LAB_ROOTFS=/tmp/lanvex-lab/rootfs LANVEX_LAB_MIRROR=http://azure.archive.ubuntu.com/ubuntu \
             LANVEX_LAB_BASE_IMAGE=docker.io/library/ubuntu:24.04 LANVEX_LAB_FEDORA=1 LANVEX_LAB_DEBIAN=1 deploy/lab/build.sh

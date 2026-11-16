@@ -72,6 +72,16 @@ FORWARD_KEY = "/proc/sys/net/ipv4/ip_forward"
 # Never reached through "the Internet": private, shared (CGNAT) and link-local addresses.
 PRIVATE4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16")
 PORT_RE = re.compile(r"^([0-9]{1,5})(?:-([0-9]{1,5}))?/(tcp|udp)$")
+# DNS filter: one dnsmasq per filtered network, on an address of Lanvex's dummy link, handing every
+# name it does not block to the main dnsmasq. Clients get that address as their DNS server by DHCP.
+DNS_DIR = "/etc/lanvex/dns"
+DNS_UNIT_NAME = "lanvex-dns@.service"
+DNS_UNIT = "/etc/systemd/system/" + DNS_UNIT_NAME
+DNS_LINK = "lxdns"
+DNS_NET = "10.99.53.0/24"
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+)
 DNSMASQ_CONF = "/etc/dnsmasq.conf"
 DNSMASQ_DIR = "/etc/dnsmasq.d"
 DNSMASQ_FILE = "/etc/dnsmasq.d/lanvex.conf"
@@ -1026,7 +1036,35 @@ def validate_access(access: object, vlans: dict) -> dict | None:
             "destinations": sorted(out, key=lambda x: (ipaddress.ip_network(x["network"]), x["ports"])),
             "services": sorted({check_port(x, name) for x in services}, key=_port_key),
         }
+        f = r.get("dns_filter")
+        if f is not None:
+            if not isinstance(f, dict):
+                raise Refused(
+                    "invalid_request", '%s: dns_filter is null or {"block": [...], "allow": [...]}.' % name
+                )
+            block, allow = f.get("block") or [], f.get("allow") or []
+            if (
+                not isinstance(block, list)
+                or len(block) > 5000
+                or not isinstance(allow, list)
+                or len(allow) > 1000
+            ):
+                raise Refused(
+                    "invalid_request", "%s: at most 5000 blocked domains and 1000 exceptions." % name
+                )
+            rules[name]["dns_filter"] = {
+                "block": sorted({check_domain_name(d, name) for d in block}),
+                "allow": sorted({check_domain_name(d, name) for d in allow}),
+            }
     return {"rules": [rules[k] for k in sorted(rules)]}
+
+
+def check_domain_name(value: object, field: str) -> str:
+    """A domain for the DNS filter: it and every name below it."""
+    d = value.strip().lower().lstrip("*").strip(".") if isinstance(value, str) else ""
+    if not DOMAIN_RE.match(d):
+        raise Refused("invalid_request", "%s: %r is not a domain like example.com." % (field, value))
+    return d
 
 
 def _port_key(port: str) -> tuple:
@@ -1084,7 +1122,9 @@ def render_zone(v: dict, services: list, bind: bool = False, ports: list | None 
     return "\n".join(out) + "\n"
 
 
-def render_dnsmasq(pools: list, interfaces: bool = True, bind_dynamic: bool = False) -> str:
+def render_dnsmasq(
+    pools: list, interfaces: bool = True, bind_dynamic: bool = False, filters: dict | None = None
+) -> str:
     """interfaces: list each interface (dnsmasq then answers only on the listed ones). Left out when
     another configuration has dnsmasq answer on every interface, which the lines would end.
     bind_dynamic: bind only those interfaces' addresses, so dnsmasq starts next to systemd-resolved."""
@@ -1093,6 +1133,12 @@ def render_dnsmasq(pools: list, interfaces: bool = True, bind_dynamic: bool = Fa
         lines += [
             "# Bind only the interfaces dnsmasq serves (systemd-resolved holds 127.0.0.53:53).",
             "bind-dynamic",
+            "",
+        ]
+    if filters:
+        lines += [
+            "# DNS filters answer on Lanvex's link %s, which the main dnsmasq leaves to them." % DNS_LINK,
+            "except-interface=" + DNS_LINK,
             "",
         ]
     for p in pools:
@@ -1104,7 +1150,8 @@ def render_dnsmasq(pools: list, interfaces: bool = True, bind_dynamic: bool = Fa
         lines += [
             "dhcp-range=set:%s,%s,%s,%s,%s" % (tag, p["start"], p["end"], mask, p["lease"]),
             "dhcp-option=tag:%s,option:router,%s" % (tag, p["router"]),
-            "dhcp-option=tag:%s,option:dns-server,%s" % (tag, ",".join(p["dns"])),
+            "dhcp-option=tag:%s,option:dns-server,%s"
+            % (tag, (filters or {}).get(p["interface"]) or ",".join(p["dns"])),
         ]
         for r in p["reservations"]:
             lines.append(
@@ -1649,6 +1696,125 @@ def render_sysctl() -> str:
     return "# %s\n# Devices on Lanvex networks reach beyond this server.\nnet.ipv4.ip_forward = 1\n" % MANAGED
 
 
+def dns_addresses(rules: list) -> dict:
+    """The DNS filter address of each filtered network: 10.99.53.1, .2, … in the order of their names."""
+    base = ipaddress.ip_network(DNS_NET).network_address
+    names = sorted(r["interface"] for r in rules if r.get("dns_filter") is not None)
+    if len(names) > 250:
+        raise Refused("invalid_request", "Lanvex filters DNS on at most 250 networks per server.")
+    return {name: str(base + i + 1) for i, name in enumerate(names)}
+
+
+def render_dns_filter(name: str, address: str, upstream: str, f: dict) -> str:
+    out = [
+        "# " + MANAGED,
+        "# DNS filter for the devices on %s; started by lanvex-dns@%s.service. Names it does not block go"
+        % (name, name),
+        "# to the main dnsmasq on %s, so local names keep working." % upstream,
+        "bind-interfaces",
+        "listen-address=" + address,
+        "port=53",
+        "no-dhcp-interface=",
+        "no-hosts",
+        "no-resolv",
+        "server=" + upstream,
+        "cache-size=1000",
+        "",
+    ]
+    if f["allow"]:
+        out.append("# Exceptions: answered as usual, also below a blocked domain.")
+        out += ["server=/%s/%s" % (d, upstream) for d in f["allow"]]
+        out.append("")
+    if f["block"]:
+        out.append("# Blocked, with every name below it.")
+        out += ["address=/%s/" % d for d in f["block"]]
+        out.append("")
+    return "\n".join(out)
+
+
+def render_dns_env(address: str) -> str:
+    return "# %s\nLANVEX_DNS_ADDRESS=%s\n" % (MANAGED, address)
+
+
+def render_dns_unit() -> str:
+    ip, dnsmasq = which("ip") or "/usr/sbin/ip", which("dnsmasq") or "/usr/sbin/dnsmasq"
+    return "\n".join(
+        [
+            "# " + MANAGED,
+            "[Unit]",
+            "Description=Lanvex DNS filter for %i",
+            "After=network-online.target dnsmasq.service",
+            "Wants=network-online.target",
+            "ConditionPathExists=%s/%%i.conf" % DNS_DIR,
+            "",
+            "[Service]",
+            "Type=exec",
+            "EnvironmentFile=%s/%%i.env" % DNS_DIR,
+            # Its address lives on Lanvex's dummy link, which the main dnsmasq leaves alone.
+            "ExecStartPre=-%s link add %s type dummy" % (ip, DNS_LINK),
+            "ExecStartPre=%s link set %s up" % (ip, DNS_LINK),
+            "ExecStartPre=%s address replace ${LANVEX_DNS_ADDRESS}/32 dev %s" % (ip, DNS_LINK),
+            "ExecStartPre=%s --test --conf-file=%s/%%i.conf" % (dnsmasq, DNS_DIR),
+            "ExecStart=%s -k --conf-file=%s/%%i.conf --pid-file=" % (dnsmasq, DNS_DIR),
+            "ExecStopPost=-%s address del ${LANVEX_DNS_ADDRESS}/32 dev %s" % (ip, DNS_LINK),
+            "Restart=on-failure",
+            "RestartSec=3",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        ]
+    )
+
+
+def dns_net_clash() -> str | None:
+    """An address or route of the server inside Lanvex's DNS filter range (other than its own link)."""
+    net = ipaddress.ip_network(DNS_NET)
+    r = run(["ip", "-j", "-4", "address", "show"], timeout=15)
+    for link in json.loads(r.stdout or "[]"):
+        for a in link.get("addr_info") or []:
+            if link.get("ifname") != DNS_LINK and ipaddress.ip_address(a["local"]) in net:
+                return "%s/%s on %s" % (a["local"], a["prefixlen"], link.get("ifname"))
+    r = run(["ip", "-j", "-4", "route", "show"], timeout=15)
+    for route in json.loads(r.stdout or "[]"):
+        dst = route.get("dst")
+        if dst and dst != "default" and route.get("dev") != DNS_LINK:
+            try:
+                if ipaddress.ip_network(dst if "/" in dst else dst + "/32", strict=False).overlaps(net):
+                    return "the route to %s" % dst
+            except ValueError:
+                continue
+    return None
+
+
+def our_dns_filters() -> list:
+    if not os.path.isdir(DNS_DIR):
+        return []
+    return sorted(f[:-5] for f in os.listdir(DNS_DIR) if f.endswith(".conf"))
+
+
+def dns_query(address: str, name: str, timeout: float = 3.0) -> tuple:
+    """(rcode, answers) for an A query, or (None, 0) without an answer."""
+    import socket  # noqa: PLC0415 - only for the check
+    import struct  # noqa: PLC0415
+
+    tid = struct.unpack(">H", os.urandom(2))[0]
+    question = b"".join(bytes([len(p)]) + p.encode("ascii") for p in name.split(".") if p) + b"\0"
+    packet = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0) + question + struct.pack(">HH", 1, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(packet, (address, 53))
+        data, _ = s.recvfrom(4096)
+    except OSError:
+        return (None, 0)
+    finally:
+        s.close()
+    if len(data) < 12 or struct.unpack(">H", data[:2])[0] != tid:
+        return (None, 0)
+    return (struct.unpack(">H", data[2:4])[0] & 0xF, struct.unpack(">H", data[6:8])[0])
+
+
 def our_policies() -> list:
     if not os.path.isdir(POLICY_DIR):
         return []
@@ -1941,6 +2107,50 @@ def networks_plan(change: dict) -> dict:
         known_before = None
     dnsmasq_before = known_before
 
+    # DNS filters: one dnsmasq per filtered network, on Lanvex's dummy link.
+    filters = dns_addresses(rules)
+    filters_before = our_dns_filters()
+    if filters:
+        clash = dns_net_clash()
+        if clash:
+            raise Refused(
+                "conflict",
+                "Lanvex's DNS filters use %s on this server, and %s is in it. Remove that first."
+                % (DNS_NET, clash),
+            )
+        unserved = sorted(n for n in filters if n not in served)
+        if unserved:
+            raise Refused(
+                "invalid_request",
+                "A DNS filter needs Lanvex's DHCP on the network (devices learn the filter as their DNS server "
+                "from it): %s has no DHCP pool." % ", ".join(unserved),
+            )
+    if pools is None and (filters or filters_before):
+        # The filters' addresses go out with DHCP: a change to them needs the pools to write again.
+        if sorted(filters) != filters_before or any(
+            read_text(os.path.join(DNS_DIR, n + ".env")).strip().split("=")[-1] != a
+            for n, a in filters.items()
+            if os.path.exists(os.path.join(DNS_DIR, n + ".env"))
+        ):
+            raise Refused("invalid_request", "Send the DHCP pools along with a change to the DNS filters.")
+    for name, address in sorted(filters.items()):
+        upstream = str(ipaddress.ip_interface(wanted[name]["addresses"][0]).ip)
+        add(
+            os.path.join(DNS_DIR, name + ".conf"),
+            "DNS filter for %s" % name,
+            render_dns_filter(name, address, upstream, by_name[name]["dns_filter"]),
+        )
+        add(os.path.join(DNS_DIR, name + ".env"), "its address (%s)" % address, render_dns_env(address))
+    for name in filters_before:
+        if name not in filters:
+            add(os.path.join(DNS_DIR, name + ".conf"), "DNS filter for %s (removed)" % name, None)
+            add(os.path.join(DNS_DIR, name + ".env"), "its address (removed)", None)
+    add(DNS_UNIT, "systemd unit for the DNS filters", render_dns_unit() if filters else None)
+    dns_start = sorted(
+        n for n in filters if any(f["path"].startswith(os.path.join(DNS_DIR, n + ".")) for f in files)
+    )
+    dns_stop = sorted(n for n in filters_before if n not in filters)
+
     dnsmasq = None
     if pools is not None:
         if pools:
@@ -1969,6 +2179,10 @@ def networks_plan(change: dict) -> dict:
         elif not pools:
             dnsmasq_before = None
         listed, bind_dynamic = dnsmasq_mode(bool(state and state["active"]))
+        if filters and not bind_dynamic and not dnsmasq_others()["bind"]:
+            # dnsmasq binds the wildcard address unless told otherwise, which would keep the filters'
+            # addresses busy; bind-dynamic binds each interface's addresses instead, the same interfaces.
+            bind_dynamic = True
         if pools and not listed:
             warnings.append(
                 "dnsmasq answers on every interface of this server for another configuration; Lanvex adds its pools "
@@ -1977,7 +2191,7 @@ def networks_plan(change: dict) -> dict:
         add(
             DNSMASQ_FILE,
             "dnsmasq: DHCP for the Lanvex networks",
-            render_dnsmasq(pools, listed, bind_dynamic) if pools else None,
+            render_dnsmasq(pools, listed, bind_dynamic, filters) if pools else None,
         )
         if state is not None:
             # Lanvex stops serving DHCP here: dnsmasq goes back to how it ran before (unknown for
@@ -2116,7 +2330,7 @@ def networks_plan(change: dict) -> dict:
     commands += [" ".join(shlex.quote(w) for w in ufw_rule_argv(r, delete=True)) for r in ufw_delete]
     commands += [" ".join(shlex.quote(w) for w in ufw_rule_argv(r)) for r in ufw_add]
     nft_changed = any(f["path"] == NFT_FILE for f in files)
-    unit_changed = any(f["path"] == NFT_UNIT for f in files)
+    unit_changed = any(f["path"] in (NFT_UNIT, DNS_UNIT) for f in files)
     if unit_changed:
         commands.append("systemctl daemon-reload")
     if nft_changed and nft_text:
@@ -2140,6 +2354,9 @@ def networks_plan(change: dict) -> dict:
         commands.append("systemctl disable dnsmasq")
     if stop_dnsmasq:
         commands.append("systemctl stop dnsmasq")
+    commands += ["systemctl disable --now lanvex-dns@%s" % n for n in dns_stop]
+    for n in dns_start:
+        commands += ["systemctl enable lanvex-dns@%s" % n, "systemctl restart lanvex-dns@%s" % n]
     if stop_dnsmasq or disable_dnsmasq:
         warnings.append(
             "Lanvex no longer serves DHCP on this server: dnsmasq is %s, as it was before Lanvex's first pool."
@@ -2183,6 +2400,14 @@ def networks_plan(change: dict) -> dict:
             "nft_before": nft_before,
             "unit_changed": unit_changed,
             "unit_enabled_before": service_state(NFT_UNIT_NAME)["enabled"] if unit_changed else None,
+            "dns": {
+                "filters": filters,
+                "start": dns_start,
+                "stop": dns_stop,
+                "before": filters_before,
+                # A blocked domain per filter, for the check after applying.
+                "probes": {n: (by_name[n]["dns_filter"]["block"] or [None])[0] for n in filters},
+            },
             "forwarding": forwarding,
             "forward_now": forward_now,
             "set_forward": set_forward,
@@ -2293,6 +2518,14 @@ def networks_apply(plan: dict) -> None:
         run(["systemctl", "disable", "dnsmasq"], timeout=30, check=True)
     if n.get("stop_dnsmasq"):
         run(["systemctl", "stop", "dnsmasq"], timeout=60, check=True)
+    dns = n.get("dns") or {}
+    for name in dns.get("stop") or []:
+        run(["systemctl", "disable", "--now", "lanvex-dns@" + name], timeout=60)
+    for name in dns.get("start") or []:
+        run(["systemctl", "enable", "lanvex-dns@" + name], timeout=30, check=True)
+        run(["systemctl", "restart", "lanvex-dns@" + name], timeout=60, check=True)
+    if not dns.get("filters") and dns.get("before") and os.path.exists("/sys/class/net/" + DNS_LINK):
+        run(["ip", "link", "delete", DNS_LINK], timeout=15)
 
 
 def networks_before_restore(state: dict) -> None:
@@ -2347,6 +2580,17 @@ def networks_restore(state: dict) -> None:
             run(["systemctl", "restart", "dnsmasq"], timeout=60)
         else:
             run(["systemctl", "stop", "dnsmasq"], timeout=60)
+    dns = n.get("dns") or {}
+    for name in sorted(set(dns.get("filters") or {}) | set(dns.get("before") or [])):
+        if name not in (dns.get("start") or []) and name not in (dns.get("stop") or []):
+            continue  # untouched by the change
+        if os.path.exists(os.path.join(DNS_DIR, name + ".conf")):
+            run(["systemctl", "enable", "lanvex-dns@" + name], timeout=30)
+            run(["systemctl", "restart", "lanvex-dns@" + name], timeout=60)
+        else:
+            run(["systemctl", "disable", "--now", "lanvex-dns@" + name], timeout=60)
+    if not our_dns_filters() and os.path.exists("/sys/class/net/" + DNS_LINK):
+        run(["ip", "link", "delete", DNS_LINK], timeout=15)
 
 
 def link_info(name: str) -> dict | None:
@@ -2449,6 +2693,25 @@ def networks_verify(st: dict) -> list:
                 "detail": "Loaded." if r.returncode == 0 else (r.stderr or "Not loaded.").strip()[:300],
             }
         )
+    for name, address in sorted(((n.get("dns") or {}).get("filters") or {}).items()):
+        probe = ((n.get("dns") or {}).get("probes") or {}).get(name)
+
+        def filtering(address=address, probe=probe, name=name):
+            active = run(["systemctl", "is-active", "lanvex-dns@%s" % name], timeout=15).stdout.strip()
+            if active != "active":
+                return (False, "Its dnsmasq is %s." % (active or "not running"))
+            rcode, _ = dns_query(address, "localhost")
+            if rcode is None:
+                return (False, "No answer at %s." % address)
+            if probe is not None:
+                blocked, _ = dns_query(address, probe)
+                if blocked != 3:
+                    return (False, "%s is not blocked at %s (answer code %s)." % (probe, address, blocked))
+                return (True, "Answers at %s and blocks %s." % (address, probe))
+            return (True, "Answers at %s." % address)
+
+        ok, detail = _wait_for(filtering, 15)
+        checks.append({"id": "dns:" + name, "label": "DNS filter for %s" % name, "ok": ok, "detail": detail})
     if n.get("forwarding"):
         value = read_text(FORWARD_KEY).strip() if os.path.exists(FORWARD_KEY) else "?"
         checks.append(
