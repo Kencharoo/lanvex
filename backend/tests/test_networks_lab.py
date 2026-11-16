@@ -49,6 +49,12 @@ VLAN_FILE = {
 # Put each host back the way it was built. What ran before the change matters: a rollback restores it.
 RESET = {
     "lab-fedora": (
+        # Also what the takeover test sets up as Netzverwaltung, if it stopped half-way.
+        "systemctl disable --now netzverwaltung 2>/dev/null; rm -rf /etc/netzverwaltung "
+        "/etc/systemd/system/netzverwaltung.service /etc/firewalld/zones/gast.xml /etc/firewalld/policies/nv-* "
+        "/etc/firewalld/policies/lan-to-switch.xml /etc/dnsmasq.d/nv-vlans.conf /etc/dnsmasq.d/switch-mgmt.conf; "
+        "for c in $(nmcli -t -f NAME connection show | grep -E '^(vlan-|lanvex-|other-)'); do "
+        'nmcli connection delete "$c" >/dev/null; done; ip link del gast 2>/dev/null; '
         "rm -f /etc/NetworkManager/system-connections/lanvex-* /etc/NetworkManager/system-connections/other-* "
         "/etc/firewalld/zones/lx-*; nmcli connection reload; firewall-cmd --reload >/dev/null; "
         "systemctl disable --now dnsmasq 2>/dev/null"
@@ -112,7 +118,8 @@ def reset(host: str) -> None:
         "for l in vlan50 vlan60; do ip link del $l 2>/dev/null; done; "
         # Access rules: Lanvex's nftables table and its unit, firewalld policies, forwarding as built.
         "nft delete table inet lanvex 2>/dev/null; systemctl disable lanvex-firewall 2>/dev/null; "
-        "systemctl disable --now 'lanvex-dns@*' 2>/dev/null; rm -rf /etc/lanvex/dns "
+        "for u in $(systemctl list-units --plain --no-legend --all 'lanvex-dns@*' | cut -d' ' -f1); do "
+        "systemctl disable --now $u 2>/dev/null; done; rm -rf /etc/lanvex/dns "
         "/etc/systemd/system/lanvex-dns@.service; ip link del lxdns 2>/dev/null; "
         "rm -f /etc/lanvex/firewall.nft /etc/systemd/system/lanvex-firewall.service /etc/sysctl.d/60-lanvex.conf "
         "/etc/firewalld/policies/lxf-*; systemctl daemon-reload; "
@@ -641,11 +648,4 @@ def test_taking_over_netzverwaltung_and_giving_it_back(host: str) -> None:
         sh(CLIENT, "nmcli --wait 60 connection up client50 >/dev/null")
         assert "192.168.50.20/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
     finally:
-        sh(
-            host,
-            "systemctl disable --now netzverwaltung 2>/dev/null; nmcli connection delete vlan-gast lanvex-gast "
-            ">/dev/null 2>&1; rm -rf /etc/netzverwaltung /etc/systemd/system/netzverwaltung.service "
-            "/etc/firewalld/zones/gast.xml /etc/firewalld/policies/nv-* /etc/firewalld/policies/lan-to-switch.xml "
-            "/etc/dnsmasq.d/nv-vlans.conf /etc/dnsmasq.d/switch-mgmt.conf; systemctl daemon-reload; "
-            "firewall-cmd --reload >/dev/null; ip link del gast 2>/dev/null; true",
-        )
+        reset(host)  # Netzverwaltung's stand-in goes too

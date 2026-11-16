@@ -86,6 +86,21 @@ class NetworksView(ApiModel):
     other_leases: list[Lease]  # leases outside every Lanvex network
 
 
+class ImportedNetwork(ApiModel):
+    name: str
+    result: Literal["documented", "already documented", "failed"]
+    notes: list[str] = Field(default_factory=list)
+
+
+class ImportReport(ApiModel):
+    """What Lanvex documented in Lanvex Core from another tool's setup on the server."""
+
+    found: bool
+    source: str
+    networks: list[ImportedNetwork] = Field(default_factory=list)
+    view: NetworksView
+
+
 class NewNetwork(ApiModel):
     name: str
     parent: str

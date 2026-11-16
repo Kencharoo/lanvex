@@ -11,7 +11,7 @@ import { Badge, Notice, Skeleton, type Tone } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
 import { useNetBoxLabel } from "@/lib/system";
-import type { AccessSettings, ChangeDetail, DhcpStatus, HostFacts, NetworkLease, NetworksView, NetworkStatus, Server, ServerNetwork } from "@/lib/types";
+import type { AccessSettings, ChangeDetail, ImportReport, DhcpStatus, HostFacts, NetworkLease, NetworksView, NetworkStatus, Server, ServerNetwork } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
 
 const STATUS: Record<NetworkStatus, { tone: Tone; label: string }> = {
@@ -47,8 +47,19 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
   const [open, setOpen] = React.useState<string | null>(null);
   const [access, setAccess] = React.useState<ServerNetwork | null>(null);
   const update = (v: NetworksView) => qc.setQueryData(key, v);
+  const [report, setReport] = React.useState<ImportReport | null>(null);
+  const importNv = useMutation({
+    mutationFn: () => api<ImportReport>(`/servers/${s.id}/networks/import`, { method: "POST", body: { source: "netzverwaltung" } }),
+    onSuccess: (r) => {
+      update(r.view);
+      setReport(r);
+      if (!r.found) toast.info(`Netzverwaltung is not installed on ${s.name}.`);
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
   const prepare = useMutation({
-    mutationFn: () => api<ChangeDetail>(`/servers/${s.id}/networks/change`, { method: "POST" }),
+    mutationFn: (takeover: boolean = false) =>
+      api<ChangeDetail>(`/servers/${s.id}/networks/change${takeover ? "?takeover=netzverwaltung" : ""}`, { method: "POST" }),
     onSuccess: (c) => {
       void qc.invalidateQueries({ queryKey: ["servers", s.id] });
       void qc.invalidateQueries({ queryKey: ["changes"] });
@@ -86,7 +97,10 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
             <Button size="sm" variant="secondary" onClick={() => setAdding(true)} disabled={v.supported === false}>
               <Plus /> Add network
             </Button>
-            <Button size="sm" variant="primary" disabled={!v.change} loading={prepare.isPending} onClick={() => prepare.mutate()}>
+            <Button size="sm" variant="ghost" loading={importNv.isPending} onClick={() => importNv.mutate()} title={`Document Netzverwaltung's networks on ${s.name} in ${nbName}`}>
+              Import from Netzverwaltung
+            </Button>
+            <Button size="sm" variant="primary" disabled={!v.change} loading={prepare.isPending} onClick={() => prepare.mutate(false)}>
               <Send /> Prepare change
             </Button>
           </div>
@@ -103,6 +117,29 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
       {v?.linked && v.supported === false && (
         <Notice tone="warn" title="Not on this server yet">
           Lanvex creates VLAN interfaces and serves DHCP on servers whose network NetworkManager, netplan or ifupdown manages (Fedora, RHEL, Ubuntu Server, Debian). {s.name} uses {v.stack_label}.
+        </Notice>
+      )}
+      {report?.found && (
+        <Notice tone="info" title={`Imported from Netzverwaltung into ${nbName}`}>
+          <ul className="grid gap-1">
+            {report.networks.map((n) => (
+              <li key={n.name}>
+                <span className="font-medium">{n.name}</span>: {n.result}
+                {n.notes.length > 0 && <span className="text-muted"> ({n.notes.join(" ")})</span>}
+              </li>
+            ))}
+          </ul>
+          <p className="pt-2">Nothing on {s.name} changed. Check the networks below, then take them over in one change: Netzverwaltung's files are replaced by Lanvex's, and a rollback brings them back.</p>
+        </Notice>
+      )}
+      {isAdmin && v?.networks.some((n) => n.status === "foreign") && (
+        <Notice tone="warn" title="Networks another tool manages">
+          <p>Lanvex leaves them alone. If they are Netzverwaltung's, take them over: one change replaces all of its networks with Lanvex's, stops Netzverwaltung, and is undone like any other. Protected names must be removed from the server's protected interfaces first.</p>
+          <div className="pt-2">
+            <Button size="sm" variant="secondary" loading={prepare.isPending} onClick={() => prepare.mutate(true)}>
+              <Send /> Prepare takeover from Netzverwaltung
+            </Button>
+          </div>
         </Notice>
       )}
       {v && v.missing_fields.length > 0 && (

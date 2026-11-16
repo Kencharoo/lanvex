@@ -492,3 +492,95 @@ async def test_a_dns_filter_is_documented_with_the_access_rules(
     assert "dns_filter" not in (
         view["change"]["access"]["rules"][0] if view["change"]["access"]["rules"] else {}
     ) or (view["change"]["access"]["rules"][0]["dns_filter"] is None)
+
+
+NV_FOUND = {
+    "ok": True,
+    "found": True,
+    "vlans": [
+        {
+            "name": "gast",
+            "vlan_id": 50,
+            "address": "192.168.50.1/24",
+            "description": "Gaeste",
+            "parent": "eth0",
+            "dhcp": {"enabled": True, "start": "192.168.50.100", "end": "192.168.50.199", "lease": "12h"},
+            "reservations": [{"mac": "aa:bb:cc:00:00:02", "ip": "192.168.50.20", "name": "drucker"}],
+            "access": {
+                "internet": True,
+                "haupt_lan": True,
+                "switch_gui": True,
+                "vlans": ["bw"],
+                "services": ["dhcp", "dns", "ssh", "samba", "minecraft"],
+                "ports": ["8080/tcp"],
+            },
+            "dns_filter": {"enabled": True, "lists": ["kinder"], "block": ["tiktok.com"], "allow": []},
+        },
+        {
+            "name": "bw",
+            "vlan_id": 60,
+            "address": "192.168.60.1/24",
+            "parent": "eth0",
+            "dhcp": {"enabled": False},
+            "access": {"internet": False, "services": ["dhcp", "dns"]},
+        },
+    ],
+    "policies": {
+        "nv-gast-egress": '<policy target="ACCEPT"><rule family="ipv4" priority="-100">'
+        '<destination address="192.168.178.0/24"/><accept/></rule><rule family="ipv4" priority="0">'
+        '<destination address="10.0.0.0/8"/><drop/></rule></policy>',
+        "nv-gast-switch": '<policy target="REJECT"><masquerade/><rule family="ipv4"><destination '
+        'address="192.168.178.3/32"/><port port="443" protocol="tcp"/><accept/></rule><rule family="ipv4">'
+        '<destination address="192.168.178.3/32"/><port port="80" protocol="tcp"/><accept/></rule>'
+        '<rule family="ipv4"><destination address="192.168.178.3/32"/><protocol value="icmp"/><accept/></rule>'
+        "</policy>",
+    },
+    "files": [],
+    "profiles": ["vlan-gast", "vlan-bw"],
+    "units": {},
+}
+
+
+async def test_netzverwaltung_is_documented_then_taken_over(
+    admin: httpx.AsyncClient, core: CoreStandIn, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await router_01(admin, fake)
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/import", json={"source": "netzverwaltung"})
+    assert r.status_code == 200 and r.json()["found"] is False  # not installed: nothing to do
+
+    fake.inspected = NV_FOUND
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/import", json={"source": "netzverwaltung"})
+    assert r.status_code == 200, r.text
+    report = {n["name"]: n for n in r.json()["networks"]}
+    assert report["gast"]["result"] == "documented" and report["bw"]["result"] == "documented"
+    assert any("minecraft" in x for x in report["gast"]["notes"])  # what Lanvex could not carry over
+    assert any("kinder" in x for x in report["gast"]["notes"])
+    gast = next(n for n in r.json()["view"]["networks"] if n["name"] == "gast")
+    assert gast["pool"]["start"] == "192.168.50.100" and gast["fixed"][0]["mac"] == "aa:bb:cc:00:00:02"
+    assert gast["access"] == {
+        "internet": True,
+        "destinations": [
+            {"network": "192.168.60.0/24", "ports": []},  # bw
+            {"network": "192.168.178.0/24", "ports": []},  # the main LAN
+            {"network": "192.168.178.3/32", "ports": ["80/tcp", "443/tcp"]},  # the switch's web interface
+        ],
+        "services": ["22/tcp", "137-138/udp", "139/tcp", "445/tcp", "8080/tcp"],
+        "dns_filter": {"block": ["tiktok.com"], "allow": []},
+    }
+    again = (await admin.post(f"/api/v1/servers/{sid}/networks/import", json={})).json()
+    assert {n["result"] for n in again["networks"]} == {"already documented"}
+
+    # On the server, both are Netzverwaltung's: Lanvex leaves them alone unless it takes them over.
+    facts = with_lanvex_vlan(assemble(load("nm")), "192.168.50.1")
+    vlan = facts.interfaces[-1].model_copy(update={"name": "gast", "manager_profile": "vlan-gast"})
+    bw = vlan.model_copy(update={"name": "bw", "vlan_id": 60, "manager_profile": "vlan-bw", "addresses": []})
+    fake.facts = facts.model_copy(update={"interfaces": [*facts.interfaces[:-1], vlan, bw]})
+    await admin.post(f"/api/v1/servers/{sid}/collect")
+    view = (await admin.get(f"/api/v1/servers/{sid}/networks")).json()
+    assert {n["name"]: n["status"] for n in view["networks"]} == {"bw": "foreign", "gast": "foreign"}
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/change?takeover=netzverwaltung")
+    assert r.status_code == 201, r.text
+    assert r.json()["summary"].startswith("Networks: take over from Netzverwaltung · add bw")
+    plan = [p for c, p in fake.calls if c == Cmd.HELPER_PLAN][-1]
+    assert plan["takeover"] == "netzverwaltung" and [v["name"] for v in plan["vlans"]] == ["bw", "gast"]
+    assert plan["access"]["rules"][0]["interface"] == "gast"

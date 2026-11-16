@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Request, status
 from pydantic import Field, model_validator
@@ -8,7 +9,7 @@ from lanvex.changes.service import ChangeService, to_detail
 from lanvex.core.errors import Conflict
 from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
 from lanvex.netbox.client import NetBoxClient
-from lanvex.networks.schemas import FixedIn, NetworksView, NewNetwork
+from lanvex.networks.schemas import FixedIn, ImportReport, NetworksView, NewNetwork
 from lanvex.networks.service import DEFAULT_LEASE, NetworksService
 from lanvex.schemas import ApiModel
 from lanvex.servers.service import ServerService
@@ -87,6 +88,36 @@ async def remove_network(
     ) as t:
         t.detail["removed"] = await svc.remove(s, name)
     return await svc.view(s)
+
+
+class ImportIn(ApiModel):
+    source: Literal["netzverwaltung"] = "netzverwaltung"
+
+
+@router.post("/servers/{server_id}/networks/import", response_model=ImportReport)
+async def import_networks(
+    server_id: uuid.UUID,
+    body: ImportIn,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    _: AdminUser,
+    audit: Audit,
+) -> ImportReport:
+    """Read another tool's networks on the server (through the change helper) and document them in Lanvex
+    Core. Nothing on the server changes; taking them over is a change of its own."""
+    svc, servers = _svc(request, db, settings)
+    s = await servers.get(server_id)
+    changes = ChangeService(db, settings, servers)
+    async with audit.track(
+        "server.network.import", "server", target_id=s.id, target_repr=f"{s.name} {body.source}"
+    ) as t:
+        found = await changes.inspect(s, body.source)
+        report = await svc.import_netzverwaltung(s, found) if found.get("found") else []
+        t.detail["networks"] = {n.name: n.result for n in report}
+    return ImportReport(
+        found=bool(found.get("found")), source=body.source, networks=report, view=await svc.view(s)
+    )
 
 
 @router.put("/servers/{server_id}/networks/{name}/access", response_model=NetworksView)
@@ -178,12 +209,19 @@ async def remove_fixed(
     "/servers/{server_id}/networks/change", response_model=ChangeDetail, status_code=status.HTTP_201_CREATED
 )
 async def prepare_networks_change(
-    server_id: uuid.UUID, request: Request, db: DB, settings: SettingsDep, user: AdminUser, audit: Audit
+    server_id: uuid.UUID,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    user: AdminUser,
+    audit: Audit,
+    takeover: Literal["netzverwaltung"] | None = None,
 ) -> ChangeDetail:
-    """Prepare the change that gives the server exactly the networks Lanvex Core documents for it."""
+    """Prepare the change that gives the server exactly the networks Lanvex Core documents for it.
+    takeover=netzverwaltung: Netzverwaltung's networks become Lanvex's in this change."""
     svc, servers = _svc(request, db, settings)
     s = await servers.get(server_id)
-    view = await svc.view(s)
+    view = await svc.view(s, takeover=takeover)
     if not view.linked:
         raise Conflict(f"Link {s.name} to its device first.")
     if view.change is None:

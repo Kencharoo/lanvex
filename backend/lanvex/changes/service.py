@@ -231,6 +231,8 @@ def summarize_networks(r: NetworksRequest, before: list[dict[str, Any]]) -> str:
         )
     if r.access is not None and r.access.rules:
         parts.append("access " + "; ".join(_access_text(x) for x in r.access.rules))
+    if r.takeover:
+        parts.insert(0, "take over from Netzverwaltung")
     return ("Networks: " + " · ".join(parts or ["no VLAN interfaces"]))[:500]
 
 
@@ -614,7 +616,7 @@ class ChangeService:
                     "Choose another name for the Lanvex network.",
                     fields={"vlans": [f"{v.name} is protected."]},
                 )
-            if v.name in present and v.name not in mine:
+            if v.name in present and v.name not in mine and req.takeover is None:
                 raise ValidationFailed(
                     f"{v.name} already exists on {s.name} and was not created by Lanvex. Lanvex does not change it.",
                     fields={"vlans": [f"{v.name} exists."]},
@@ -687,6 +689,25 @@ class ChangeService:
         if before["method"] == "dhcp" and req.method == "static":
             warnings.append(f"{req.interface} stops using DHCP.")
         return warnings
+
+    # ---- reading another tool's setup ---------------------------------------------------------------
+
+    async def inspect(self, s: Server, kind: str) -> dict[str, Any]:
+        """What another tool set up on the server, as the helper reads it (it needs root for that)."""
+        target = await self.servers.target_for(s)
+        try:
+            async with transport.connect(target, self.settings.ssh_connect_timeout_seconds) as conn:
+                return await helper.call(conn, Cmd.HELPER_INSPECT, {"kind": kind})
+        except helper.HelperRefused as e:
+            if e.code == "usage":
+                raise ValidationFailed(
+                    f"The change helper on {s.name} is too old to read another tool's setup. Install the current one."
+                ) from e
+            raise ValidationFailed(f"{s.name} could not be read: {e.message}", code=e.code) from e
+        except helper.HelperUnavailable as e:
+            raise ValidationFailed(f"The change helper on {s.name} is not ready: {e.message}") from e
+        except transport.SSHError as e:
+            raise Conflict(f"Lanvex could not reach {s.name}: {e.message}") from e
 
     # ---- confirmation in the browser ---------------------------------------------------------------
 

@@ -343,6 +343,8 @@ class NetworksRequest(ApiModel):
     vlans: list[VlanSpec] = Field(default_factory=list, max_length=64)
     dhcp: DhcpSpec | None = None
     access: AccessSpec | None = None
+    # Replace another tool's networks (all of them) with Lanvex's in this change: its files go, backed up.
+    takeover: Literal["netzverwaltung"] | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> "NetworksRequest":

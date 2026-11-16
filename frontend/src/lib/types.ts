@@ -739,6 +739,13 @@ export interface ServerNetwork {
   access_problem: string | null;
 }
 
+export interface ImportReport {
+  found: boolean;
+  source: string;
+  networks: { name: string; result: "documented" | "already documented" | "failed"; notes: string[] }[];
+  view: NetworksView;
+}
+
 export interface NetworksView {
   linked: boolean;
   supported: boolean | null;

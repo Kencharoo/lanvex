@@ -44,6 +44,7 @@ class Cmd(StrEnum):
     HELPER_CONFIRM = "helper_confirm"
     HELPER_ROLLBACK = "helper_rollback"
     HELPER_STATUS = "helper_status"
+    HELPER_INSPECT = "helper_inspect"
 
 
 # Where an administrator installs the change helper. Fixed: Lanvex never runs anything else with sudo.
@@ -91,6 +92,7 @@ COMMANDS: dict[Cmd, str] = {
     Cmd.HELPER_CONFIRM: _HELPER + "confirm",
     Cmd.HELPER_ROLLBACK: _HELPER + "rollback",
     Cmd.HELPER_STATUS: _HELPER + "status",
+    Cmd.HELPER_INSPECT: _HELPER + "inspect",
 }
 
 # Commands that receive a JSON request on stdin. Every other command gets an empty stdin.
@@ -102,6 +104,7 @@ STDIN_COMMANDS = frozenset(
         Cmd.HELPER_CONFIRM,
         Cmd.HELPER_ROLLBACK,
         Cmd.HELPER_STATUS,
+        Cmd.HELPER_INSPECT,
     }
 )
 

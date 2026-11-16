@@ -85,6 +85,7 @@ class FakeServer:
         self.down: set[str] = set()  # addresses that do not answer
         self.down_after_apply: set[str] = set()  # addresses a change cuts off
         self.facts = assemble(load("netplan"))  # what a read of the server returns
+        self.inspected: dict[str, Any] = {"ok": True, "found": False}  # another tool's setup
 
     def _timer(self) -> None:
         """The server's rollback timer: fires at the deadline unless the change was confirmed."""
@@ -116,6 +117,8 @@ class FakeServer:
             if isinstance(self.version, Exception):
                 raise self.version
             return self.version
+        if cmd == Cmd.HELPER_INSPECT:
+            return self.inspected
         if cmd == Cmd.HELPER_PLAN:
             if self.plan_error:
                 raise self.plan_error

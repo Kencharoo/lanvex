@@ -12,6 +12,7 @@ address, and the server is never changed except through that approved change.
 
 import fnmatch
 import ipaddress
+import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -20,8 +21,10 @@ from lanvex.changes.schemas import (
     AccessRule,
     AccessSettings,
     AccessSpec,
+    Destination,
     DhcpPool,
     DhcpSpec,
+    DnsFilter,
     NetworksRequest,
     Reservation,
     VlanSpec,
@@ -34,6 +37,7 @@ from lanvex.netbox.client import NetBoxClient
 from lanvex.networks.schemas import (
     FixedAddress,
     FixedIn,
+    ImportedNetwork,
     Lease,
     NetworksView,
     NewNetwork,
@@ -95,6 +99,102 @@ def _documented_access(iface: dict[str, Any]) -> tuple[AccessSettings | None, st
         return None, f"The access rules documented for {iface['name']} cannot be used: {first['msg']}"
 
 
+TAKEOVER_LABEL = {"netzverwaltung": "Netzverwaltung"}
+# Netzverwaltung's firewalld services, as ports (DHCP and DNS are always allowed).
+NV_SERVICES = {
+    "dhcp": [],
+    "dns": [],
+    "ssh": ["22/tcp"],
+    "samba": ["137-138/udp", "139/tcp", "445/tcp"],
+    "http": ["80/tcp"],
+    "https": ["443/tcp"],
+    "ntp": ["123/udp"],
+    "cockpit": ["9090/tcp"],
+}
+
+
+def _policy_rules(xml: str) -> list[dict[str, Any]]:
+    """The rich rules of a firewalld policy Netzverwaltung wrote: destination, port, verdict, priority."""
+    out = []
+    for body in re.findall(r"<rule\b([^>]*)>(.*?)</rule>", xml, re.S):
+        attrs, inner = body
+        dest = re.search(r'<destination\s+address="([^"]+)"', inner)
+        port = re.search(r'<port\s+port="([^"]+)"\s+protocol="([^"]+)"', inner)
+        prio = re.search(r'priority="(-?\d+)"', attrs)
+        out.append(
+            {
+                "destination": dest.group(1) if dest else None,
+                "port": f"{port.group(1)}/{port.group(2)}" if port else None,
+                "accept": "<accept" in inner,
+                "priority": int(prio.group(1)) if prio else 0,
+            }
+        )
+    return out
+
+
+def nv_access(
+    v: dict[str, Any], vlans: dict[str, dict[str, Any]], policies: dict[str, str]
+) -> tuple[AccessSettings, list[str]]:
+    """A Netzverwaltung network's access rules in Lanvex's terms, and what did not carry over."""
+    name, a, notes = v["name"], v.get("access") or {}, []
+    dests: dict[str, list[str]] = {}
+    if a.get("haupt_lan"):
+        rule = next(
+            (
+                r
+                for r in _policy_rules(policies.get(f"nv-{name}-egress", ""))
+                if r["accept"] and r["priority"] < 0
+            ),
+            None,
+        )
+        if rule and rule["destination"]:
+            dests[rule["destination"]] = []
+        else:
+            notes.append(
+                f"Main LAN allowed, but its network is not in nv-{name}-egress: add it as a destination."
+            )
+    if a.get("switch_gui"):
+        rules = [
+            r
+            for r in _policy_rules(policies.get(f"nv-{name}-switch", ""))
+            if r["accept"] and r["destination"]
+        ]
+        for r in rules:
+            ports = dests.setdefault(r["destination"], [])
+            if r["port"]:
+                ports.append(r["port"])
+        if not rules:
+            notes.append(
+                f"Switch interface allowed, but nv-{name}-switch was not found: add it as a destination."
+            )
+    for peer in a.get("vlans") or []:
+        pv = vlans.get(peer)
+        if pv and pv.get("address"):
+            dests[str(ipaddress.ip_interface(pv["address"]).network)] = []
+    services: list[str] = []
+    for svc in a.get("services") or []:
+        if svc in NV_SERVICES:
+            services += NV_SERVICES[svc]
+        else:
+            notes.append(f"Service {svc} on the server: Lanvex allows ports; add its ports.")
+    services += [p if "/" in p else f"{p}/tcp" for p in a.get("ports") or []]
+    f = v.get("dns_filter") or {}
+    dns_filter = None
+    if f.get("enabled"):
+        dns_filter = DnsFilter(block=f.get("block") or [], allow=f.get("allow") or [])
+        if f.get("lists"):
+            notes.append(
+                f"Block lists by name ({', '.join(f['lists'])}) are not taken over; add their domains."
+            )
+    access = AccessSettings(
+        internet=bool(a.get("internet")),
+        destinations=[Destination(network=d, ports=p) for d, p in dests.items()],
+        services=services,
+        dns_filter=dns_filter,
+    )
+    return access, notes
+
+
 class NetworksService:
     def __init__(self, servers: ServerService, nb: NetBoxClient | None):
         self.servers = servers
@@ -111,7 +211,8 @@ class NetworksService:
             )
         return s.netbox_object_id
 
-    async def view(self, s: Server) -> NetworksView:
+    async def view(self, s: Server, takeover: str | None = None) -> NetworksView:
+        """takeover: another tool whose networks (shown as another tool's) the change replaces."""
         snap, facts = await self.servers.latest_facts(s.id)
         if self.nb is None or s.netbox_object_type != "dcim.device" or not s.netbox_object_id:
             return NetworksView(
@@ -218,6 +319,11 @@ class NetworksService:
             access, problem = _documented_access(i)
             if status in ("protected", "incomplete"):
                 keep_as_is(name)
+            if status == "foreign" and takeover:
+                status, note = (
+                    "missing",
+                    f"Lanvex takes {name} over from {TAKEOVER_LABEL[takeover]} in this change.",
+                )
             if status in ("in_sync", "missing", "differs"):
                 vlans.append(VlanSpec(name=name, parent=i["parent"]["name"], id=vid, addresses=addresses))  # type: ignore[arg-type]
                 # Unreadable documentation: the rules stay as the server has them until it is fixed.
@@ -330,7 +436,11 @@ class NetworksService:
         change = None
         if facts is not None and supported and not in_sync:
             change = NetworksRequest(
-                kind="networks", vlans=vlans, dhcp=DhcpSpec(pools=pools), access=AccessSpec(rules=rules)
+                kind="networks",
+                vlans=vlans,
+                dhcp=DhcpSpec(pools=pools),
+                access=AccessSpec(rules=rules),
+                takeover=takeover,  # type: ignore[arg-type]
             )
         return NetworksView(
             linked=True,
@@ -625,6 +735,55 @@ class NetworksService:
                 }
             },
         )
+
+    async def import_netzverwaltung(self, s: Server, found: dict[str, Any]) -> list[ImportedNetwork]:
+        """Document Netzverwaltung's networks in Lanvex Core: VLAN, address, pool, fixed addresses and access
+        rules. Networks already documented are left as they are. The server does not change."""
+        self._device(s)
+        vlans = {v["name"]: v for v in found.get("vlans") or [] if isinstance(v, dict) and v.get("name")}
+        documented = {n.name for n in (await self.view(s)).networks if n.netbox_interface_id}
+        report: list[ImportedNetwork] = []
+        for name, v in vlans.items():
+            if name in documented:
+                report.append(ImportedNetwork(name=name, result="already documented"))
+                continue
+            dhcp = v.get("dhcp") or {}
+            try:
+                await self.add(
+                    s,
+                    NewNetwork(
+                        name=name,
+                        parent=v.get("parent") or "",
+                        vlan_id=int(v.get("vlan_id") or 0),
+                        vlan_name=(v.get("description") or name)[:64],
+                        address=v.get("address") or "",
+                        pool_start=dhcp.get("start") if dhcp.get("enabled") else None,
+                        pool_end=dhcp.get("end") if dhcp.get("enabled") else None,
+                        lease=dhcp.get("lease") or DEFAULT_LEASE,
+                    ),
+                )
+            except (LanvexError, ValidationError, ValueError) as e:
+                report.append(
+                    ImportedNetwork(name=name, result="failed", notes=[getattr(e, "message", str(e))])
+                )
+                continue
+            notes: list[str] = []
+            for r in v.get("reservations") or []:
+                try:
+                    await self.set_fixed(
+                        s, name, FixedIn(ip=r["ip"], mac=r["mac"], name=r.get("name") or None)
+                    )
+                except (LanvexError, ValidationError, ValueError, KeyError) as e:
+                    notes.append(f"Fixed address {r.get('ip')}: {getattr(e, 'message', str(e))}")
+            try:
+                access, more = nv_access(v, vlans, found.get("policies") or {})
+                notes += more
+                if not access.is_default:
+                    await self.set_access(s, name, access)
+            except (LanvexError, ValidationError, ValueError) as e:
+                notes.append(f"Access rules: {getattr(e, 'message', str(e))}")
+            report.append(ImportedNetwork(name=name, result="documented", notes=notes))
+        return report
 
     async def set_pool(self, s: Server, name: str, start: str | None, end: str | None, lease: str) -> None:
         """Create, change or remove a network's DHCP pool (None for both removes it)."""
