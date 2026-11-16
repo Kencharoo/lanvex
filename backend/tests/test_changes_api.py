@@ -77,6 +77,8 @@ class FakeServer:
         self.lose_contact_after_apply = False  # unreachable until the server's own rollback has run
         self.never_back = False
         self.deadline: datetime | None = None
+        self.down: set[str] = set()  # addresses that do not answer
+        self.down_after_apply: set[str] = set()  # addresses a change cuts off
 
     def _timer(self) -> None:
         """The server's rollback timer: fires at the deadline unless the change was confirmed."""
@@ -94,7 +96,8 @@ class FakeServer:
 
     @asynccontextmanager
     async def connect(self, target: transport.Target, timeout: float) -> AsyncIterator[object]:
-        if not self.can_connect():
+        cut = self.down_after_apply if self.deadline else set()
+        if not self.can_connect() or target.address in self.down | cut:
             raise transport.SSHError(
                 f"{target.address}:22 could not be reached (TimeoutError).", code="unreachable"
             )
@@ -658,3 +661,102 @@ async def test_dns_can_be_left_unchanged(
     assert r.json()["summary"] == "br0: static 10.11.0.1/24, 10.11.0.2/24 · no gateway · DNS unchanged"
     plan = next(p for cmd, p in fake.calls if cmd == Cmd.HELPER_PLAN)
     assert plan is not None and plan["dns"] is None
+
+
+# ---- connections through an address that is not the server's own -------------------------------------
+# Lanvex in a container on the server itself (rootless Podman: host.containers.internal = 169.254.1.2,
+# forwarded to the server's loopback), port forwarding or NAT: signing in again after a change proves
+# nothing about the server's network.
+
+FORWARDED = "169.254.1.2"
+
+
+async def forwarded_server(admin: httpx.AsyncClient) -> str:
+    r = await admin.post("/api/v1/servers", json=server_body(address=FORWARDED, port=22))
+    assert r.status_code == 201, r.text
+    sid = r.json()["server"]["id"]
+    assert (await admin.post(f"/api/v1/servers/{sid}/collect")).status_code == 200
+    assert (await admin.post(f"/api/v1/servers/{sid}/changes/helper/check")).status_code == 200
+    assert (
+        await admin.put(f"/api/v1/servers/{sid}/changes/enabled", json={"enabled": True})
+    ).status_code == 200
+    return sid
+
+
+async def test_an_indirect_connection_needs_a_verification_address(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await forwarded_server(admin)
+    r = (await admin.get(f"/api/v1/servers/{sid}/changes/readiness")).json()
+    assert r["ready"] is False and r["connection"]["interfaces"] == []
+    assert any("not an address of any of its interfaces" in b for b in r["blockers"])
+    assert (await admin.post(f"/api/v1/servers/{sid}/changes", json=BR0_SECONDARY)).status_code == 409
+
+    await admin.patch(f"/api/v1/servers/{sid}", json={"verify_address": "10.99.0.1"})
+    r = (await admin.get(f"/api/v1/servers/{sid}/changes/readiness")).json()
+    assert r["ready"] is False and any("10.99.0.1 is not an address of" in b for b in r["blockers"])
+
+    s = (await admin.patch(f"/api/v1/servers/{sid}", json={"verify_address": MGMT})).json()
+    assert s["verify_address"] == MGMT
+    r = (await admin.get(f"/api/v1/servers/{sid}/changes/readiness")).json()
+    assert r["ready"] is True, r["blockers"]
+    assert r["connection"] == {
+        "address": FORWARDED,
+        "interfaces": [],
+        "verify_address": MGMT,
+        "verify_interfaces": ["eth0"],
+    }
+    # The verification address is protected like the address Lanvex connects to.
+    r = await admin.post(
+        f"/api/v1/servers/{sid}/changes",
+        json=BR0_SECONDARY | {"interface": "eth0", "addresses": ["172.30.0.12/24"], "gateway": "172.30.0.1"},
+    )
+    assert r.status_code == 422 and "172.30.0.11" in r.json()["error"]["message"]
+
+    done = await approve_and_run(admin, runner, await prepare(admin, sid))
+    assert done["status"] == "succeeded"
+    assert [(c["id"], c["ok"]) for c in done["checks"]][:2] == [("lanvex", True), ("lanvex_direct", True)]
+
+
+async def test_a_change_that_cuts_the_server_off_its_network_is_rolled_back(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await forwarded_server(admin)
+    await admin.patch(f"/api/v1/servers/{sid}", json={"verify_address": MGMT})
+    change = await prepare(admin, sid)
+    fake.down_after_apply = {MGMT}  # the forwarded connection still works; the server's own address does not
+    done = await approve_and_run(admin, runner, change)
+    assert done["status"] == "rolled_back"
+    direct = next(c for c in done["checks"] if c["id"] == "lanvex_direct")
+    assert direct["ok"] is False and "No SSH session to 172.30.0.11" in direct["detail"]
+    assert Cmd.HELPER_CONFIRM not in fake.commands() and Cmd.HELPER_ROLLBACK in fake.commands()
+
+
+async def test_unreachable_verification_address_refuses_the_change(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await forwarded_server(admin)
+    await admin.patch(f"/api/v1/servers/{sid}", json={"verify_address": MGMT})
+    fake.down = {MGMT}  # Lanvex in a rootless container cannot reach its own host's LAN address
+    r = await admin.post(f"/api/v1/servers/{sid}/changes", json=BR0_SECONDARY)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "cannot_verify"
+    assert "run Lanvex on another machine" in r.json()["error"]["message"]
+    assert Cmd.HELPER_PLAN not in fake.commands()
+
+
+async def test_protected_interfaces_are_never_changed(
+    admin: httpx.AsyncClient, ready_server: str, fake: FakeServer
+) -> None:
+    s = (
+        await admin.patch(
+            f"/api/v1/servers/{ready_server}", json={"protected_interfaces": ["br*", " ", "vlan-bw"]}
+        )
+    ).json()
+    assert s["protected_interfaces"] == ["br*", "vlan-bw"]
+    r = (await admin.get(f"/api/v1/servers/{ready_server}/changes/readiness")).json()
+    assert r["protected_interfaces"] == ["br*", "vlan-bw"]
+    r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=BR0_SECONDARY)
+    assert r.status_code == 422 and "br0 is protected on web-01 (br*)" in r.json()["error"]["message"]
+    assert Cmd.HELPER_PLAN not in fake.commands()
+    bad = await admin.patch(f"/api/v1/servers/{ready_server}", json={"protected_interfaces": ["eth0; rm"]})
+    assert bad.status_code == 422

@@ -56,9 +56,29 @@ changed in Lanvex applies on the user's next page in Lanvex Core. A deactivated 
 longer open Lanvex Core, because every request needs a valid Lanvex session.
 
 Lanvex Core's own login page is switched off. Its REST API and GraphQL are reachable through Lanvex
-from a signed-in browser (for example the API browser at `/core/api/`), but not with API tokens from
-other tools: Lanvex removes `Authorization` headers and requires its own session. See *Known
-limitations* below.
+with a Lanvex session (for example the API browser at `/core/api/`), but not with API tokens:
+Lanvex removes `Authorization` headers. Scripts sign in like a browser; see *Scripting* below.
+
+### Scripting
+
+A script signs in to Lanvex, keeps the cookies, and sends the CSRF token with every write:
+
+```bash
+url=https://lanvex.example.net
+curl -sS -c jar -H 'Content-Type: application/json' \
+  -d '{"username": "admin", "password": "…"}' "$url/api/v1/auth/login" >/dev/null
+curl -sS -b jar -c jar "$url/core/api/status/" >/dev/null        # sets lanvex_core_csrftoken
+csrf=$(awk '$6 == "lanvex_core_csrftoken" {print $7}' jar)
+curl -sS -b jar -H "X-CSRFToken: $csrf" -H "Referer: $url/core/" -H 'Content-Type: application/json' \
+  -d '{"name": "Lab", "slug": "lab"}' "$url/core/api/dcim/sites/"
+```
+
+- The cookie is `lanvex_core_csrftoken`, not Django's usual `csrftoken`; every API response to a
+  signed-in session sets it (Lanvex Core 0.6.1 and newer; before that, only pages with a form).
+- Writes need the header `X-CSRFToken`, and over HTTPS a `Referer` on the same site.
+- The script acts as the Lanvex user it signed in as, with that user's role.
+- Lanvex's own API (`/api/v1/…`, documented at `/api/docs`) works with the same session and needs
+  the `X-CSRF-Token` header with the `csrf_token` the sign-in returned.
 
 ## How it fits together
 
@@ -149,8 +169,8 @@ was tested with in `core.lock` and contains it in `./core`. To update:
 
 ```bash
 # back up first (above), then:
-unzip lanvex-0.6.0.zip && cp lanvex-0.5.0/.env lanvex-0.6.0/
-cd lanvex-0.6.0 && docker compose up -d --build
+unzip lanvex-0.6.1.zip && cp lanvex-0.6.0/.env lanvex-0.6.1/
+cd lanvex-0.6.1 && docker compose up -d --build   # Podman: podman-compose up -d --build
 ```
 
 The Compose project is always called `lanvex`, so the new directory uses the same containers,
@@ -179,9 +199,8 @@ source contains.
 
 ## Known limitations
 
-- **No API access for other tools.** Lanvex Core's API is reachable only through a signed-in Lanvex
-  browser session, and only Lanvex's service account uses tokens. Scripts and automation tools
-  (Ansible, Terraform, …) cannot use Lanvex Core's API yet.
+- **No API tokens for other tools.** Scripts use a Lanvex session (*Scripting* above). Tools that
+  only take a NetBox API token (Ansible's NetBox collection, Terraform) cannot use Lanvex Core yet.
 - **No outbound connections.** The internal network means webhooks to outside systems, remote data
   sources (Git, S3) and NetBox plugins installed from the internet do not work.
 - **Plugins.** Only Lanvex's own package is installed. Adding NetBox plugins means building your own

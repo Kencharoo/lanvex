@@ -5,7 +5,10 @@ verified → confirmed, or rolled back. Nothing reaches a server before an admin
 preview, and the runner (runner.py) is the only code that applies changes.
 """
 
+import dataclasses
 import difflib
+import fnmatch
+import ipaddress
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +23,7 @@ from lanvex.changes.schemas import (
     ChangeDetail,
     ChangeOut,
     ChangeRequest,
+    ConnectionPath,
     HelperInstall,
     HelperStatus,
     Preview,
@@ -219,6 +223,22 @@ class ChangeService:
             )
         if not s.changes_enabled:
             blockers.append("Changes are not enabled for this server.")
+        path = await self.connection(s, facts) if facts else None
+        if path is not None and not path.interfaces:
+            if not s.verify_address:
+                blockers.append(
+                    f"Lanvex reaches {s.name} at {s.address}, which is not an address of any of its interfaces "
+                    "(port forwarding, NAT, or Lanvex running on this same server, for example through "
+                    "host.containers.internal). Lanvex then cannot tell which interface its connection uses, and "
+                    "signing in again after a change would not show that the server is still reachable on its "
+                    "network. Set a verification address in the server's settings: one of its own addresses that "
+                    "Lanvex reaches directly."
+                )
+            elif not path.verify_interfaces:
+                blockers.append(
+                    f"The verification address {s.verify_address} is not an address of {s.name} as of its last "
+                    "read. Enter one of the server's own addresses, or read the server again."
+                )
         open_change = await self.open_change(s.id)
         return Readiness(
             automation_enabled=self.settings.automation_enabled,
@@ -240,7 +260,40 @@ class ChangeService:
             rollback_seconds=self.settings.change_rollback_seconds,
             second_admin_required=self.settings.changes_require_second_admin,
             open_change=to_out(open_change) if open_change else None,
+            connection=path,
+            protected_interfaces=list(s.protected_interfaces or []),
         )
+
+    async def connection(self, s: Server, facts: HostFacts) -> ConnectionPath:
+        """Which of the server's interfaces carry the address Lanvex connects to, and the verification
+        address. Loopback does not count: an address forwarded to the server's loopback (Lanvex in a
+        container on the same host) says nothing about its network."""
+        own: dict[str, set[str]] = {}
+        for i in facts.interfaces:
+            for a in i.addresses:
+                ip = ipaddress.ip_interface(a.address).ip
+                if not ip.is_loopback:
+                    own.setdefault(str(ip), set()).add(i.name)
+        try:
+            connect = await transport.resolve(s.address)
+        except transport.SSHError:
+            connect = []
+
+        def on(addresses: list[str]) -> list[str]:
+            return sorted({name for a in addresses for name in own.get(a, set())})
+
+        return ConnectionPath(
+            address=s.address,
+            interfaces=on(connect),
+            verify_address=s.verify_address,
+            verify_interfaces=on([s.verify_address]) if s.verify_address else [],
+        )
+
+    def verify_target(self, target: transport.Target, s: Server) -> transport.Target | None:
+        """The same credentials and pinned host key, at the server's verification address."""
+        if not s.verify_address:
+            return None
+        return dataclasses.replace(target, address=s.verify_address)
 
     def _record_helper(self, s: Server, state: str, message: str, version: int | None = None) -> None:
         s.helper_state, s.helper_message = state, message[:500]
@@ -300,6 +353,13 @@ class ChangeService:
         facts = HostFacts.model_validate(snap.facts)
         if facts.stack.key not in SUPPORTED_STACKS:
             raise Conflict(f"Lanvex cannot change servers managed by {facts.stack.primary}.")
+        guard = next((p for p in s.protected_interfaces or [] if fnmatch.fnmatchcase(req.interface, p)), None)
+        if guard is not None:
+            raise ValidationFailed(
+                f"{req.interface} is protected on {s.name} ({guard}): another tool manages it. Change it there, "
+                "or remove it from the server's protected interfaces.",
+                fields={"interface": ["Protected."]},
+            )
         before = interface_state(facts, req.interface)
         if before is None:
             raise ValidationFailed(
@@ -325,6 +385,18 @@ class ChangeService:
             )
 
         target = await self.servers.target_for(s)
+        direct = self.verify_target(target, s)
+        if direct is not None:
+            try:
+                async with transport.connect(direct, self.settings.ssh_connect_timeout_seconds):
+                    pass
+            except transport.SSHError as e:
+                raise Conflict(
+                    f"Lanvex cannot reach {s.name} at its verification address {s.verify_address}: {e.message} "
+                    "It only changes a server it can check on one of the server's own addresses afterwards. If Lanvex runs "
+                    "on this server itself, it cannot do that: run Lanvex on another machine to change this server.",
+                    code="cannot_verify",
+                ) from e
         try:
             async with transport.connect(target, self.settings.ssh_connect_timeout_seconds) as conn:
                 plan = await helper.call(conn, Cmd.HELPER_PLAN, req.helper_payload())
@@ -374,6 +446,8 @@ class ChangeService:
         """Lanvex's own rules on top of the helper's: never cut the connection it relies on."""
         warnings: list[str] = []
         mgmt = set(await transport.resolve(s.address))
+        if s.verify_address:
+            mgmt.add(s.verify_address)
         current = {a.split("/")[0] for a in before["addresses"] + before["dynamic_addresses"]}
         on_iface = sorted(mgmt & current)
         if on_iface:

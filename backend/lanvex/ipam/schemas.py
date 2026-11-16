@@ -80,6 +80,8 @@ class _PrefixFields(ApiModel):
     vlan_id: int | None = None
     role_id: int | None = None
     tenant_id: int | None = None
+    # Where the prefix is used: a site (NetBox's scope). null on an update removes it.
+    site_id: int | None = None
     is_pool: bool | None = None
     mark_utilized: bool | None = None
     comments: str | None = Field(default=None, max_length=10000)

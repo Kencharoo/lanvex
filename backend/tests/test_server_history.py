@@ -37,10 +37,13 @@ class FakeServer:
     def __init__(self) -> None:
         self.facts = real_facts()
         self.down = False
+        self.error: transport.SSHError | None = None  # fail every read this way
         self.reads = 0
 
     async def collect(self, target: Any, connect_timeout: float, command_timeout: float) -> Collection:
         self.reads += 1
+        if self.error is not None:
+            raise self.error
         if self.down:
             raise transport.SSHError("Connection refused.", code="unreachable")
         facts = self.facts.model_copy(update={"collected_at": datetime.now(UTC)})

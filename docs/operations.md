@@ -41,6 +41,28 @@ For a name only used inside your network, add `tls internal` to the site block; 
 certificate with its own CA, which browsers need to trust (its root certificate is in Caddy's data
 directory under `pki/authorities/local/root.crt`).
 
+## Podman
+
+The installer uses Podman when Docker is not there (or not running), with `podman-compose` or
+`podman compose`. Rootless works: run `./install.sh` as the user who should own the containers, without
+sudo. Notes:
+
+- **Start at boot.** Podman has no daemon that restarts containers after a reboot. The installer
+  writes a systemd unit, `lanvex.service`: a system unit when run as root, otherwise a user unit and
+  `loginctl enable-linger`, so it starts without anyone signing in. If lingering could not be enabled,
+  the installer says so; run `sudo loginctl enable-linger <user>` once.
+- **Commands.** Where these docs say `docker compose`, use `podman-compose` (or `podman compose`).
+- **Health checks** run from systemd timers. Without a systemd session (some containers and CI
+  machines) `podman healthcheck run <container>` runs one by hand; the installer does this itself.
+- **Reverse proxy.** With rootless Podman, a proxy on the same host may not reach Lanvex from
+  `172.31.250.1`. Try to sign in once through the proxy: when the address is not trusted, Lanvex
+  refuses and logs `sign_in_refused_without_https` with the `peer` it came from
+  (`podman-compose logs lanvex | grep sign_in_refused`). Put that address into
+  `LANVEX_TRUSTED_PROXIES`.
+- **Changing the server Lanvex runs on.** A rootless container cannot reach its own host's LAN
+  address. Lanvex can read that host through `host.containers.internal`, but not change it
+  ([changes.md](changes.md#when-lanvex-reaches-the-server-indirectly)).
+
 ## NetBox token permissions
 
 With Lanvex Core nothing needs doing: its `lanvex-service` account gets exactly these permissions on
@@ -72,6 +94,14 @@ additionally needs a small helper installed as root; see [changes.md](changes.md
    `~lanvex/.ssh/authorized_keys`. `restrict` disables forwarding and terminals for that key.
 4. Test the connection, then read the network state.
 
+**Appliances and NAS systems** (ZimaOS, TrueNAS, Synology and the like) often have a read-only root
+file system, so `useradd` fails. Use an existing administrator account there, and put the key into
+that account's home directory, whatever it is (`echo ~` shows it; on ZimaOS it is `/DATA`). If
+`~/.ssh` does not exist yet, create it as that user, not with sudo, or it belongs to root and SSH
+ignores it: `mkdir -m 700 ~/.ssh`. Paste the key line in one piece; a terminal that wraps long lines
+can break it when copied. `cat >> ~/.ssh/authorized_keys`, paste, Enter, Ctrl+D is safer than a long
+`echo`. Then `chmod 600 ~/.ssh/authorized_keys`.
+
 If a server's host key changes (after a reinstall, or if something intercepts the connection),
 Lanvex stops connecting and says so. Verify the new fingerprint the same way before trusting it.
 
@@ -79,6 +109,13 @@ Lanvex reads each server every hour by default (`LANVEX_SERVER_READ_INTERVAL_MIN
 can be set to 15 minutes to daily, or off, on its page). The server page's **History** lists each
 state the server was found in and what changed, in words: addresses, links, MTU, gateway, routes,
 DNS. A read that finds the same state is counted, not stored again; failed reads are listed too.
+
+Scheduled reads stop by themselves after two failed sign-ins in a row, or at once when the server
+refuses Lanvex's address ("Refused for now"). Every failed attempt counts against the server's
+protection against password guessing: OpenSSH 9.8 and newer (`PerSourcePenalties`) and fail2ban then
+block Lanvex's address, and behind NAT every other machine's with it. Fix the cause and read the
+server once by hand; scheduled reads resume after a successful read. An OpenSSH block ends by itself
+after a while; `sudo systemctl restart ssh` (or `sshd`) on the server ends it at once.
 
 The commands Lanvex runs to read a server are fixed and read-only: `ip -json` (addresses, routes,
 neighbours), `cat` of `/etc/os-release`, `/etc/resolv.conf` and `/etc/network/interfaces[.d]`,

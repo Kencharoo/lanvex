@@ -147,6 +147,12 @@ export function ChangesSection({
                   )}
                 </span>
               </Requirement>
+              {r.connection && <ConnectionRequirement c={r.connection} name={s.name} />}
+              {r.protected_interfaces.length > 0 && (
+                <li className="pl-6 text-xs text-muted">
+                  Protected, never changed by Lanvex: <span className="addr">{r.protected_interfaces.join(", ")}</span>
+                </li>
+              )}
             </ul>
           </div>
 
@@ -383,7 +389,7 @@ function ChangeDialog({
 }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const candidates = facts.interfaces.filter((i) => i.kind !== "loopback" && !i.master);
+  const candidates = facts.interfaces.filter((i) => i.kind !== "loopback" && !i.master && !isProtected(i.name, r.protected_interfaces));
   const [d, setD] = React.useState<Draft>(() => draftFor(facts, candidates[0]?.name ?? ""));
   const dnsKnown = !!facts.dns.resolved?.some((x) => x.scope === d.iface);
   const prepare = useMutation({
@@ -544,5 +550,41 @@ function ChangeDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Shell-style pattern match (* ? [...]), as the server applies it to protected interfaces. */
+export function isProtected(name: string, patterns: string[]): boolean {
+  return patterns.some((p) => {
+    const re = p.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    try {
+      return new RegExp(`^${re}$`).test(name);
+    } catch {
+      return p === name;
+    }
+  });
+}
+
+function ConnectionRequirement({ c, name }: { c: NonNullable<ChangeReadiness["connection"]>; name: string }) {
+  if (c.interfaces.length > 0) {
+    return (
+      <Requirement ok label="Lanvex knows which interface it relies on">
+        Lanvex reaches {name} at <span className="addr">{c.address}</span> on {c.interfaces.join(", ")}. A change must keep that address, and Lanvex signs in again before confirming.
+      </Requirement>
+    );
+  }
+  const verified = c.verify_address && c.verify_interfaces.length > 0;
+  return (
+    <Requirement ok={verified ? true : false} label="Lanvex can check the server on its own address">
+      {verified ? (
+        <>
+          Lanvex connects through <span className="addr">{c.address}</span>, which is not one of the server's addresses, so it also checks <span className="addr">{c.verify_address}</span> on {c.verify_interfaces.join(", ")} after every change.
+        </>
+      ) : (
+        <>
+          Lanvex connects through <span className="addr">{c.address}</span>, which is not one of the server's addresses (port forwarding, NAT, or Lanvex running on this server). Set a verification address in Edit server.
+        </>
+      )}
+    </Requirement>
   );
 }

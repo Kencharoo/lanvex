@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6.1 — 2026-11-16
+
+Fixes from the first installation on Fedora Server with rootless Podman (KlassenServer).
+
+- **Changes are safe when Lanvex reaches a server indirectly.** When the address Lanvex connects to
+  is not one of the server's own (port forwarding, NAT, or Lanvex running on that server through
+  `host.containers.internal`), signing in again after a change proved nothing: a change that cut the
+  server off its network could be confirmed. Lanvex now refuses changes for such a server until it
+  has a verification address, one of its own that Lanvex reaches directly; that address is
+  protected, checked before a change is prepared, and must be reachable after the change, or the
+  change is rolled back. The server page shows which interface Lanvex relies on.
+- **Protected interfaces.** Interfaces another tool manages (names or patterns like `vlan-*`) can be
+  excluded from changes per server.
+- **Podman.** The installer works with Podman and podman-compose (rootless too): containers are found
+  by their Compose labels, health checks are in docker-compose.yml (Podman's OCI images carry none)
+  and run by the installer where no systemd timer does, every image name is fully qualified (Fedora's
+  short-name policy), and a systemd unit starts Lanvex at boot. `scripts/check-install.sh` works with
+  both. CI now installs Lanvex under rootless Podman configured like Fedora.
+- **Failed sign-ins.** Scheduled reads pause after two failed sign-ins in a row, so OpenSSH's
+  PerSourcePenalties (or fail2ban) does not block Lanvex's address, and behind NAT everyone else's.
+  OpenSSH's "Not allowed at this time" is recognised and shown as *Refused for now*. A successful read
+  resumes the schedule.
+- **Prefixes.** The list includes each prefix's gateway (it showed none before). Prefixes can be
+  given a site when created or edited. Utilization counts addresses inside a range marked utilized
+  only once, as NetBox does. A DHCP range counts only when it is marked utilized, in both.
+- **Scripting against Lanvex Core.** API responses to a signed-in session set the CSRF cookie
+  (`lanvex_core_csrftoken`); docs/core.md shows how to script writes with a Lanvex session.
+- A sign-in refused for missing HTTPS logs the address it came from, to find a reverse proxy missing
+  from `LANVEX_TRUSTED_PROXIES`.
+- Docs: Podman, appliances and NAS systems as servers, paused reads; stale version numbers removed.
+- Lanvex Core 0.6.1 (core.lock).
+
 ## 0.6.0 — 2026-11-15
 
 Keeping documentation and servers in step: what changed on a server, where it differs from Lanvex

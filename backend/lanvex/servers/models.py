@@ -35,6 +35,8 @@ class ConnectionStatus(enum.StrEnum):
     HOST_KEY_MISMATCH = "host_key_mismatch"
     NOT_ALLOWED = "not_allowed"
     ERROR = "error"
+    # OpenSSH refuses connections from Lanvex's address for now (PerSourcePenalties after failed sign-ins).
+    REFUSED = "refused"
 
 
 def _enum(e: type[enum.Enum], name: str) -> Enum:
@@ -70,6 +72,15 @@ class Server(TimestampMixin, Base):
     # Scheduled reads: None = the installation's default interval, 0 = never on a schedule.
     read_interval_minutes: Mapped[int | None] = mapped_column(Integer)
     next_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why scheduled reads stopped by themselves (repeated failed sign-ins); None = they run.
+    reads_paused: Mapped[str | None] = mapped_column(String(500))
+    # One of the server's own addresses that Lanvex reaches directly. Needed for changes when the
+    # connect address is not on the server (NAT, port forwarding, Lanvex on the same host).
+    verify_address: Mapped[str | None] = mapped_column(String(64))
+    # Interfaces Lanvex must never change (managed by other tooling); shell-style patterns.
+    protected_interfaces: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
 
     last_status: Mapped[ConnectionStatus | None] = mapped_column(
         _enum(ConnectionStatus, "server_connection_status")

@@ -16,6 +16,7 @@ Several processes may run a runner; a change is claimed with SELECT … FOR UPDA
 """
 
 import asyncio
+import dataclasses
 import os
 import socket
 import uuid
@@ -47,6 +48,8 @@ CONFIRM_MARGIN = timedelta(seconds=15)  # stop verifying this long before the se
 AFTER_DEADLINE = timedelta(seconds=20)  # give the server's rollback this long before checking on it
 STALE_AFTER = timedelta(seconds=120)  # a running change whose runner went quiet this long is reconciled
 RETRY_SECONDS = 5.0
+DIRECT_TRIES = 3  # tries to reach the verification address after a change
+DIRECT_RETRY_SECONDS = 3.0
 CONNECT_ERRORS = (transport.SSHError, asyncssh.Error, OSError, helper.HelperUnavailable)
 
 
@@ -360,9 +363,12 @@ class _Execution:
                         },
                         *result.get("checks", []),
                     ]
+                    direct = await self.check_direct(target, stop_at)
+                    if direct is not None:
+                        checks.insert(1, direct)
                     c.checks = checks
                     await self.save()
-                    if result.get("passed"):
+                    if result.get("passed") and (direct is None or direct["ok"]):
                         return await self.confirm(conn)
                     return await self.roll_back(conn, checks)
             except _NotYet as e:
@@ -401,6 +407,39 @@ class _Execution:
         await self.save()
         await self.wait_until(c.deadline_at + AFTER_DEADLINE)
         await self.settle_from_server(after_loss=True)
+
+    async def check_direct(self, target: transport.Target, stop_at: datetime) -> dict[str, Any] | None:
+        """When Lanvex connects through an address that is not the server's own (NAT, port forwarding, a
+        container on the same host), signing in again proves little: it must also reach the server at its
+        verification address, one of the server's own. A few tries, as an address can take seconds to
+        come back after an interface is reconfigured."""
+        address = self.s.verify_address
+        if not address:
+            return None
+        direct = dataclasses.replace(target, address=address)
+        why: Exception | None = None
+        for attempt in range(DIRECT_TRIES):
+            remaining = (stop_at - self.r.clock.now()).total_seconds()
+            if remaining <= 1:
+                break
+            try:
+                async with self.connect(direct, min(self.settings.ssh_connect_timeout_seconds, remaining)):
+                    return {
+                        "id": "lanvex_direct",
+                        "label": f"Lanvex reaches the server at {address}",
+                        "ok": True,
+                        "detail": f"Signed in at {address}, one of the server's own addresses, after the change.",
+                    }
+            except CONNECT_ERRORS as e:
+                why = e
+            if attempt + 1 < DIRECT_TRIES:
+                await self.r.clock.sleep(DIRECT_RETRY_SECONDS)
+        return {
+            "id": "lanvex_direct",
+            "label": f"Lanvex reaches the server at {address}",
+            "ok": False,
+            "detail": f"No SSH session to {address} after the change" + (f": {_why(why)}" if why else "."),
+        }
 
     async def confirm(self, conn: asyncssh.SSHClientConnection) -> None:
         try:

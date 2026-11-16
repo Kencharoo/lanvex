@@ -714,7 +714,9 @@ function HistorySection({ server: s, isAdmin }: { server: Server; isAdmin: boole
     },
     onError: (e) => toast.error(errorMessage(e)),
   });
-  const description = s.read_interval
+  const description = s.reads_paused
+    ? "Scheduled reads are paused (below). Reads that find nothing new are not listed again."
+    : s.read_interval
     ? `Read automatically ${every(s.read_interval)}${s.next_read_at ? `, next ${relativeTime(s.next_read_at)}` : ""}. Reads that find nothing new are not listed again.`
     : "Not read on a schedule: only when someone chooses Read now. Reads that find nothing new are not listed again.";
   const current = s.read_interval_minutes === null ? "" : String(s.read_interval_minutes);
@@ -741,6 +743,11 @@ function HistorySection({ server: s, isAdmin }: { server: Server; isAdmin: boole
         )
       }
     >
+      {s.reads_paused && (
+        <Notice tone="warn" title="Scheduled reads are paused">
+          {s.reads_paused}
+        </Notice>
+      )}
       {history.isPending ? (
         <Skeleton className="h-24 w-full" />
       ) : !history.data?.length ? (
@@ -798,12 +805,30 @@ function HistorySection({ server: s, isAdmin }: { server: Server; isAdmin: boole
 }
 
 function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; open: boolean; onClose: () => void; onSaved: () => void }) {
-  const [f, setF] = React.useState({ name: s.name, description: s.description, username: s.username });
+  const initial = () => ({
+    name: s.name,
+    description: s.description,
+    username: s.username,
+    verify_address: s.verify_address ?? "",
+    protected: s.protected_interfaces.join(", "),
+  });
+  const [f, setF] = React.useState(initial);
   React.useEffect(() => {
-    if (open) setF({ name: s.name, description: s.description, username: s.username });
+    if (open) setF(initial());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, s]);
   const save = useMutation({
-    mutationFn: () => api<Server>(`/servers/${s.id}`, { method: "PATCH", body: f }),
+    mutationFn: () =>
+      api<Server>(`/servers/${s.id}`, {
+        method: "PATCH",
+        body: {
+          name: f.name,
+          description: f.description,
+          username: f.username,
+          verify_address: f.verify_address.trim() || null,
+          protected_interfaces: f.protected.split(/[\s,]+/).filter(Boolean),
+        },
+      }),
     onSuccess: () => {
       toast.success("Saved");
       onSaved();
@@ -824,7 +849,26 @@ function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; ope
             <Field label="User on the server" htmlFor="ed-user" error={fieldError(save.error, "username")}>
               <Input id="ed-user" className="addr" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} required />
             </Field>
-            {save.error && !fieldError(save.error, "name", "username") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
+            <p className="pt-1 text-[13px] font-medium">For configuration changes</p>
+            <Field
+              label="Verification address"
+              htmlFor="ed-verify"
+              optional
+              error={fieldError(save.error, "verify_address")}
+              hint="One of the server's own addresses that Lanvex reaches directly. Needed when Lanvex connects through port forwarding, NAT, or from a container on this server: every change must leave this address reachable."
+            >
+              <Input id="ed-verify" className="addr" value={f.verify_address} onChange={(e) => setF({ ...f, verify_address: e.target.value })} placeholder="192.168.178.2" />
+            </Field>
+            <Field
+              label="Protected interfaces"
+              htmlFor="ed-protected"
+              optional
+              error={fieldError(save.error, "protected_interfaces")}
+              hint="Interfaces another tool manages. Lanvex never changes them. Names or patterns, separated by commas, for example vlan-*, eno1."
+            >
+              <Input id="ed-protected" className="addr" value={f.protected} onChange={(e) => setF({ ...f, protected: e.target.value })} placeholder="vlan-*" />
+            </Field>
+            {save.error && !fieldError(save.error, "name", "username", "verify_address", "protected_interfaces") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
           </DialogBody>
           <DialogFooter>
             <Button type="button" onClick={onClose}>Cancel</Button>

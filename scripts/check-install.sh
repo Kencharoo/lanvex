@@ -21,26 +21,44 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 
 # ---- containers ------------------------------------------------------------------------------------
+# Docker or Podman, whichever runs Lanvex here; containers are found by the labels both Compose
+# implementations set.
+runtime=docker
+if ! { command -v docker >/dev/null && docker info >/dev/null 2>&1; } && command -v podman >/dev/null; then runtime=podman; fi
+ids() { "$runtime" ps -aq --filter label=com.docker.compose.project=lanvex; }
+describe() {  # one line per container: service, health or state, restarts
+  local id
+  for id in $(ids); do
+    # Podman runs health checks from systemd timers; without them the status would not move.
+    if [ "$runtime" = podman ]; then "$runtime" healthcheck run "$id" >/dev/null 2>&1 || true; fi
+    "$runtime" inspect --format \
+      '{{index .Config.Labels "com.docker.compose.service"}} {{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}} {{.RestartCount}}' \
+      "$id"
+  done
+}
 deadline=$(( $(date +%s) + 600 ))
 while :; do
-  states=$(docker compose ps -a --format '{{.Service}} {{if .Health}}{{.Health}}{{else}}{{.State}}{{end}}')
-  if ! grep -q ' starting$' <<<"$states" || [ "$(date +%s)" -ge "$deadline" ]; then break; fi
+  states=$(describe)
+  if ! grep -q ' starting ' <<<"$states" || [ "$(date +%s)" -ge "$deadline" ]; then break; fi
   sleep 10
 done
 if [ -z "$states" ]; then
   bad "no Lanvex containers here (run this in the directory you installed Lanvex from)"
 else
-  while read -r service state; do
+  while read -r service state restarts; do
     if [ "$state" = healthy ]; then ok "$service is healthy"; else bad "$service is $state"; fi
+    if [ "$restarts" != 0 ]; then bad "$service restarted $restarts time(s)"; fi
   done <<<"$states"
-  while read -r name restarts; do
-    if [ "$restarts" != 0 ]; then bad "${name#/} restarted $restarts time(s)"; fi
-  done < <(docker compose ps -aq | xargs docker inspect --format '{{.Name}} {{.RestartCount}}')
-  mapfile -t services < <(docker compose ps --services | grep -xE 'lanvex|core|core-worker' || true)
-  if errors=$(docker compose logs --no-color "${services[@]}" 2>&1 | grep -E 'Traceback|\[ERROR\]|"level": ?"(error|critical)"'); then
+  errors="" checked=()
+  for id in $(ids); do
+    service=$("$runtime" inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id")
+    case "$service" in lanvex|core|core-worker) checked+=("$service") ;; *) continue ;; esac
+    errors+=$("$runtime" logs "$id" 2>&1 | grep -E 'Traceback|\[ERROR\]|"level": ?"(error|critical)"' || true)
+  done
+  if [ -n "$errors" ]; then
     bad "errors in the logs:"; printf '%s\n' "$errors" | tail -20 | sed 's/^/        /'
   else
-    ok "no errors in the logs of: ${services[*]}"
+    ok "no errors in the logs of: ${checked[*]}"
   fi
 fi
 

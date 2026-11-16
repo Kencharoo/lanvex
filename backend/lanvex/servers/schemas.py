@@ -14,6 +14,7 @@ _HOSTNAME = re.compile(
     r"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
 )
 _USERNAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}$")
+_IFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.:@*?\[\]-]{1,32}$")
 
 Port = Annotated[int, Field(ge=1, le=65535)]
 
@@ -110,6 +111,36 @@ class ServerUpdate(ApiModel):
     unlink_netbox: bool = False
     # Scheduled reads: null = the installation's default, 0 = off, otherwise minutes (5 to 7 days).
     read_interval_minutes: int | None = None
+    # One of the server's own IP addresses that Lanvex reaches directly; null or "" clears it.
+    verify_address: str | None = None
+    # Interfaces Lanvex must not change, as names or shell-style patterns (vlan-*).
+    protected_interfaces: list[str] | None = Field(default=None, max_length=50)
+
+    @field_validator("verify_address")
+    @classmethod
+    def _verify(cls, v: str | None) -> str | None:
+        import ipaddress
+
+        if v is None or not v.strip():
+            return None
+        try:
+            return str(ipaddress.ip_address(v.strip().strip("[]")))
+        except ValueError as e:
+            raise ValueError("Enter one of the server's own IP addresses.") from e
+
+    @field_validator("protected_interfaces")
+    @classmethod
+    def _protected(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        out = []
+        for p in (x.strip() for x in v):
+            if not p:
+                continue
+            if not _IFACE_PATTERN.match(p):
+                raise ValueError(f"{p} is not an interface name or pattern (letters, digits, . _ - @ : * ?).")
+            out.append(p)
+        return sorted(set(out))
 
     @field_validator("address")
     @classmethod
@@ -165,6 +196,9 @@ class ServerOut(ApiModel):
     read_interval_minutes: int | None  # as set for this server; null = the default
     read_interval: int  # the interval in effect, in minutes; 0 = not read on a schedule
     next_read_at: datetime | None
+    reads_paused: str | None  # why scheduled reads stopped by themselves; null = they run
+    verify_address: str | None
+    protected_interfaces: list[str]
     created_at: datetime
 
 

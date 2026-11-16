@@ -1,8 +1,30 @@
-# Status of Lanvex 0.6.0
+# Status of Lanvex 0.6.1
 
-Last updated 2026-11-15. "Verified" means it was run, not just written.
+Last updated 2026-11-16. "Verified" means it was run, not just written.
 
 ## Verified
+
+### Second installation on a real server (0.6.0)
+
+On Fedora Server 44 with rootless Podman 5.8.9 and podman-compose 1.6.0 (no Docker), Lanvex Core
+mode, plain HTTP. The network was documented through the Lanvex API and Lanvex Core's API, and a
+Fedora 44 server running NetworkManager was registered over SSH:
+
+| What | Result |
+|---|---|
+| Reading a Fedora server | Recognised as supported, NetworkManager detected, 14 interfaces and 43 neighbours read; 9 of 10 addresses matched the documentation (the tenth was undocumented) |
+| Host key and helper | The fingerprint shown matched the server's; the helper's checksum was identical in the API, the download, on the server and in the release source |
+| Logs | No errors in `lanvex` and `core` during the whole test |
+| Problems found | Fourteen, fixed in 0.6.1 or explained ([CHANGELOG.md](../CHANGELOG.md)). The serious one: with Lanvex running on the server it changes, the connection went through the server's loopback, so a change could have cut off the server's real network and still passed verification |
+
+### Change safety when Lanvex reaches a server indirectly (new in 0.6.1)
+
+| What | How |
+|---|---|
+| Indirect connection | A server reached through an address it does not have (port forwarding, NAT, Lanvex on the server itself) cannot be changed until a verification address is set; an address that is not the server's is refused (API tests; in the browser through a TCP forwarder to the netplan lab host) |
+| Verification | Before a change Lanvex must reach the verification address; after the change it must reach it again from Lanvex itself, not only through the helper. A change that cuts the server off its network while the forwarded connection stays up is rolled back (API tests against a scripted server) |
+| Protected interfaces | Names and patterns (`vlan-*`) another tool manages are never changed, and are not offered (API test, frontend unit test) |
+| Paused reads | Scheduled reads pause after two failed sign-ins in a row, or at once when OpenSSH refuses the connection (`PerSourcePenalties`); a successful read resumes them. The refusal is recognised from a real asyncssh connection to a server that answers like OpenSSH 9.8 (4 tests) |
 
 ### Topology (new in 0.5)
 
@@ -21,6 +43,11 @@ containers; `scripts/check-install.sh` then checks them. Passed for 0.4.2: every
 and never restarted, no errors in the logs, sign-in, Lanvex Core (NetBox 4.7.5) reachable and
 signed in, Lanvex Core closed to visitors without a session, its styles served, and its pages open
 as the signed-in user. The installer waited about 5½ minutes for Lanvex Core's first start.
+
+Since 0.6.1 a second job does the same under **rootless Podman** with podman-compose 1.6.0 and
+Fedora's registry settings (short image names refused), with Docker stopped: the installer must
+pick Podman by itself, finish, remove the first administrator's password from `.env`, and every
+container must report healthy through `podman healthcheck run`.
 
 ### First installation on a real server (0.4.0)
 
@@ -95,22 +122,22 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Drift | A file edited after the preview is not overwritten; nothing changes |
 | Hosts that cannot take changes | ifupdown host: refused with the reason; missing sudo rule and missing Python reported distinctly; helper upload over SFTP |
 | UI end to end | Browser test: install the helper with the commands the dialog shows, enable, prepare, review the diff, approve by typing the name, watch it apply and verify, see it under Automation and on the server page |
-| Lanvex restarts, second-admin rule, cancellation, unreachable servers, every runner path | 29 API tests against a scripted server with a controllable clock |
+| Lanvex restarts, second-admin rule, cancellation, unreachable servers, indirect connections, protected interfaces, every runner path | 33 API tests against a scripted server with a controllable clock |
 
 ### Everywhere
 
 | What | How |
 |---|---|
-| Backend | 281 tests: 260 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 13 SSH lab (6 reading, discovery and recording; 7 changes). The lab tests run in CI on every push; the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
-| Frontend | Type check, 29 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core) |
-| Lanvex Core | 0.6.0: its own tests (permissions of the service account included) |
+| Backend | 290 tests: 269 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 13 SSH lab (6 reading, discovery and recording; 7 changes). The lab tests run in CI on every push; the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Frontend | Type check, 30 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core) |
+| Lanvex Core | 0.6.1: its own tests (permissions of the service account and its CSRF cookie for scripts included) |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
 ## Not verified yet
 
 | What | Why | How to close it |
 |---|---|---|
-| Debian and Fedora hosts end to end | Their package mirrors were unreachable from the build environment, so the lab is Ubuntu-only. Detection of both is unit-tested; their network tools are the same upstream projects | Add a Debian 12 and a Fedora 41 host to the lab, or run Lanvex against one |
+| Debian hosts, and changes on Fedora | Their package mirrors were unreachable from the build environment, so the lab is Ubuntu-only. Reading a Fedora 44 server was verified on a real installation (above); detection of Debian is unit-tested | Add a Debian 12 and a Fedora host to the lab, or run a change against a test server |
 | Changes on anything but Ubuntu 24.04 | Same reason. Older netplan (Ubuntu 20.04/22.04) and NetworkManager versions are untested | Run a change on a test server of each kind before relying on it |
 | Changes on real hardware and real routers | The lab is containers on one bridge; DHCP was not tested (no DHCP server in the lab) | Try on a non-critical server first, with console access at hand |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
@@ -129,7 +156,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 - Discovery from the network side (SNMP, switch MAC tables) and of devices Lanvex does not read; a
   deployment wizard; monitoring and alerts.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
-- Editing prefix tenant/scope and IP tenant/role/NAT; device and interface creation.
+- Editing prefix tenant and scopes other than a site, and IP tenant/role/NAT; device creation.
 
 ## Known limitations
 
@@ -138,7 +165,11 @@ with the helper installed through sudo exactly as documented. Only lab container
   sources). Permissions inside it follow Lanvex's two roles. Details in docs/core.md.
 
 - Utilization counts IP records; NetBox counts distinct hosts. They differ only when the same host
-  is recorded twice in one VRF, or an IP sits inside a utilized range.
+  is recorded twice in one VRF. Like NetBox, Lanvex counts an IP range only when it is marked
+  *utilized*: a DHCP range that is not marked adds nothing.
+- Under rootless Podman, a container cannot reach its own host's LAN address. Lanvex can read the
+  server it runs on (through `host.containers.internal`), but it refuses to change it, because it
+  could not check the result from outside; run Lanvex on another machine for that (docs/changes.md).
 - Moving a server to another address in the UI means removing and re-adding it (the API supports a
   move with a re-verified host key). Removing a server also removes its change history from the
   Automation list; the audit log keeps every change.

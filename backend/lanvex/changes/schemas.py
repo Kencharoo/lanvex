@@ -181,6 +181,15 @@ class ChangeOut(ApiModel):
     outcome: str | None
 
 
+class ConnectionPath(ApiModel):
+    """Which of the server's interfaces carry Lanvex's connection, as of its last read."""
+
+    address: str  # where Lanvex connects
+    interfaces: list[str]  # the server's interfaces with that address; empty = not one of its own
+    verify_address: str | None
+    verify_interfaces: list[str]
+
+
 class Readiness(ApiModel):
     automation_enabled: bool
     changes_enabled: bool
@@ -195,6 +204,8 @@ class Readiness(ApiModel):
     rollback_seconds: int
     second_admin_required: bool
     open_change: ChangeOut | None
+    connection: ConnectionPath | None = None
+    protected_interfaces: list[str] = []
 
 
 class HelperInstall(ApiModel):

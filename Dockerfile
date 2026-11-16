@@ -2,7 +2,7 @@
 # Lanvex — single image serving the API and the built web UI.
 
 # ---- frontend build -------------------------------------------------------------
-FROM node:22-alpine AS web
+FROM docker.io/library/node:22-alpine AS web
 WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- python dependencies ---------------------------------------------------------
-FROM python:3.13-slim AS deps
+FROM docker.io/library/python:3.13-slim AS deps
 COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT=/opt/venv
 WORKDIR /app
@@ -20,7 +20,7 @@ COPY backend/ ./
 RUN uv sync --frozen --no-dev
 
 # ---- runtime ----------------------------------------------------------------------
-FROM python:3.13-slim
+FROM docker.io/library/python:3.13-slim
 LABEL org.opencontainers.image.title="Lanvex" \
       org.opencontainers.image.description="Network Infrastructure, Simplified."
 RUN groupadd --system lanvex && useradd --system --gid lanvex --home /app --shell /usr/sbin/nologin lanvex

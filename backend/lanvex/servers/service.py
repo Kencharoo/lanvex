@@ -95,7 +95,10 @@ def to_out(s: Server, netbox: NetBoxRef | None = None) -> ServerOut:
         changes_enabled=s.changes_enabled,
         read_interval_minutes=s.read_interval_minutes,
         read_interval=read_interval(s, get_settings()),
-        next_read_at=s.next_read_at if read_interval(s, get_settings()) else None,
+        next_read_at=s.next_read_at if read_interval(s, get_settings()) and not s.reads_paused else None,
+        reads_paused=s.reads_paused,
+        verify_address=s.verify_address,
+        protected_interfaces=list(s.protected_interfaces or []),
         created_at=s.created_at,
     )
 
@@ -110,6 +113,7 @@ def read_interval(s: Server, settings: Settings) -> int:
 
 
 SCHEDULE = "(schedule)"  # requested_by of scheduled reads; cannot be a username
+AUTH_FAILURES_BEFORE_PAUSE = 2  # consecutive scheduled sign-in failures before reads pause
 
 
 def verified_host_key(k: PinnedHostKey) -> tuple[str, str]:
@@ -287,6 +291,12 @@ class ServerService:
             s.read_interval_minutes = data.read_interval_minutes
             minutes = read_interval(s, self.settings)
             s.next_read_at = datetime.now(UTC) + timedelta(minutes=minutes) if minutes else None
+        if "verify_address" in sent:
+            if data.verify_address is not None:
+                await self._check_target(data.verify_address)
+            s.verify_address = data.verify_address
+        if data.protected_interfaces is not None:
+            s.protected_interfaces = data.protected_interfaces
         if data.unlink_netbox:
             s.netbox_object_type = s.netbox_object_id = None
         elif "netbox" in sent and data.netbox is not None:
@@ -379,6 +389,8 @@ class ServerService:
             s.os_supported = c.facts.system.os.supported
             s.network_stack = c.facts.stack.primary
             await self._remember_neighbors(s, c.facts)
+            if s.reads_paused:  # a successful read ends a pause
+                self.resume_reads(s)
         snap.fingerprint = fingerprint(snap.facts) if snap.facts else None
         latest = await self.db.scalar(
             select(ServerSnapshot)
@@ -395,11 +407,42 @@ class ServerService:
             latest.confirmed_at = datetime.now(UTC)
             latest.reads += 1
             await self.db.flush()
+            self._maybe_pause(s, latest, scheduled)
             return latest
         self.db.add(snap)
         await self.db.flush()
         await self._prune(s.id)
+        self._maybe_pause(s, snap, scheduled)
         return snap
+
+    def _maybe_pause(self, s: Server, result: ServerSnapshot, scheduled: bool) -> None:
+        """Stop reading on a schedule when every attempt makes things worse: each failed sign-in counts
+        against the server's protection (OpenSSH's PerSourcePenalties, fail2ban), which then blocks
+        Lanvex's address, and behind NAT everyone else's with it."""
+        if not scheduled or s.reads_paused:
+            return
+        if result.status == ConnectionStatus.REFUSED:
+            reason = (
+                "The server refuses connections from Lanvex's address for now, after failed sign-ins (OpenSSH "
+                "PerSourcePenalties). Every attempt extends that, so Lanvex stopped reading it on a schedule."
+            )
+        elif result.status == ConnectionStatus.AUTH_FAILED and result.reads >= AUTH_FAILURES_BEFORE_PAUSE:
+            reason = (
+                f"The server rejected Lanvex's credentials {result.reads} times in a row. Lanvex stopped reading it "
+                "on a schedule, so the server's protection against failed sign-ins does not block Lanvex's address."
+            )
+        else:
+            return
+        s.reads_paused = (
+            reason
+            + " Fix the cause, then read the server once: scheduled reads resume after a successful read."
+        )
+        s.next_read_at = None
+
+    def resume_reads(self, s: Server) -> None:
+        s.reads_paused = None
+        minutes = read_interval(s, self.settings)
+        s.next_read_at = datetime.now(UTC) + timedelta(minutes=minutes) if minutes else None
 
     async def _remember_neighbors(self, s: Server, facts: HostFacts) -> None:
         """Keep the hosts in the server's neighbour table for discovery, and forget old ones."""

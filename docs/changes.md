@@ -1,6 +1,6 @@
 # Changing server configuration
 
-Lanvex 0.3 can change the IPv4 configuration of one interface on a Linux server: its static
+Lanvex can change the IPv4 configuration of one interface on a Linux server: its static
 addresses (or switching to DHCP), its default gateway, and optionally its DNS servers and search
 domains. Every change is previewed, approved by an administrator, applied by the server itself,
 verified, and rolled back automatically if anything fails or Lanvex loses contact.
@@ -98,6 +98,31 @@ Lanvex refuses a change that would remove the address it connects to. If Lanvex 
 192.0.2.10 and that address is on the interface, the change must keep 192.0.2.10 as a static address,
 and the interface cannot be switched to DHCP. To move a server to a new address: add the new address
 in one change, update the server's address in Lanvex, then remove the old address in a second change.
+
+### When Lanvex reaches the server indirectly
+
+The rule above only works when the address Lanvex connects to is one of the server's own. It is not
+when Lanvex reaches the server through port forwarding, NAT, or from a container on the server itself
+(rootless Podman's `host.containers.internal`, 169.254.1.2, which is forwarded to the server's
+loopback). Signing in again after a change would then prove nothing: the forwarded connection keeps
+working even if the change cut the server off its network. So Lanvex refuses changes for such a
+server until it has a **verification address** (Edit server): one of the server's own addresses that
+Lanvex reaches directly. That address is protected like the one above, Lanvex checks it can reach it
+before preparing a change, and after every change it must reach the server there too, or the change
+is rolled back.
+
+If Lanvex runs on the server it changes, it usually cannot reach that server's own addresses (a
+rootless container cannot reach its host's LAN address), so it cannot change that server. Run Lanvex
+on another machine for that.
+
+### Protected interfaces
+
+Interfaces that another tool manages (a network-management script, Ansible, VLAN interfaces generated
+from a file) can be listed under **Protected interfaces** (Edit server), as names or patterns such as
+`vlan-*`. Lanvex never offers or prepares a change for them, so the two tools never fight over the
+same profile.
+
+### Warnings
 
 Lanvex warns before approval when a change touches the interface it connects through, adds, removes
 or replaces the default gateway, or turns DHCP off. Loopback interfaces and interfaces that are part

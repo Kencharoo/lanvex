@@ -123,6 +123,29 @@ async def scan_host_key(address: str, port: int, timeout: float) -> HostKey:
     return describe_key(key)
 
 
+PENALIZED = (
+    "The server refuses connections from Lanvex's address for now (\"Not allowed at this time\"): OpenSSH's "
+    "protection against repeated failed sign-ins (PerSourcePenalties) has blocked it, and every new attempt "
+    "extends the block. Fix the credentials, then wait for the block to end, or lift it on the server."
+)
+
+
+async def _penalized(t: Target, timeout: float) -> bool:
+    """OpenSSH 9.8+ answers a penalized address with a line before its version string and closes the
+    connection; SSH clients skip such lines, so the connection just seems lost. Look at the raw first line."""
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(t.address, t.port), timeout)
+    except (TimeoutError, OSError):
+        return False
+    try:
+        data = await asyncio.wait_for(reader.read(256), timeout)
+    except (TimeoutError, OSError):
+        return False
+    finally:
+        writer.close()
+    return b"Not allowed at this time" in data
+
+
 @asynccontextmanager
 async def connect(t: Target, timeout: float) -> AsyncIterator[asyncssh.SSHClientConnection]:
     try:
@@ -161,10 +184,14 @@ async def connect(t: Target, timeout: float) -> AsyncIterator[asyncssh.SSHClient
             f"The server rejected the credentials for user '{t.username}'.", code="auth_failed"
         ) from e
     except (TimeoutError, OSError) as e:
+        if isinstance(e, ConnectionResetError | ConnectionAbortedError) and await _penalized(t, timeout):
+            raise SSHError(PENALIZED, code="refused") from e
         raise SSHError(
             f"{t.address}:{t.port} could not be reached ({type(e).__name__}).", code="unreachable"
         ) from e
     except asyncssh.Error as e:
+        if isinstance(e, asyncssh.ConnectionLost | asyncssh.DisconnectError) and await _penalized(t, timeout):
+            raise SSHError(PENALIZED, code="refused") from e
         raise SSHError(f"SSH connection failed: {e.reason}", code="error") from e
     try:
         yield conn

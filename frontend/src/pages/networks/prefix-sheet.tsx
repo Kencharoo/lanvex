@@ -198,6 +198,9 @@ function EditPrefixDialog({ prefix, open, onOpenChange }: { prefix: Prefix; open
   const nbName = useNetBoxLabel();
   const vlans = useLookup("vlans", undefined, open);
   const roles = useLookup("prefix-roles", undefined, open);
+  const sites = useLookup("sites", undefined, open);
+  // A scope other than a site (a region, a location) is kept as it is; it is edited in NetBox.
+  const otherScope = prefix.scope_type && prefix.scope_type !== "dcim.site" ? prefix.scope : null;
   const [form, setForm] = React.useState(() => initial(prefix));
   React.useEffect(() => {
     if (open) setForm(initial(prefix));
@@ -213,6 +216,7 @@ function EditPrefixDialog({ prefix, open, onOpenChange }: { prefix: Prefix; open
         role_id: form.role_id ? Number(form.role_id) : null,
         comments: form.comments,
       };
+      if (!otherScope && form.site_id !== initial(prefix).site_id) body.site_id = form.site_id ? Number(form.site_id) : null;
       if (form.status !== "container") {
         if (form.gateway.trim() && form.gateway.trim() !== prefix.gateway?.address) body.gateway = form.gateway.trim();
         if (!form.gateway.trim() && prefix.gateway) body.clear_gateway = true;
@@ -257,6 +261,22 @@ function EditPrefixDialog({ prefix, open, onOpenChange }: { prefix: Prefix; open
                 </Select>
               </Field>
             </div>
+            {otherScope ? (
+              <p className="text-[13px] text-muted">
+                Scope: {otherScope.name} ({prefix.scope_type?.replace("dcim.", "")}). Change it in {nbName}.
+              </p>
+            ) : (
+              <Field label="Site" htmlFor="ep-site" optional error={fieldError(save.error, "site_id", "scope_id")}>
+                <Select id="ep-site" value={form.site_id} onChange={(e) => set("site_id", e.target.value)}>
+                  <option value="">No site</option>
+                  {sites.data?.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
             <Field label="VLAN" htmlFor="ep-vlan" optional error={fieldError(save.error, "vlan_id", "vlan")}>
               <Select id="ep-vlan" value={form.vlan_id} onChange={(e) => set("vlan_id", e.target.value)}>
                 <option value="">No VLAN</option>
@@ -299,6 +319,7 @@ function initial(p: Prefix) {
     status: p.status.value as PrefixStatus,
     vlan_id: p.vlan ? String(p.vlan.id) : "",
     role_id: p.role ? String(p.role.id) : "",
+    site_id: p.scope_type === "dcim.site" && p.scope ? String(p.scope.id) : "",
     gateway: p.gateway?.address ?? "",
     comments: p.comments,
   };

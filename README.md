@@ -11,7 +11,7 @@ API and never touches their database. Changes to networks, IP addresses and VLAN
 real is a Linux server's interface addresses, gateway and DNS, and only when an administrator has
 switched that on, previewed the change and approved it; see below.
 
-## What works in 0.5
+## What works
 
 | Area | Capability |
 |---|---|
@@ -31,10 +31,11 @@ switched that on, previewed the change and approved it; see below.
 
 ## Installation
 
-You need a Linux server with Docker and Docker Compose v2.
+You need a Linux server with Docker and Docker Compose v2, or with Podman and podman-compose
+(Fedora Server's default; rootless works too, see [docs/operations.md](docs/operations.md#podman)).
 
 ```bash
-unzip lanvex-0.6.0.zip && cd lanvex-0.6.0
+unzip lanvex-0.6.1.zip && cd lanvex-0.6.1
 sudo ./install.sh
 ```
 
@@ -46,7 +47,8 @@ healthy and prints how to sign in. `./install.sh --help` lists options for insta
 questions, such as `--port 100.64.0.5:8081`.
 
 To update, unpack the new release next to the old one, copy `.env` into it and run
-`docker compose up -d --build` there; the data stays in Docker's volumes. Back up first
+`docker compose up -d --build` (Podman: `podman-compose up -d --build`) there; the data stays in the
+volumes. Back up first
 ([docs/core.md](docs/core.md#updating)). [CHANGELOG.md](CHANGELOG.md) lists what changed.
 
 Session cookies are HTTPS-only unless you choose plain HTTP. For HTTPS see

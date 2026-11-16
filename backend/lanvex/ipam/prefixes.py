@@ -87,6 +87,7 @@ class PrefixService:
         limit: int = 50,
         offset: int = 0,
         include_utilization: bool = True,
+        include_gateway: bool = False,
     ) -> Page[Prefix]:
         if within:
             within = str(addr.parse_network(within))
@@ -109,7 +110,37 @@ class PrefixService:
                     p.utilization = await self.utilization(p, ranges=ranges)
 
             await asyncio.gather(*(fill(p) for p in items))
+        if include_gateway and items:
+            found = await self.gateways(items)
+            for p in items:
+                p.gateway = found.get(p.id)
         return Page(count=page.count, limit=limit, offset=offset, results=items)
+
+    async def gateways(self, prefixes: list[Prefix]) -> dict[int, Gateway]:
+        """The gateways of a page of prefixes in one NetBox call (`parent` takes several values), each
+        matched as in find_gateway: same network and mask, same VRF."""
+        leaves = [p for p in prefixes if p.status.value != PrefixStatus.CONTAINER]
+        if not leaves:
+            return {}
+        try:
+            tagged = await self.nb.list_all(
+                IPS, {"tag": GATEWAY_TAG_SLUG, "parent": sorted({p.prefix for p in leaves})}, cap=5000
+            )
+        except ValidationFailed as e:
+            if "tag" in e.fields:  # no gateway recorded yet anywhere: the tag does not exist
+                return {}
+            raise
+        out: dict[int, Gateway] = {}
+        for p in leaves:
+            net = addr.parse_network(p.prefix)
+            vrf_id = p.vrf.id if p.vrf else None
+            for ip in tagged:
+                if ((ip.get("vrf") or {}).get("id")) == vrf_id and addr.parse_interface(
+                    ip["address"]
+                ).network == net:
+                    out[p.id] = Gateway(ip_address_id=ip["id"], address=ip["address"])
+                    break
+        return out
 
     async def utilized_ranges(self, prefixes: list[Prefix]) -> list[dict[str, Any]]:
         """All IP ranges marked utilized inside any of these leaf prefixes, in one NetBox call.
@@ -155,7 +186,21 @@ class PrefixService:
             else:
                 ip_count = await self.nb.count(IPS, ip_params)
                 mine = [r for r in ranges if _range_in(r, net, vrf_id)]
-            range_size = sum(int(r.get("size") or 0) for r in mine)
+            # As NetBox: utilized ranges count whole (overlaps once), addresses inside them do not count again.
+            intervals = addr.merge_ranges(
+                (
+                    int(ipaddress.ip_interface(r["start_address"]).ip),
+                    int(ipaddress.ip_interface(r["end_address"]).ip),
+                )
+                for r in mine
+            )
+            range_size = sum(end - start + 1 for start, end in intervals)
+            if intervals and ip_count and range_size < addr.utilization_denominator(net, p.is_pool):
+                inside = await self.nb.count(
+                    IPS,
+                    {"parent": addr.interval_networks(intervals, net.version), "vrf_id": vrf_filter(vrf_id)},
+                )
+                ip_count = max(ip_count - inside, 0)
             u = addr.address_utilization(net, p.is_pool, ip_count, range_size)
         return UtilizationOut.model_validate(u, from_attributes=True)
 
@@ -333,6 +378,8 @@ class PrefixService:
             "vlan": data.vlan_id,
             "role": data.role_id,
             "tenant": data.tenant_id,
+            "scope_type": "dcim.site" if data.site_id else None,
+            "scope_id": data.site_id,
             "is_pool": bool(data.is_pool),
             "mark_utilized": bool(data.mark_utilized),
             "comments": data.comments or "",
@@ -379,6 +426,9 @@ class PrefixService:
                     value = ""
                 payload[mapping.get(field, field)] = value
 
+        if "site_id" in sent:
+            payload["scope_type"] = "dcim.site" if data.site_id else None
+            payload["scope_id"] = data.site_id
         if "vrf_id" in sent and data.vrf_id != (current.vrf.id if current.vrf else None):
             dup = await self.nb.count(PREFIXES, {"prefix": current.prefix, "vrf_id": vrf_filter(data.vrf_id)})
             if dup:

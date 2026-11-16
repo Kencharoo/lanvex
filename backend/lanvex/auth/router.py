@@ -20,10 +20,12 @@ from lanvex.auth.service import (
 )
 from lanvex.core.errors import Conflict, NotAuthenticated, NotFound, ValidationFailed
 from lanvex.core.http import client_ip, is_loopback_host, request_is_https
+from lanvex.core.logging import get_logger
 from lanvex.deps import DB, AdminUser, Audit, CurrentSession, CurrentUser, SettingsDep, get_rate_limiter
 from lanvex.schemas import ApiModel
 
 router = APIRouter(tags=["auth"])
+log = get_logger("lanvex.auth")
 
 
 class LoginRequest(ApiModel):
@@ -84,6 +86,13 @@ async def login(
 ):
     if settings.secure_cookies and not request_is_https(request) and not is_loopback_host(request):
         # Browsers drop Secure cookies on plain HTTP; without this the sign-in would appear to do nothing.
+        # The log names the peer, so a reverse proxy missing from LANVEX_TRUSTED_PROXIES is easy to find.
+        log.warning(
+            "sign_in_refused_without_https",
+            peer=request.client.host if request.client else None,
+            forwarded_proto=request.headers.get("x-forwarded-proto"),
+            hint="If peer is your reverse proxy, add it to LANVEX_TRUSTED_PROXIES.",
+        )
         raise ValidationFailed(
             "Lanvex only issues sessions over HTTPS in this configuration. Open it via https://, or, for a "
             "trusted test network, set LANVEX_COOKIE_SECURE=false.",

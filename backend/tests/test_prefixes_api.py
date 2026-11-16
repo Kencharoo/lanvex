@@ -37,6 +37,17 @@ async def test_list_prefixes_maps_and_computes_utilization(
         200, json=p.page([], count=127)
     )
     netbox_mock.get("ipam/ip-ranges/").respond(200, json=p.page([]))
+    # Gateways for the whole page in one call; one in another VRF and one of a child prefix do not count.
+    gateways = netbox_mock.get("ipam/ip-addresses/", params={"tag": "lanvex-gateway"}).respond(
+        200,
+        json=p.page(
+            [
+                p.ip(7, "10.0.1.1/24", tags=[p.tag()]),
+                p.ip(8, "10.0.1.254/24", tags=[p.tag()], vrf_obj=prod),
+                p.ip(9, "10.0.1.129/25", tags=[p.tag()], vrf_obj=prod),
+            ]
+        ),
+    )
 
     r = await admin.get("/api/v1/prefixes")
     assert r.status_code == 200, r.text
@@ -49,6 +60,11 @@ async def test_list_prefixes_maps_and_computes_utilization(
     assert office["vrf"] == {"id": 1, "name": "prod", "slug": None}
     assert office["utilization"] == {"percent": 50.0, "used": 127, "total": 254, "basis": "ip_addresses"}
     assert ips.called
+    assert campus["gateway"] is None  # a container has none
+    assert office["gateway"] == {"ip_address_id": 8, "address": "10.0.1.254/24"}
+    assert gateways.call_count == 1 and gateways.calls.last.request.url.params.get_list("parent") == [
+        "10.0.1.0/24"
+    ]
     # Raw NetBox internals never leak to the UI contract.
     assert "_depth" not in r.text and "custom_fields" not in r.text
 
@@ -125,7 +141,9 @@ async def test_create_prefix_persists_via_netbox_and_audits(
     post = netbox_mock.post("ipam/prefixes/").respond(201, json=created)
     _readback(netbox_mock, created, cidr)
 
-    r = await admin.post("/api/v1/prefixes", json={"prefix": cidr, "name": "Lab network", "status": "active"})
+    r = await admin.post(
+        "/api/v1/prefixes", json={"prefix": cidr, "name": "Lab network", "status": "active", "site_id": 3}
+    )
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["state"] == "documented"  # recorded in NetBox, not deployed anywhere
@@ -134,6 +152,7 @@ async def test_create_prefix_persists_via_netbox_and_audits(
     sent = json.loads(post.calls.last.request.content)
     assert sent["prefix"] == cidr and sent["description"] == "Lab network" and sent["vrf"] is None
     assert sent["status"] == "active"
+    assert sent["scope_type"] == "dcim.site" and sent["scope_id"] == 3  # where the network is used
 
     async with database.sessionmaker() as s:
         ev = (await s.scalars(select(AuditEvent).where(AuditEvent.action == "prefix.create"))).one()
@@ -288,3 +307,49 @@ async def test_prefix_detail_works_before_the_gateway_tag_exists(
     r = await admin.get("/api/v1/prefixes/31")
     assert r.status_code == 200, r.text
     assert r.json()["gateway"] is None
+
+
+async def test_utilization_counts_addresses_inside_utilized_ranges_once(
+    admin: httpx.AsyncClient, netbox_mock: respx.MockRouter
+) -> None:
+    """As NetBox: a DHCP range marked utilized counts whole (overlapping ranges once), and addresses
+    recorded inside it are not counted again. One not marked utilized does not count at all."""
+    netbox_mock.get("ipam/prefixes/50/").respond(200, json=p.prefix(50, "10.5.0.0/24", status="active"))
+    netbox_mock.get("ipam/ip-addresses/", params={"tag": "lanvex-gateway"}).respond(200, json=p.page([]))
+
+    def ips(request: httpx.Request) -> httpx.Response:
+        parents = request.url.params.get_list("parent")
+        if parents == ["10.5.0.0/24"]:
+            return httpx.Response(200, json=p.page([], count=12))
+        assert parents == [
+            "10.5.0.50/31",
+            "10.5.0.52/30",
+            "10.5.0.56/29",
+            "10.5.0.64/26",
+            "10.5.0.128/26",
+            "10.5.0.192/27",
+            "10.5.0.224/28",
+            "10.5.0.240/29",
+            "10.5.0.248/31",
+            "10.5.0.250/32",
+        ]
+        return httpx.Response(200, json=p.page([], count=5))  # five of the twelve lie in the ranges
+
+    netbox_mock.get("ipam/ip-addresses/").mock(side_effect=ips)
+    rng = {"vrf": None, "size": 0}
+    netbox_mock.get("ipam/ip-ranges/").respond(
+        200,
+        json=p.page(
+            [
+                rng | {"id": 1, "start_address": "10.5.0.50/24", "end_address": "10.5.0.250/24", "size": 201},
+                rng | {"id": 2, "start_address": "10.5.0.200/24", "end_address": "10.5.0.220/24", "size": 21},
+            ]
+        ),
+    )
+    r = await admin.get("/api/v1/prefixes/50")
+    assert r.json()["utilization"] == {
+        "percent": 208 / 254 * 100,
+        "used": 208,
+        "total": 254,
+        "basis": "ip_addresses",
+    }

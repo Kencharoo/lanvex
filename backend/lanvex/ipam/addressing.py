@@ -107,6 +107,25 @@ def address_utilization(
     return Utilization(percent=percent, used=used, total=total, basis="ip_addresses")
 
 
+def merge_ranges(ranges: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Overlapping or adjacent (start, end) address intervals merged, as NetBox's get_intervals."""
+    out: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if out and start <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+def interval_networks(intervals: Iterable[tuple[int, int]], version: int) -> list[str]:
+    """The CIDR blocks that exactly cover each interval (for NetBox's multi-valued `parent` filter)."""
+    cls = ipaddress.IPv4Address if version == 4 else ipaddress.IPv6Address
+    return [
+        str(n) for start, end in intervals for n in ipaddress.summarize_address_range(cls(start), cls(end))
+    ]
+
+
 def marked_utilized(net: IPNetwork, is_pool: bool) -> Utilization:
     total = utilization_denominator(net, is_pool)
     return Utilization(percent=100.0, used=total, total=total, basis="marked_utilized")

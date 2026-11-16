@@ -75,6 +75,7 @@ async def list_prefixes(
         limit=limit,
         offset=offset,
         include_utilization=include_utilization and limit <= 100,
+        include_gateway=limit <= 1000,
     )
 
 

@@ -238,7 +238,7 @@ export interface AuditEvent {
 // ---- Servers (live state read over SSH; never NetBox's documented state) ----------------------
 
 export type AuthMethod = "generated_key" | "private_key" | "password";
-export type ConnectionStatus = "ok" | "unreachable" | "auth_failed" | "host_key_mismatch" | "not_allowed" | "error";
+export type ConnectionStatus = "ok" | "unreachable" | "auth_failed" | "host_key_mismatch" | "not_allowed" | "refused" | "error";
 
 export interface NetBoxRef {
   object_type: "dcim.device" | "virtualization.virtualmachine" | string;
@@ -274,6 +274,9 @@ export interface Server {
   read_interval_minutes: number | null;
   read_interval: number;
   next_read_at: string | null;
+  reads_paused: string | null;
+  verify_address: string | null;
+  protected_interfaces: string[];
   created_at: string;
 }
 
@@ -581,6 +584,9 @@ export interface ChangeReadiness {
   rollback_seconds: number;
   second_admin_required: boolean;
   open_change: ChangeOut | null;
+  /** Which of the server's interfaces carry Lanvex's connection, as of its last read. */
+  connection: { address: string; interfaces: string[]; verify_address: string | null; verify_interfaces: string[] } | null;
+  protected_interfaces: string[];
 }
 
 export interface HelperInstall {

@@ -64,6 +64,7 @@ class ReadScheduler:
                     select(Server)
                     .where(
                         func.coalesce(Server.read_interval_minutes, default) > 0,
+                        Server.reads_paused.is_(None),
                         or_(Server.next_read_at.is_(None), Server.next_read_at <= now),
                     )
                     .order_by(Server.next_read_at.asc().nulls_first())

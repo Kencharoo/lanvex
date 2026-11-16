@@ -11,6 +11,7 @@ const STATUS: Record<ConnectionStatus, { tone: Tone; label: string }> = {
   auth_failed: { tone: "danger", label: "Sign-in failed" },
   host_key_mismatch: { tone: "danger", label: "Host key changed" },
   not_allowed: { tone: "warn", label: "Address not allowed" },
+  refused: { tone: "danger", label: "Refused for now" },
   error: { tone: "danger", label: "Error" },
 };
 

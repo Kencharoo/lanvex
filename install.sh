@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Lanvex installer: asks a few questions, writes .env with generated passwords and keys, builds and
-# starts the containers, waits until they are healthy, and prints how to sign in.
+# starts the containers, waits until they are healthy, and prints how to sign in. Works with Docker
+# (Compose v2) and with Podman (podman-compose, or podman compose); under Podman it also sets up a
+# systemd unit that starts Lanvex at boot.
 #
 #   ./install.sh                       interactive
 #   ./install.sh --yes                 Lanvex Core, HTTPS behind a reverse proxy, admin "admin"
@@ -53,13 +55,35 @@ say "Lanvex installer"
 say "================"
 
 # ---- checks ----------------------------------------------------------------------------------------
+# The container runtime: Docker, or Podman (also when a "docker" command is Podman in disguise:
+# podman-docker or a shim). runtime runs containers, compose runs the stack.
+# Docker when it works here, otherwise Podman, otherwise say what is missing.
+runtime="" compose=()
+real_docker=false
+if command -v docker >/dev/null && ! docker --version 2>/dev/null | grep -qi podman; then real_docker=true; fi
+if $real_docker && docker compose version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  runtime=docker; compose=(docker compose)
+elif command -v podman >/dev/null; then
+  runtime=podman
+  if command -v podman-compose >/dev/null; then compose=(podman-compose)
+  elif podman compose version >/dev/null 2>&1; then compose=(podman compose)
+  else fail "Podman is installed, but podman-compose is missing. Install it (Fedora: sudo dnf install podman-compose; Debian/Ubuntu: sudo apt install podman-compose)."
+  fi
+elif $real_docker; then
+  docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is missing (the 'docker compose' command)."
+  runtime=docker; compose=(docker compose)
+else
+  fail "Neither Docker nor Podman is installed. The manual's installation chapter shows how."
+fi
+compose_cmd="${compose[*]}"
 [ -f .env ] && fail "Lanvex is already set up here (.env exists).
-  Start it:          docker compose up -d
+  Start it:          $compose_cmd up -d
   Start over:        move .env somewhere safe first. It holds the keys to the existing data."
-command -v docker >/dev/null || fail "Docker is not installed. The manual's installation chapter shows how."
-docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is missing (the 'docker compose' command)."
-if $start && ! docker info >/dev/null 2>&1; then
-  fail "This user cannot use Docker. Run the installer with sudo, or add the user to the docker group."
+if $start && ! "$runtime" info >/dev/null 2>&1; then
+  if [ "$runtime" = docker ]; then
+    fail "This user cannot use Docker. Run the installer with sudo, or add the user to the docker group."
+  fi
+  fail "Podman does not work for this user ('podman info' fails). Its output says why."
 fi
 
 # ---- questions -------------------------------------------------------------------------------------
@@ -177,7 +201,7 @@ umask 077
 umask 022
 say ""
 say "Settings written to .env."
-$start || { say "Start Lanvex with: docker compose up -d --build"; exit 0; }
+$start || { say "Start Lanvex with: $compose_cmd up -d --build"; exit 0; }
 
 # ---- start -----------------------------------------------------------------------------------------
 say ""
@@ -187,23 +211,39 @@ start_failed() {
   printf '\nError: %s\n\n' "$1" >&2
   say "Your settings are in .env, including the first administrator's password"
   say "(LANVEX_BOOTSTRAP_ADMIN_PASSWORD; username: $admin). Once the cause is fixed, start Lanvex with:"
-  say "  docker compose up -d --build"
+  say "  $compose_cmd up -d --build"
   say "and remove the password from .env after signing in for the first time."
   exit 1
 }
-docker compose up -d --build || start_failed "Starting the containers failed; the output above says why."
+"${compose[@]}" up -d --build || start_failed "Starting the containers failed; the output above says why."
 
-health() { docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-  "$(docker compose ps -q "$1")" 2>/dev/null || echo missing; }
+# Containers are found by the labels Docker Compose and podman-compose both set, because
+# podman-compose's "ps" does not take a service name.
+container() {  # container SERVICE -> its container id, if it exists
+  "$runtime" ps -aq --filter "label=com.docker.compose.project=lanvex" \
+    --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -n 1
+}
+health() {
+  local id; id=$(container "$1")
+  [ -n "$id" ] || { echo missing; return; }
+  # Podman runs health checks from systemd timers; where there are none (no systemd session), the
+  # status would stay "starting" for ever. Running the check here keeps it current either way.
+  if [ "$runtime" = podman ]; then "$runtime" healthcheck run "$id" >/dev/null 2>&1 || true; fi
+  "$runtime" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+    "$id" 2>/dev/null || echo missing
+}
 wait_healthy() {  # wait_healthy SERVICE "description" MINUTES
-  local deadline=$(( $(date +%s) + $3 * 60 )) state
+  local deadline=$(( $(date +%s) + $3 * 60 )) state id
   printf 'Waiting for %s' "$2"
   while :; do
     state=$(health "$1")
     case "$state" in
       healthy) printf ' ready.\n'; return 0 ;;
       unhealthy|exited|dead|missing)
-        printf ' %s.\n\nThe last lines of its log:\n' "$state"; docker compose logs --tail 40 "$1"; return 1 ;;
+        printf ' %s.\n' "$state"
+        id=$(container "$1")
+        if [ -n "$id" ]; then printf '\nThe last lines of its log:\n'; "$runtime" logs --tail 40 "$id" 2>&1; fi
+        return 1 ;;
     esac
     [ "$(date +%s)" -lt "$deadline" ] || { printf ' still not ready after %s minutes.\n' "$3"; return 1; }
     printf '.'; sleep 10
@@ -212,7 +252,47 @@ wait_healthy() {  # wait_healthy SERVICE "description" MINUTES
 wait_healthy lanvex "Lanvex" 5 || start_failed "Lanvex did not start. See the log above and the manual's troubleshooting chapter."
 if [ "$mode" = core ]; then
   say "Lanvex Core sets up its database on the first start, which takes several minutes."
-  wait_healthy core "Lanvex Core" 20 || start_failed "Lanvex Core did not start. See the log above; 'docker compose logs core' shows all of it."
+  wait_healthy core "Lanvex Core" 20 || start_failed "Lanvex Core did not start. See the log above; '$compose_cmd logs core' shows all of it."
+fi
+
+# Docker restarts its containers after a reboot by itself. Podman has no daemon to do that: a
+# systemd unit starts the stack at boot (a user unit for rootless Podman, with lingering, so it
+# starts without anyone signing in).
+boot_note=""
+if [ "$runtime" = podman ] && command -v systemctl >/dev/null; then
+  here=$(pwd)
+  compose_path=$(command -v "${compose[0]}")
+  unit="[Unit]
+Description=Lanvex (containers, started with ${compose[*]})
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$here
+ExecStart=$compose_path ${compose[*]:1} up -d
+ExecStop=$compose_path ${compose[*]:1} stop
+TimeoutStartSec=0
+"
+  if [ "$(id -u)" -eq 0 ]; then
+    printf '%s\n[Install]\nWantedBy=multi-user.target\n' "$unit" > /etc/systemd/system/lanvex.service
+    systemctl daemon-reload && systemctl enable lanvex.service >/dev/null 2>&1 \
+      && boot_note="Lanvex starts at boot (systemd unit lanvex.service)." \
+      || boot_note="Could not enable lanvex.service; Lanvex will not start by itself after a reboot."
+  else
+    mkdir -p "$HOME/.config/systemd/user"
+    printf '%s\n[Install]\nWantedBy=default.target\n' "$unit" > "$HOME/.config/systemd/user/lanvex.service"
+    if systemctl --user daemon-reload 2>/dev/null && systemctl --user enable lanvex.service >/dev/null 2>&1; then
+      if loginctl enable-linger "$(id -un)" 2>/dev/null; then
+        boot_note="Lanvex starts at boot (systemd user unit lanvex.service, lingering on for $(id -un))."
+      else
+        boot_note="Lanvex starts when $(id -un) signs in. To start it at boot without that, run once: sudo loginctl enable-linger $(id -un)"
+      fi
+    else
+      boot_note="Could not set up the systemd user unit; Lanvex will not start by itself after a reboot. The manual's Podman section shows how."
+    fi
+  fi
 fi
 
 # The administrator exists now; the password does not need to stay in .env.
@@ -235,3 +315,4 @@ say ""
 say "Sign in and change the password (Settings). It is shown only now and was removed from .env."
 [ "$mode" = core ] && say "Lanvex Core is in the menu on the left, and at /core/."
 say "Back up .env: without it, Lanvex cannot read the credentials it stores."
+[ -z "$boot_note" ] || say "$boot_note"

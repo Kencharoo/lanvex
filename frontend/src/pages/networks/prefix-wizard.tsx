@@ -21,6 +21,7 @@ interface Draft {
   vlan_id: string;
   status: PrefixStatus;
   role_id: string;
+  site_id: string;
   is_pool: boolean;
   gateway: string;
   gatewayEnabled: boolean;
@@ -33,6 +34,7 @@ const EMPTY: Draft = {
   vlan_id: "",
   status: "active",
   role_id: "",
+  site_id: "",
   is_pool: false,
   gateway: "",
   gatewayEnabled: true,
@@ -77,6 +79,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
   const vrfs = useLookup("vrfs", undefined, open);
   const vlans = useLookup("vlans", undefined, open);
   const roles = useLookup("prefix-roles", undefined, open);
+  const sites = useLookup("sites", undefined, open);
   const local = parseCidr(draft.prefix);
   const validation = useServerValidation(draft, open);
   const v = validation.data;
@@ -103,6 +106,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
           vrf_id: num(draft.vrf_id),
           vlan_id: num(draft.vlan_id),
           role_id: num(draft.role_id),
+          site_id: num(draft.site_id),
           is_pool: draft.is_pool,
           gateway: draft.gatewayEnabled && draft.status !== "container" && draft.gateway.trim() ? draft.gateway.trim() : null,
         },
@@ -130,6 +134,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
   const selectedVrf = vrfs.data?.find((x) => String(x.id) === draft.vrf_id);
   const selectedVlan = vlans.data?.find((x) => String(x.id) === draft.vlan_id);
   const selectedRole = roles.data?.find((x) => String(x.id) === draft.role_id);
+  const selectedSite = sites.data?.find((x) => String(x.id) === draft.site_id);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -240,6 +245,16 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
                       </Select>
                     </Field>
                   </div>
+                  <Field label="Site" htmlFor="pf-site" optional hint="Where this network is used.">
+                    <Select id="pf-site" value={draft.site_id} onChange={(e) => set("site_id", e.target.value)} disabled={sites.isPending}>
+                      <option value="">No site</option>
+                      {sites.data?.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
                   <Field label="VLAN" htmlFor="pf-vlan" optional>
                     <Select id="pf-vlan" value={draft.vlan_id} onChange={(e) => set("vlan_id", e.target.value)} disabled={vlans.isPending}>
                       <option value="">No VLAN</option>
@@ -297,6 +312,8 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
                     <dd>{selectedVrf?.label ?? "Global table"}</dd>
                     <dt className="text-muted">Status</dt>
                     <dd className="capitalize">{draft.status}</dd>
+                    <dt className="text-muted">Site</dt>
+                    <dd>{selectedSite?.label ?? <span className="text-faint">None</span>}</dd>
                     <dt className="text-muted">VLAN</dt>
                     <dd>{selectedVlan?.label ?? <span className="text-faint">None</span>}</dd>
                     <dt className="text-muted">Role</dt>

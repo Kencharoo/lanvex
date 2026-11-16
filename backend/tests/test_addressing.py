@@ -144,3 +144,22 @@ class TestGateway:
     def test_parse_interface_requires_mask(self) -> None:
         with pytest.raises(a.AddressError):
             a.parse_interface("10.0.0.1")
+
+
+def test_ranges_merge_and_cover_exactly() -> None:
+    import ipaddress
+
+    from lanvex.ipam.addressing import interval_networks, merge_ranges
+
+    ip = lambda s: int(ipaddress.ip_address(s))  # noqa: E731
+    merged = merge_ranges(
+        [
+            (ip("10.0.0.200"), ip("10.0.0.220")),
+            (ip("10.0.0.50"), ip("10.0.0.250")),
+            (ip("10.0.1.0"), ip("10.0.1.9")),
+        ]
+    )
+    assert merged == [(ip("10.0.0.50"), ip("10.0.0.250")), (ip("10.0.1.0"), ip("10.0.1.9"))]
+    assert merge_ranges([(1, 5), (6, 9)]) == [(1, 9)]  # adjacent ranges join
+    nets = interval_networks(merged, 4)
+    assert sum(ipaddress.ip_network(n).num_addresses for n in nets) == 201 + 10
