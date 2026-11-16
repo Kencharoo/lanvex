@@ -490,6 +490,16 @@ def parse_lanvex_dnsmasq(text: str) -> list[DhcpPool]:
     return [p for p in pools.values() if p.start]
 
 
+def parse_lanvex_manifest(text: str) -> list[str]:
+    """/etc/lanvex/networks.json, written by Lanvex's change helper: the VLAN interfaces it manages."""
+    try:
+        data = json.loads(text) if text.strip() else {}
+    except ValueError:
+        return []
+    names = data.get("vlans") if isinstance(data, dict) else None
+    return sorted(n for n in names if isinstance(n, str)) if isinstance(names, list) else []
+
+
 def parse_dnsmasq_leases(text: str) -> list[DhcpLease]:
     """dnsmasq.leases: "<expiry epoch> <mac> <ip> <hostname or *> <client id or *>", one lease a line."""
     out = []

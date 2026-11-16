@@ -51,7 +51,9 @@ export function ServerDetailPage() {
       ? `Change #${readiness.data.open_change.number} is open. Finish it first.`
       : !readiness.data.ready
         ? "Set up configuration changes for this server first (see Configuration changes below)."
-        : null;
+        : readiness.data.interface_changes === false
+          ? `Lanvex changes interface settings on netplan and NetworkManager servers; this one uses ${readiness.data.stack_label}. Its VLAN networks can be changed under Networks.`
+          : null;
 
   const server = useQuery({ queryKey: ["servers", id], queryFn: () => api<Server>(`/servers/${id}`) });
   const latest = useQuery({ queryKey: ["servers", id, "latest"], queryFn: () => api<Snapshot | null>(`/servers/${id}/snapshots/latest`) });
@@ -670,6 +672,7 @@ function AccessSection({ server: s }: { server: Server }) {
               <span key="cap" className="grid">
                 <span>Read system, interfaces, addresses, routes, DNS and network stack</span>
                 <span>Change an interface's IPv4 addresses, gateway and DNS (netplan, NetworkManager)</span>
+                <span>Create VLAN networks with DHCP (NetworkManager, netplan, ifupdown)</span>
                 <span className="text-xs text-muted">
                   {s.changes_enabled ? "Changes are enabled for this server; each one needs an administrator's approval." : "Read-only until changes are enabled for this server."}
                 </span>

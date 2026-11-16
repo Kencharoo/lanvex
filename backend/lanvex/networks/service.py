@@ -15,7 +15,7 @@ import ipaddress
 from typing import Any
 
 from lanvex.changes.schemas import DhcpPool, DhcpSpec, NetworksRequest, Reservation, VlanSpec
-from lanvex.changes.service import LANVEX_PROFILE, NETWORK_STACKS
+from lanvex.changes.service import NETWORK_STACKS
 from lanvex.core.errors import Conflict, LanvexError, NotFound, ValidationFailed
 from lanvex.integrations.linux.facts import HostFacts
 from lanvex.ipam.prefixes import GATEWAY_TAG_SLUG
@@ -122,11 +122,7 @@ class NetworksService:
         present = {}
         if facts is not None:
             present = {i.name: i for i in facts.interfaces}
-            ours = {
-                i.name: i
-                for i in facts.interfaces
-                if i.kind == "vlan" and (i.manager_profile or "").startswith(LANVEX_PROFILE)
-            }
+            ours = {i.name: i for i in facts.interfaces if facts.lanvex_owned(i)}
         served = {p.interface: p for p in (facts.dhcp.pools if facts and facts.dhcp else [])}
         leases = facts.dhcp.leases if facts and facts.dhcp else []
         fixed_macs = {(f.ip, f.mac) for f in fixed}

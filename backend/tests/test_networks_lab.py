@@ -1,6 +1,14 @@
-"""VLAN interfaces, firewalld zones and DHCP on a REAL Fedora host (lab-fedora in deploy/lab), with a
-real DHCP client on another host. Skipped unless LANVEX_TEST_LAB=1 and lab-fedora runs (it is built
-from Fedora's image, so only where a registry is reachable: CI).
+"""VLAN interfaces, firewalls and DHCP on REAL servers of each kind Lanvex supports, with a real DHCP
+client on another host (lab-nm):
+
+- lab-fedora: NetworkManager, firewalld, dnsmasq installed but off (Fedora Server, RHEL).
+- lab-netplan: netplan with systemd-networkd, systemd-resolved holding port 53, dnsmasq enabled but
+  failing next to it, ufw inactive (Ubuntu Server).
+- lab-debian: ifupdown sourcing interfaces.d, dnsmasq running on every interface (Debian 12).
+
+Skipped unless LANVEX_TEST_LAB=1; each host is skipped where it does not run (lab-fedora and lab-debian
+are built from their distributions' images, so only where a registry is reachable: CI). VLANs need a
+kernel with 802.1Q.
 
 These tests run the helper itself, as root, the way sudo runs it for Lanvex: plan, apply, verify,
 confirm, roll back, and the server's own rollback timer. They change only lab containers.
@@ -24,9 +32,34 @@ pytestmark = [
     pytest.mark.skipif(os.environ.get("LANVEX_TEST_LAB") != "1", reason="LANVEX_TEST_LAB=1 not set"),
 ]
 
-HOST = "lab-fedora"
 CLIENT = "lab-nm"  # Ubuntu with NetworkManager: a device on the new VLAN
 HELPER = "/usr/local/libexec/lanvex/lanvex-netapply"
+BACKENDS = {"lab-fedora": "networkmanager", "lab-netplan": "netplan", "lab-debian": "ifupdown"}
+VLAN_FILE = {
+    "networkmanager": "/etc/NetworkManager/system-connections/lanvex-vlan50.nmconnection",
+    "netplan": "/etc/netplan/60-lanvex.yaml",
+    "ifupdown": "/etc/network/interfaces.d/lanvex",
+}
+
+# Put each host back the way it was built. What ran before the change matters: a rollback restores it.
+RESET = {
+    "lab-fedora": (
+        "rm -f /etc/NetworkManager/system-connections/lanvex-* /etc/NetworkManager/system-connections/other-* "
+        "/etc/firewalld/zones/lx-*; nmcli connection reload; firewall-cmd --reload >/dev/null; "
+        "systemctl disable --now dnsmasq 2>/dev/null"
+    ),
+    "lab-netplan": (
+        "rm -f /etc/netplan/60-lanvex.yaml /etc/netplan/70-other.yaml; for l in vlan50 vlan60; do "
+        "ip link del $l 2>/dev/null; done; netplan apply; ufw --force reset >/dev/null 2>&1; "
+        "rm -f /etc/ufw/*.rules.20*; systemctl enable dnsmasq 2>/dev/null; systemctl stop dnsmasq; "
+        "systemctl reset-failed dnsmasq 2>/dev/null"
+    ),
+    "lab-debian": (
+        "for l in vlan50 vlan60; do ifdown --force $l >/dev/null 2>&1; done; "
+        "rm -f /etc/network/interfaces.d/lanvex /etc/network/interfaces.d/other-vlans; "
+        "systemctl enable dnsmasq 2>/dev/null; systemctl restart dnsmasq"
+    ),
+}
 
 
 def running(host: str) -> bool:
@@ -36,17 +69,18 @@ def running(host: str) -> bool:
     return r.stdout.strip() == "true"
 
 
-@pytest.fixture(scope="module", autouse=True)
-def fedora() -> None:
-    if not running(HOST):
-        pytest.skip("lab-fedora is not running (build the lab with LANVEX_LAB_FEDORA=1)")
+@pytest.fixture(scope="module", params=list(BACKENDS))
+def host(request: pytest.FixtureRequest) -> str:
+    name: str = request.param
+    if not running(name):
+        pytest.skip(f"{name} is not running (see deploy/lab/README.md)")
     # Piped in rather than copied: Fedora mounts a fresh tmpfs on /tmp, which hides what docker cp puts there.
     subprocess.run(
         [
             "docker",
             "exec",
             "-i",
-            HOST,
+            name,
             "sh",
             "-c",
             f"mkdir -p {HELPER.rsplit('/', 1)[0]} && cat > {HELPER} && chmod 0755 {HELPER}",
@@ -55,30 +89,31 @@ def fedora() -> None:
         check=True,
         capture_output=True,
     )
+    return name
 
 
 @pytest.fixture(autouse=True)
-def clean() -> None:
-    reset()
+def clean(host: str) -> Any:
+    reset(host)
     yield
-    reset()
+    reset(host)
 
 
-def reset() -> None:
+def reset(host: str) -> None:
     sh(
-        HOST,
+        host,
         "systemctl stop 'lanvex-rollback-*.timer' 2>/dev/null; rm -rf /var/lib/lanvex/changes; "
-        "rm -f /etc/NetworkManager/system-connections/lanvex-* /etc/NetworkManager/system-connections/other-* "
-        "/etc/firewalld/zones/lx-* /etc/dnsmasq.d/lanvex.conf /etc/dnsmasq.d/nv-vlans.conf; "
-        "nmcli connection reload; firewall-cmd --reload >/dev/null; "
-        "systemctl disable --now dnsmasq 2>/dev/null; for l in vlan50 vlan60; do ip link del $l 2>/dev/null; done; true",
+        f"{RESET[host]}; rm -f /etc/lanvex/networks.json /etc/dnsmasq.d/lanvex.conf /etc/dnsmasq.d/nv-vlans.conf; "
+        "for l in vlan50 vlan60; do ip link del $l 2>/dev/null; done; true",
     )
     sh(CLIENT, "nmcli connection delete client50 >/dev/null 2>&1; ip link del eth0.50 2>/dev/null; true")
 
 
-def call(command: str, payload: dict[str, Any] | None = None, check: bool = True) -> dict[str, Any]:
+def call(
+    host: str, command: str, payload: dict[str, Any] | None = None, check: bool = True
+) -> dict[str, Any]:
     r = subprocess.run(
-        ["docker", "exec", "-i", HOST, HELPER, command],
+        ["docker", "exec", "-i", host, HELPER, command],
         input=json.dumps(payload or {}),
         capture_output=True,
         text=True,
@@ -108,103 +143,172 @@ def pool(**over: Any) -> dict[str, Any]:
     return {"interface": "vlan50", "start": "192.168.50.100", "end": "192.168.50.199", "lease": "2h"} | over
 
 
-def apply(request: dict[str, Any], seconds: int = 120) -> tuple[str, dict[str, Any]]:
-    plan = call("plan", request)
+def apply(host: str, request: dict[str, Any], seconds: int = 120) -> tuple[str, dict[str, Any]]:
+    plan = call(host, "plan", request)
     cid = uuid.uuid4().hex
     expect = {"backend": plan["backend"], "files": {f["path"]: f["sha256"] for f in plan["files"]}}
-    result = call("apply", request | {"id": cid, "rollback_seconds": seconds, "expect": expect})
+    result = call(host, "apply", request | {"id": cid, "rollback_seconds": seconds, "expect": expect})
     assert result["state"] == "applied"
     return cid, plan
 
 
-def links() -> set[str]:
-    return set(sh(HOST, "ls /sys/class/net").split())
+def links(host: str) -> set[str]:
+    return set(sh(host, "ls /sys/class/net").split())
 
 
-def test_a_new_vlan_with_dhcp_serves_a_real_client() -> None:
-    mac = client_mac()
-    request = networks([pool(reservations=[{"mac": mac, "ip": "192.168.50.20", "name": "lab-nm"}])])
-    plan = call("plan", request)
-    by_path = {f["path"]: f for f in plan["files"]}
-    assert by_path["/etc/NetworkManager/system-connections/lanvex-vlan50.nmconnection"]["action"] == "create"
-    assert by_path["/etc/firewalld/zones/lx-vlan50.xml"]["action"] == "create"
-    assert (
-        f"dhcp-host={mac},set:lx-vlan50,192.168.50.20,lab-nm"
-        in by_path["/etc/dnsmasq.d/lanvex.conf"]["after"]
-    )
-    assert plan["commands"] == [
-        "firewall-cmd --reload",
-        "nmcli connection reload",
-        "nmcli connection up id lanvex-vlan50",
-        "systemctl enable dnsmasq",
-        "systemctl restart dnsmasq",
-    ]
-    assert "vlan50" not in links()  # planning changes nothing
+def unit(host: str, what: str) -> str:
+    return sh(host, f"systemctl {what} dnsmasq || true").strip()
 
-    cid, _ = apply(request)
-    result = call("verify", {"id": cid})
-    assert result["passed"], result["checks"]
-    assert {c["id"] for c in result["checks"]} == {"vlan:vlan50", "zone:vlan50", "dhcp"}
-    assert sh(HOST, "firewall-cmd --zone=lx-vlan50 --list-services").split() == ["dhcp", "dns"]
 
-    # A device on VLAN 50 gets its fixed address from the server, through firewalld.
+def client_gets(address: str) -> None:
+    """A device on VLAN 50 asks for an address by DHCP and gets `address`."""
     sh(
         CLIENT,
         "nmcli connection add type vlan con-name client50 ifname eth0.50 dev eth0 id 50 "
         "ipv4.method auto ipv6.method disabled >/dev/null && nmcli --wait 60 connection up client50 >/dev/null",
     )
-    assert "192.168.50.20/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
-    assert call("confirm", {"id": cid})["state"] == "confirmed"
-    assert sh(HOST, "systemctl is-enabled dnsmasq").strip() == "enabled"
+    assert f"{address}/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
+
+
+def test_a_new_vlan_with_dhcp_serves_a_real_client(host: str) -> None:
+    backend = BACKENDS[host]
+    mac = client_mac()
+    request = networks([pool(reservations=[{"mac": mac, "ip": "192.168.50.20", "name": "lab-nm"}])])
+    plan = call(host, "plan", request)
+    assert plan["backend"] == backend
+    by_path = {f["path"]: f for f in plan["files"]}
+    assert by_path[VLAN_FILE[backend]]["action"] == "create"
+    assert json.loads(by_path["/etc/lanvex/networks.json"]["after"])["vlans"] == ["vlan50"]
+    dnsmasq = by_path["/etc/dnsmasq.d/lanvex.conf"]["after"]
+    assert f"dhcp-host={mac},set:lx-vlan50,192.168.50.20,lab-nm" in dnsmasq
+    if backend == "networkmanager":
+        assert by_path["/etc/firewalld/zones/lx-vlan50.xml"]["action"] == "create"
+        assert plan["commands"] == [
+            "firewall-cmd --reload",
+            "nmcli connection reload",
+            "nmcli connection up id lanvex-vlan50",
+            "systemctl enable dnsmasq",
+            "systemctl restart dnsmasq",
+        ]
+    elif backend == "netplan":
+        # systemd-resolved holds port 53: dnsmasq binds only the interfaces it serves.
+        assert "\nbind-dynamic\n" in dnsmasq and "\ninterface=vlan50\n" in dnsmasq
+        assert plan["commands"] == ["netplan generate", "netplan apply", "systemctl restart dnsmasq"]
+    else:
+        # dnsmasq answers on every interface already: Lanvex adds its pool without restricting that.
+        assert "interface=" not in dnsmasq and "bind-dynamic" not in dnsmasq
+        assert any("every interface" in w for w in plan["warnings"])
+        assert plan["commands"] == ["ifup vlan50", "systemctl restart dnsmasq"]
+    assert "vlan50" not in links(host)  # planning changes nothing
+
+    cid, _ = apply(host, request)
+    result = call(host, "verify", {"id": cid})
+    assert result["passed"], result["checks"]
+    expected = {"vlan:vlan50", "dhcp"} | ({"zone:vlan50"} if backend == "networkmanager" else set())
+    assert {c["id"] for c in result["checks"]} == expected
+    if backend == "networkmanager":
+        assert sh(host, "firewall-cmd --zone=lx-vlan50 --list-services").split() == ["dhcp", "dns"]
+    if backend == "netplan":
+        assert "192.168.50.1:53" in sh(host, "ss -H -l -n -u")  # DNS for the devices, next to resolved
+
+    client_gets("192.168.50.20")
+    assert call(host, "confirm", {"id": cid})["state"] == "confirmed"
+    assert unit(host, "is-enabled") == "enabled"
 
     # Nothing left to do: the same request again is not a change.
-    again = call("plan", request, check=False)
+    again = call(host, "plan", request, check=False)
     assert again["ok"] is False and again["error"]["code"] == "no_change"
 
 
-def test_removing_a_vlan_and_rolling_it_back() -> None:
-    cid, _ = apply(networks([pool()]))
-    call("confirm", {"id": cid})
+def test_removing_a_vlan_and_rolling_it_back(host: str) -> None:
+    cid, _ = apply(host, networks([pool()]))
+    call(host, "confirm", {"id": cid})
     removal = networks([], vlans=[])
-    plan = call("plan", removal)
+    plan = call(host, "plan", removal)
     assert {f["action"] for f in plan["files"]} == {"delete"}
     assert any("disconnects every device" in w for w in plan["warnings"])
 
-    cid, _ = apply(removal)
-    assert "vlan50" not in links()
-    assert call("verify", {"id": cid})["passed"]
-    assert call("rollback", {"id": cid})["state"] == "rolled_back"
-    # Profile, zone and DHCP are back exactly as they were.
-    assert "vlan50" in links()
-    assert "192.168.50.1/24" in sh(HOST, "ip -4 -o address show dev vlan50")
-    assert sh(HOST, "firewall-cmd --get-zone-of-interface=vlan50").strip() == "lx-vlan50"
-    assert sh(HOST, "systemctl is-active dnsmasq").strip() == "active"
+    cid, _ = apply(host, removal)
+    assert "vlan50" not in links(host)
+    assert call(host, "verify", {"id": cid})["passed"]
+    assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
+    # The interface, its zone and DHCP are back exactly as they were.
+    deadline = time.monotonic() + 30  # systemd-networkd creates it in the background
+    while "vlan50" not in links(host) and time.monotonic() < deadline:
+        time.sleep(1)
+    assert "192.168.50.1/24" in sh(host, "ip -4 -o address show dev vlan50")
+    if BACKENDS[host] == "networkmanager":
+        assert sh(host, "firewall-cmd --get-zone-of-interface=vlan50").strip() == "lx-vlan50"
+    assert unit(host, "is-active") == "active"
+    assert sh(host, "cat /etc/lanvex/networks.json").count("vlan50") == 1
 
 
-def test_the_servers_timer_restores_an_unconfirmed_change() -> None:
-    cid, _ = apply(networks([pool()]), seconds=30)
-    assert "vlan50" in links()
+def test_the_servers_timer_restores_an_unconfirmed_change(host: str) -> None:
+    before = (unit(host, "is-enabled"), unit(host, "is-active"))
+    cid, _ = apply(host, networks([pool()]), seconds=30)
+    assert "vlan50" in links(host)
     deadline = time.monotonic() + 90
-    while call("status", {"id": cid})["state"] != "rolled_back" and time.monotonic() < deadline:
+    while call(host, "status", {"id": cid})["state"] != "rolled_back" and time.monotonic() < deadline:
         time.sleep(3)
-    state = call("status", {"id": cid})
+    state = call(host, "status", {"id": cid})
     assert state["state"] == "rolled_back" and "No confirmation" in state["reason"]
-    assert "vlan50" not in links()
-    assert sh(HOST, "ls /etc/firewalld/zones/").count("lx-") == 0
-    assert sh(HOST, "systemctl is-enabled dnsmasq || true").strip() == "disabled"  # as it was before
+    assert "vlan50" not in links(host)
+    assert sh(host, "ls /etc/lanvex/ /etc/firewalld/zones/ 2>/dev/null || true").count("lx-") == 0
+    assert "networks.json" not in sh(host, "ls /etc/lanvex/ 2>/dev/null || true")
+    assert (unit(host, "is-enabled"), unit(host, "is-active")) == before  # dnsmasq as it was
 
 
-def test_another_tools_vlan_and_dhcp_are_never_changed() -> None:
-    # Like Netzverwaltung on KlassenServer: its own NetworkManager profile and dnsmasq file.
-    sh(
-        HOST,
+OTHER_VLAN60 = {
+    # Another tool's VLAN interface vlan60, in that tool's own configuration.
+    "lab-fedora": (
         "nmcli connection add type vlan con-name other-vlan60 ifname vlan60 dev eth0 id 60 "
         "ipv4.method manual ipv4.addresses 192.168.60.1/24 >/dev/null",
-    )
-    vlan60 = [{"name": "vlan60", "parent": "eth0", "id": 60, "addresses": ["192.168.60.1/24"]}]
-    refused = call("plan", networks(None, vlans=vlan60), check=False)
-    assert refused["error"]["code"] == "conflict" and "'other-vlan60'" in refused["error"]["message"]
+        "'other-vlan60'",
+    ),
+    "lab-netplan": (
+        "printf 'network:\\n  version: 2\\n  vlans:\\n    vlan60:\\n      id: 60\\n      link: eth0\\n' "
+        "> /etc/netplan/70-other.yaml && chmod 600 /etc/netplan/70-other.yaml",
+        "another netplan file",
+    ),
+    "lab-debian": (
+        "printf 'iface vlan60 inet manual\\n' > /etc/network/interfaces.d/other-vlans",
+        "/etc/network/interfaces.d/other-vlans",
+    ),
+}
 
-    sh(HOST, "printf 'interface=vlan50\\n' > /etc/dnsmasq.d/nv-vlans.conf")
-    refused = call("plan", networks([pool()]), check=False)
+
+def test_another_tools_vlan_and_dhcp_are_never_changed(host: str) -> None:
+    # Like Netzverwaltung on KlassenServer: its own interface configuration and dnsmasq file.
+    setup, named = OTHER_VLAN60[host]
+    sh(host, setup)
+    vlan60 = [{"name": "vlan60", "parent": "eth0", "id": 60, "addresses": ["192.168.60.1/24"]}]
+    refused = call(host, "plan", networks(None, vlans=vlan60), check=False)
+    assert refused["error"]["code"] == "conflict" and named in refused["error"]["message"], refused
+
+    sh(host, "printf 'interface=vlan50\\n' > /etc/dnsmasq.d/nv-vlans.conf")
+    refused = call(host, "plan", networks([pool()]), check=False)
     assert refused["error"]["code"] == "conflict" and "nv-vlans.conf" in refused["error"]["message"]
+
+
+def test_ufw_lets_dhcp_through_and_takes_lanvexs_rules_back(host: str) -> None:
+    if host != "lab-netplan":
+        pytest.skip("ufw is tested on Ubuntu (lab-netplan)")
+    # As an administrator turns it on: SSH allowed, everything else coming in denied.
+    sh(host, "ufw allow 22/tcp >/dev/null && ufw --force enable >/dev/null")
+    request = networks([pool(reservations=[{"mac": client_mac(), "ip": "192.168.50.21"}])])
+    plan = call(host, "plan", request)
+    assert "ufw allow in on vlan50 to any port 67 proto udp comment lanvex:vlan50" in plan["commands"]
+    cid, _ = apply(host, request)
+    result = call(host, "verify", {"id": cid})
+    assert result["passed"] and "ufw:vlan50" in {c["id"] for c in result["checks"]}, result["checks"]
+    client_gets("192.168.50.21")  # through ufw's default deny
+    call(host, "confirm", {"id": cid})
+
+    # Removing the network takes Lanvex's rules with it; a rollback brings them back.
+    cid, plan = apply(host, networks([], vlans=[]))
+    assert "ufw delete allow in on vlan50 to any port 67 proto udp" in plan["commands"]
+    assert "lanvex:" not in sh(host, "ufw show added")
+    assert "22/tcp" in sh(host, "ufw status")  # the administrator's own rules stay
+    assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
+    assert sh(host, "ufw show added").count("comment 'lanvex:vlan50'") == 3
+    assert "67/udp on vlan50" in sh(host, "ufw status")

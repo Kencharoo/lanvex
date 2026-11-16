@@ -44,7 +44,9 @@ from lanvex.servers.service import ServerService
 
 SUPPORTED_STACKS = {"netplan-networkd", "netplan-networkmanager", "networkmanager"}
 # VLAN interfaces and DHCP: NetworkManager keyfiles, also where netplan hands interfaces to it.
-NETWORK_STACKS = {"networkmanager", "netplan-networkmanager"}
+NETWORK_STACKS = {"networkmanager", "netplan-networkmanager", "netplan-networkd", "ifupdown"}
+# Servers Lanvex can change at all (interface settings, networks, or both).
+CHANGE_STACKS = SUPPORTED_STACKS | NETWORK_STACKS
 LANVEX_PROFILE = "lanvex-"
 # Lanvex stops verifying, and stops taking a decision from the browser, this long before the server's
 # own rollback deadline, so a confirmation never races the server's timer.
@@ -147,7 +149,7 @@ def summarize(r: ChangeRequest) -> str:
 
 
 def lanvex_vlans(facts: HostFacts) -> list[dict[str, Any]]:
-    """The VLAN interfaces Lanvex manages on the server (NetworkManager profiles lanvex-*), as last read."""
+    """The VLAN interfaces Lanvex manages on the server, as last read."""
     return sorted(
         (
             {
@@ -157,7 +159,7 @@ def lanvex_vlans(facts: HostFacts) -> list[dict[str, Any]]:
                 "addresses": [a.address for a in i.addresses if a.family == 4 and not a.dynamic],
             }
             for i in facts.interfaces
-            if i.kind == "vlan" and (i.manager_profile or "").startswith(LANVEX_PROFILE)
+            if facts.lanvex_owned(i)
         ),
         key=lambda v: v["name"],
     )
@@ -266,7 +268,7 @@ class ChangeService:
     async def readiness(self, s: Server) -> Readiness:
         _, facts = await self.servers.latest_facts(s.id)
         stack_key = facts.stack.key if facts else None
-        supported = (stack_key in SUPPORTED_STACKS) if facts else None
+        supported = (stack_key in CHANGE_STACKS) if facts else None
         blockers: list[str] = []
         if not self.settings.automation_enabled:
             blockers.append(
@@ -278,7 +280,7 @@ class ChangeService:
         elif not supported:
             blockers.append(
                 f"This server's network is managed by {facts.stack.primary}. Lanvex can change servers "
-                "that use netplan or NetworkManager."
+                "that use netplan, NetworkManager or ifupdown."
             )
         if s.helper_state != "ok":
             blockers.append(
@@ -311,6 +313,7 @@ class ChangeService:
             stack_key=stack_key,
             stack_label=facts.stack.primary if facts else None,
             stack_supported=supported,
+            interface_changes=(stack_key in SUPPORTED_STACKS) if facts else None,
             helper=HelperStatus(
                 state=s.helper_state or "unknown",  # type: ignore[arg-type]
                 version=s.helper_version,
@@ -417,7 +420,7 @@ class ChangeService:
         if snap.status != "ok" or not snap.facts:
             raise Conflict(f"Lanvex could not read the server: {snap.message}")
         facts = HostFacts.model_validate(snap.facts)
-        if facts.stack.key not in SUPPORTED_STACKS:
+        if facts.stack.key not in CHANGE_STACKS:
             raise Conflict(f"Lanvex cannot change servers managed by {facts.stack.primary}.")
         before: dict[str, Any]
         if isinstance(req, NetworksRequest):
@@ -515,6 +518,18 @@ class ChangeService:
     async def _prepare_interface(
         self, s: Server, req: ChangeRequest, facts: HostFacts
     ) -> tuple[dict[str, Any], list[str]]:
+        if facts.stack.key not in SUPPORTED_STACKS:
+            raise Conflict(
+                f"{s.name}'s network is managed by {facts.stack.primary}. Lanvex changes interface settings on servers "
+                "that use netplan or NetworkManager; here it manages VLAN networks only.",
+                code="unsupported_stack",
+            )
+        if any(facts.lanvex_owned(i) for i in facts.interfaces if i.name == req.interface):
+            raise ValidationFailed(
+                f"{req.interface} is one of the VLAN interfaces Lanvex manages on {s.name}. Change its address in "
+                "the server's Networks section.",
+                fields={"interface": ["A Lanvex network."]},
+            )
         guard = self._protected(s, req.interface)
         if guard is not None:
             raise ValidationFailed(
@@ -541,8 +556,7 @@ class ChangeService:
         if facts.stack.key not in NETWORK_STACKS:
             raise Conflict(
                 f"{s.name}'s network is managed by {facts.stack.primary}. Lanvex creates VLAN interfaces and serves DHCP "
-                "on servers whose network NetworkManager manages (Fedora, RHEL, and Ubuntu with NetworkManager); "
-                "other stacks follow.",
+                "on servers whose network NetworkManager, netplan or ifupdown manages.",
                 code="unsupported_stack",
             )
         ours = lanvex_vlans(facts)

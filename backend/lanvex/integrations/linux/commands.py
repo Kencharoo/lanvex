@@ -36,6 +36,7 @@ class Cmd(StrEnum):
     NETWORKCTL_LLDP = "networkctl_lldp"
     DHCP_CONFIG = "dhcp_config"
     DHCP_LEASES = "dhcp_leases"
+    LANVEX_NETWORKS = "lanvex_networks"
     HELPER_VERSION = "helper_version"
     HELPER_PLAN = "helper_plan"
     HELPER_APPLY = "helper_apply"
@@ -81,6 +82,8 @@ COMMANDS: dict[Cmd, str] = {
     Cmd.DHCP_CONFIG: _ENV + "sh -c 'cat /etc/dnsmasq.d/lanvex.conf 2>/dev/null; true'",
     Cmd.DHCP_LEASES: _ENV
     + "sh -c 'cat /var/lib/dnsmasq/dnsmasq.leases /var/lib/misc/dnsmasq.leases 2>/dev/null; true'",
+    # Which VLAN interfaces Lanvex's helper created here (on servers without NetworkManager profiles).
+    Cmd.LANVEX_NETWORKS: _ENV + "sh -c 'cat /etc/lanvex/networks.json 2>/dev/null; true'",
     Cmd.HELPER_VERSION: _HELPER + "version",
     Cmd.HELPER_PLAN: _HELPER + "plan",
     Cmd.HELPER_APPLY: _HELPER + "apply",
@@ -118,8 +121,11 @@ BASE_COMMANDS = (
     Cmd.IFUPDOWN_INCLUDES,
     Cmd.NEIGHBORS,
     Cmd.LLDPD_STATE,
+    Cmd.DHCP_CONFIG,
+    Cmd.DHCP_LEASES,
+    Cmd.LANVEX_NETWORKS,
 )
-NETWORKMANAGER_COMMANDS = (Cmd.NMCLI_DEVICES, Cmd.DHCP_CONFIG, Cmd.DHCP_LEASES)
+NETWORKMANAGER_COMMANDS = (Cmd.NMCLI_DEVICES,)
 NETWORKD_COMMANDS = (Cmd.NETWORKCTL_LIST, Cmd.NETWORKCTL_LLDP)
 LLDPD_COMMANDS = (Cmd.LLDPCLI_NEIGHBORS,)
 RESOLVED_COMMANDS = (Cmd.RESOLVECTL_DNS, Cmd.RESOLVECTL_DOMAIN)

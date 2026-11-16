@@ -5,7 +5,7 @@ the Linux adapter is tested against real tools rather than sample text:
 
 | Container | Address | Network stack | Notes |
 |---|---|---|---|
-| `lab-netplan` | 172.30.0.11 | netplan → systemd-networkd, systemd-resolved | Ubuntu Server default. Has a bridge `br0` with no carrier |
+| `lab-netplan` | 172.30.0.11 | netplan → systemd-networkd, systemd-resolved | Ubuntu Server default. Has a bridge `br0` with no carrier; dnsmasq installed (failing at boot next to systemd-resolved, as on Ubuntu) and ufw inactive |
 | `lab-nm` | 172.30.0.12 (+ 172.31.0.12) | NetworkManager | Fedora Server's stack. `eth1` is "connected (externally)": its profile never activated |
 | `lab-ifup` | 172.30.0.13 | ifupdown (`/etc/network/interfaces`) | Classic Debian stack |
 
@@ -41,10 +41,12 @@ To refresh the parser fixtures in `backend/tests/fixtures/linux`, run every comm
 - The containers share the build machine's kernel. If it lacks IPv6, VLAN (8021q), bonding or dummy
   interfaces, those cannot appear in the lab; the parsers cover them with constructed samples instead.
 - Where a container registry is reachable (CI), `LANVEX_LAB_BASE_IMAGE=docker.io/library/ubuntu:24.04`
-  builds the Ubuntu base from Ubuntu's image instead of debootstrap (apt retries dropped downloads), and
+  builds the Ubuntu base from Ubuntu's image instead of debootstrap (apt retries dropped downloads),
   `LANVEX_LAB_FEDORA=1` adds `lab-fedora` (172.30.0.14: NetworkManager, firewalld, dnsmasq, like
-  KlassenServer). The networks tests (`test_networks_lab.py`) need it and a kernel with 802.1Q.
+  KlassenServer), and `LANVEX_LAB_DEBIAN=1` adds `lab-debian` (172.30.0.15: Debian 12 with ifupdown
+  sourcing `interfaces.d` and dnsmasq running as Debian's package starts it).
+- The networks tests (`test_networks_lab.py`) run on `lab-fedora`, `lab-netplan` and `lab-debian`, each
+  with a real DHCP client on `lab-nm`; they need a kernel with 802.1Q (CI's runners have it).
 - Without a registry, distribution coverage is Ubuntu only: Debian and Fedora package mirrors were not
-  reachable where the lab was built. Their network tools are the same upstream projects (ifupdown, NetworkManager),
-  and os-release detection is unit-tested, but neither distribution has been tested end to end.
+  reachable where the lab was built here; CI builds and tests both.
 - `--privileged` is required for systemd as PID 1. Run the lab only on a development machine.

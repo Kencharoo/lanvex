@@ -1040,8 +1040,63 @@ async def test_networks_change_safety_rules(
     assert r.status_code == 201 and r.json()["summary"] == "Networks: DHCP unchanged", r.text
 
 
-async def test_networks_change_needs_networkmanager(
+async def test_networks_on_netplan_servers(
     admin: httpx.AsyncClient, ready_server: str, fake: FakeServer
 ) -> None:
+    # Ubuntu Server: netplan with systemd-networkd. Lanvex's VLANs there are the ones its helper lists.
+    fake.facts = with_lanvex_vlan(fake.facts, "192.168.60.1")
+    fake.facts.interfaces[-1].name, fake.facts.interfaces[-1].manager_profile = "vlan60", None
+    fake.facts.lanvex_vlans = ["vlan60"]
     r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=networks_body())
-    assert r.status_code == 409 and r.json()["error"]["code"] == "unsupported_stack"
+    assert r.status_code == 201, r.text
+    change = r.json()
+    assert change["before"]["vlans"][0]["name"] == "vlan60"  # owned through the helper's list
+    assert any("Removing vlan60" in w for w in change["preview"]["warnings"])
+
+
+async def test_ifupdown_servers_get_networks_but_not_interface_changes(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    fake.facts = assemble(load("ifup"))
+    assert fake.facts.stack.key == "ifupdown"
+    r = await admin.post(
+        "/api/v1/servers", json=server_body(name="debian-01", address="172.30.0.13", port=22)
+    )
+    sid = r.json()["server"]["id"]
+    assert (await admin.post(f"/api/v1/servers/{sid}/collect")).status_code == 200
+    assert (await admin.post(f"/api/v1/servers/{sid}/changes/helper/check")).status_code == 200
+    r = await admin.put(f"/api/v1/servers/{sid}/changes/enabled", json={"enabled": True})
+    assert r.json()["ready"] is True and r.json()["interface_changes"] is False, r.text
+
+    eth0 = {"kind": "interface_ipv4", "interface": "eth0", "method": "dhcp", "addresses": []}
+    r = await admin.post(f"/api/v1/servers/{sid}/changes", json=eth0)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "unsupported_stack", r.text
+    r = await admin.post(f"/api/v1/servers/{sid}/changes", json=networks_body())
+    assert r.status_code == 201, r.text
+
+
+async def test_networks_need_a_known_network_stack(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    fake.facts = assemble(load("ifup"))
+    fake.facts.stack.key, fake.facts.stack.primary = "unknown", "Not determined"
+    sid = await new_server(admin)
+    assert (await admin.post(f"/api/v1/servers/{sid}/collect")).status_code == 200
+    r = await admin.get(f"/api/v1/servers/{sid}/changes/readiness")
+    assert r.json()["stack_supported"] is False
+    assert any("netplan, NetworkManager or ifupdown" in b for b in r.json()["blockers"])
+
+
+async def test_interface_changes_leave_lanvex_networks_to_the_networks_section(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await nm_server(admin, fake)
+    fake.facts = with_lanvex_vlan(fake.facts, "192.168.50.1")
+    body = {
+        "kind": "interface_ipv4",
+        "interface": "vlan50",
+        "method": "static",
+        "addresses": ["192.168.50.2/24"],
+    }
+    r = await admin.post(f"/api/v1/servers/{sid}/changes", json=body)
+    assert r.status_code == 422 and "Networks section" in r.text, r.text

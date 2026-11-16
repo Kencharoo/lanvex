@@ -39,6 +39,10 @@ if docker image inspect lanvex-target:fedora >/dev/null 2>&1; then
   run lab-fedora lanvex-target:fedora 172.30.0.14
   hosts="$hosts lab-fedora"
 fi
+if docker image inspect lanvex-target:debian >/dev/null 2>&1; then
+  run lab-debian lanvex-target:debian 172.30.0.15
+  hosts="$hosts lab-debian"
+fi
 
 # Wait for systemd to finish booting.
 for c in $hosts; do
@@ -54,6 +58,8 @@ for c in $hosts; do
   # Occasionally the socket unit is skipped on first boot in a container; starting it is idempotent.
   if [ "$c" = lab-fedora ]; then
     docker exec "$c" systemctl start sshd.service
+  elif [ "$c" = lab-debian ]; then
+    docker exec "$c" systemctl start ssh-hostkeys.service ssh.service
   else
     docker exec "$c" systemctl start ssh-hostkeys.service ssh.socket
   fi

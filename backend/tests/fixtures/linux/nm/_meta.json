@@ -31,6 +31,10 @@
   "exit_status": 0,
   "stderr": ""
  },
+ "lanvex_networks": {
+  "exit_status": 0,
+  "stderr": ""
+ },
  "lldpcli_neighbors": {
   "exit_status": 126,
   "stderr": "env: 'lldpcli': Permission denied\n"

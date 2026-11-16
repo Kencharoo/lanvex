@@ -169,4 +169,13 @@ class HostFacts(BaseModel):
     lldp: list[LldpNeighbor] = Field(default_factory=list)
     # DHCP Lanvex serves on this server and its leases; None where not read (no NetworkManager, older reads).
     dhcp: DhcpFacts | None = None
+    # VLAN interfaces Lanvex's helper lists as its own (/etc/lanvex/networks.json); NetworkManager
+    # profiles named lanvex-* count too, see lanvex_owned().
+    lanvex_vlans: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    def lanvex_owned(self, iface: "Interface") -> bool:
+        """Whether Lanvex created this VLAN interface (as far as the last read shows)."""
+        return iface.kind == "vlan" and (
+            (iface.manager_profile or "").startswith("lanvex-") or iface.name in self.lanvex_vlans
+        )

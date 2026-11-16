@@ -355,6 +355,8 @@ class Readiness(ApiModel):
     stack_key: str | None
     stack_label: str | None
     stack_supported: bool | None
+    # Whether interface settings can be changed here (netplan, NetworkManager), not only networks.
+    interface_changes: bool | None = None
     helper: HelperStatus
     helper_path: str
     helper_sha256: str

@@ -1,8 +1,8 @@
 #!/bin/sh
 # Build the Lanvex lab target images from an Ubuntu 24.04 rootfs. Needs root, debootstrap, Docker,
 # and HTTP access to an Ubuntu mirror (LANVEX_LAB_MIRROR, archive.ubuntu.com by default). No container
-# registry is used, unless LANVEX_LAB_BASE_IMAGE names Ubuntu's image to start from (CI) or
-# LANVEX_LAB_FEDORA=1 adds the Fedora host.
+# registry is used, unless LANVEX_LAB_BASE_IMAGE names Ubuntu's image to start from (CI), or
+# LANVEX_LAB_FEDORA=1 and LANVEX_LAB_DEBIAN=1 add the Fedora and Debian hosts.
 set -eu
 cd "$(dirname "$0")"
 ROOT=${LANVEX_LAB_ROOTFS:-/srv/lanvex-lab/rootfs}
@@ -35,9 +35,14 @@ docker build --network host --build-arg MIRROR="$MIRROR" -t lanvex-target:common
 for v in netplan-networkd networkmanager ifupdown; do
   docker build --network host -t "lanvex-target:$v" "$v"
 done
-# The Fedora host comes from Fedora's own image, so it needs a container registry (CI has one).
+# The Fedora and Debian hosts come from their distributions' own images, so they need a container
+# registry (CI has one).
 if [ "${LANVEX_LAB_FEDORA:-}" = 1 ]; then
   docker build --network host -t lanvex-target:fedora fedora
   echo "Built lanvex-target:fedora as well."
+fi
+if [ "${LANVEX_LAB_DEBIAN:-}" = 1 ]; then
+  docker build --network host -t lanvex-target:debian debian
+  echo "Built lanvex-target:debian as well."
 fi
 echo "Built lanvex-target:{netplan-networkd,networkmanager,ifupdown}. Start them with ./up.sh"

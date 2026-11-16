@@ -602,3 +602,121 @@ def test_networks_requests_go_through_plan_for(monkeypatch):  # type: ignore[no-
     with pytest.raises(h.Refused) as e:
         h.cmd_plan(networks())
     assert e.value.code == "no_change"
+
+
+def test_render_netplan_and_ifupdown_vlans():
+    v = h.validate_networks(networks())["vlans"][0] | {"addresses": ["192.168.50.1/24", "10.50.0.1/24"]}
+    doc = h._yaml().safe_load(h.render_netplan_vlans([v], {"eth0": "trunk"}))
+    assert doc == {
+        "network": {
+            "version": 2,
+            "vlans": {
+                "vlan50": {"id": 50, "link": "trunk", "addresses": ["192.168.50.1/24", "10.50.0.1/24"]}
+            },
+        }
+    }
+
+    text = h.render_ifupdown_vlans([v, v | {"name": "vlan60", "id": 60, "addresses": ["192.168.60.1/24"]}])
+    assert "auto vlan50\niface vlan50 inet static\n" in text
+    assert (
+        "    pre-up [ -e /sys/class/net/vlan50 ] || ip link add link eth0 name vlan50 type vlan id 50\n"
+        in text
+    )
+    assert "    address 192.168.50.1/24\n    up ip address add 10.50.0.1/24 dev vlan50\n" in text
+    assert "    post-down ip link delete vlan50\n" in text
+    stanzas = h.ifupdown_stanzas(text)
+    assert sorted(stanzas) == ["vlan50", "vlan60"]
+    assert "vlan60" not in stanzas["vlan50"] and "id 60" in stanzas["vlan60"]
+
+
+def test_ifupdown_must_read_its_directory(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    main, d = tmp_path / "interfaces", tmp_path / "interfaces.d"
+    d.mkdir()
+    monkeypatch.setattr(h, "IFUPDOWN_MAIN", str(main))
+    monkeypatch.setattr(h, "IFUPDOWN_DIR", str(d))
+    monkeypatch.setattr(h, "IFUPDOWN_LANVEX", str(d / "lanvex"))
+    main.write_text("auto lo\niface lo inet loopback\n")
+    assert h.ifupdown_sources_dir() is False
+    main.write_text(f"source {d}/*\n\nauto eth0\niface eth0 inet static\n    address 10.0.0.2/24\n")
+    assert h.ifupdown_sources_dir() is True
+    main.write_text(f"source-directory {d}\n")
+    assert h.ifupdown_sources_dir() is True
+    (d / "vlans").write_text("auto vlan50\niface vlan50 inet manual\n")
+    (d / "lanvex").write_text("iface vlan60 inet static\n")  # Lanvex's own file never counts
+    assert h.ifupdown_defined_elsewhere("vlan50") == str(d / "vlans")
+    assert h.ifupdown_defined_elsewhere("vlan60") is None
+
+
+def test_zone_names_its_interface_without_networkmanager():
+    v = h.validate_networks(networks())["vlans"][0]
+    assert '<interface name="vlan50"/>' in h.render_zone(v, ["dhcp"], bind=True)
+    assert "<interface" not in h.render_zone(v, ["dhcp"])  # NetworkManager sets the zone per profile
+
+
+def test_dnsmasq_modes(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    conf, d = tmp_path / "dnsmasq.conf", tmp_path / "dnsmasq.d"
+    d.mkdir()
+    monkeypatch.setattr(h, "DNSMASQ_CONF", str(conf))
+    monkeypatch.setattr(h, "DNSMASQ_DIR", str(d))
+    monkeypatch.setattr(h, "DNSMASQ_FILE", str(d / "lanvex.conf"))
+    pools = h.validate_networks(networks(pools=[TEST_POOL]))["dhcp"]["pools"]
+
+    conf.write_text(f"conf-dir={d}\n")
+    # Not running yet: answer only on Lanvex's interfaces, and bind only them (systemd-resolved holds :53).
+    assert h.dnsmasq_mode(active=False) == (True, True)
+    # Running for someone else on every interface: listing ours would end that.
+    assert h.dnsmasq_mode(active=True) == (False, False)
+    (d / "lan.conf").write_text("interface=eno1\nbind-interfaces\n")
+    # Restricted already, and binding chosen elsewhere (bind-dynamic next to bind-interfaces fails).
+    assert h.dnsmasq_mode(active=True) == (True, False)
+    assert h.dnsmasq_mode(active=False) == (True, False)
+    (d / "lan.conf").unlink()
+
+    conf_text = h.render_dnsmasq(pools, interfaces=True, bind_dynamic=True)
+    assert "\nbind-dynamic\n" in conf_text and "interface=vlan50\n" in conf_text
+    (d / "lanvex.conf").write_text(conf_text)
+    assert h.dnsmasq_mode(active=True) == (True, True)  # kept as Lanvex wrote it
+    bare = h.render_dnsmasq(pools, interfaces=False)
+    assert "interface=" not in bare and "bind-dynamic" not in bare
+    assert "dhcp-range=set:lx-vlan50," in bare
+    (d / "lanvex.conf").write_text(bare)
+    assert h.dnsmasq_mode(active=False) == (False, False)
+
+
+def test_ufw_rules_are_marked_and_removable():
+    rules = h.ufw_wanted_rules("vlan50")
+    assert rules[0] == "ufw allow in on vlan50 to any port 67 proto udp comment 'lanvex:vlan50'"
+    assert h.ufw_argv(rules[0]) == [
+        "ufw", "allow", "in", "on", "vlan50", "to", "any", "port", "67", "proto", "udp", "comment", "lanvex:vlan50",
+    ]  # fmt: skip
+    assert h.ufw_argv(rules[2], delete=True) == [
+        "ufw", "delete", "allow", "in", "on", "vlan50", "to", "any", "port", "53", "proto", "tcp",
+    ]  # fmt: skip
+
+
+def test_backend_follows_the_parent_interface(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    change = h.validate_networks(networks())
+    monkeypatch.setattr(h, "MANIFEST", str(tmp_path / "networks.json"))
+    monkeypatch.setattr(h, "NETPLAN_DIR", str(tmp_path / "netplan"))
+    monkeypatch.setattr(h, "IFUPDOWN_MAIN", str(tmp_path / "interfaces"))
+    tools = {"netplan": True, "ifup": True}
+    monkeypatch.setattr(h, "which", lambda name: "/usr/sbin/" + name if tools.get(name) else None)
+    nm = {"running": True, "states": {"eth0": "connected"}}
+    monkeypatch.setattr(h, "nm_running", lambda: nm["running"])
+    monkeypatch.setattr(h, "nm_device_states", lambda: nm["states"])
+    monkeypatch.setattr(h, "netplan_definitions", lambda iface, docs: [("f", "ethernets", iface)])
+    (tmp_path / "netplan").mkdir()
+    (tmp_path / "interfaces").write_text("")
+
+    assert h.choose_backend(change) == "networkmanager"
+    nm["states"] = {"eth0": "unmanaged"}  # Ubuntu Server: NetworkManager installed, networkd in charge
+    assert h.choose_backend(change) == "netplan"
+    nm["running"] = False
+    tools["netplan"] = False
+    assert h.choose_backend(change) == "ifupdown"
+    tools["ifup"] = False
+    with pytest.raises(h.Refused, match="none of them does here"):
+        h.choose_backend(change)
+    # Once Lanvex has VLANs on the server, it stays with the way it created them.
+    (tmp_path / "networks.json").write_text(h.render_manifest("ifupdown", ["vlan50"]))
+    assert h.choose_backend(change) == "ifupdown"

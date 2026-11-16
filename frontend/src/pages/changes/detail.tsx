@@ -17,6 +17,8 @@ import { absoluteTime, relativeTime } from "@/lib/utils";
 import { differs, RecordDialog } from "../servers/record";
 import { BeforeAfter, CheckList, ChangeStatusBadge, DiffView, Timeline, isActive } from "./shared";
 
+const BACKEND_LABEL: Record<string, string> = { netplan: "netplan", networkmanager: "NetworkManager", ifupdown: "ifupdown" };
+
 export function ChangeDetailPage() {
   const { id = "" } = useParams();
   const qc = useQueryClient();
@@ -121,7 +123,7 @@ export function ChangeDetailPage() {
         {c.preview && (
           <Section
             title={pending ? "Exactly what Lanvex will do" : "What Lanvex was approved to do"}
-            description={`Prepared by the helper on the server, against its configuration at that moment (${c.preview.backend === "netplan" ? "netplan" : "NetworkManager"}).`}
+            description={`Prepared by the helper on the server, against its configuration at that moment (${BACKEND_LABEL[c.preview.backend] ?? c.preview.backend}).`}
           >
             {c.preview.warnings.length > 0 && (
               <Notice tone="warn" title={pending ? "Before you approve" : "Shown before approval"}>

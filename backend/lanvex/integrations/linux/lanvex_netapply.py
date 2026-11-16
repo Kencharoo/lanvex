@@ -41,6 +41,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -60,6 +61,16 @@ ZONE_DIR = "/etc/firewalld/zones"
 DNSMASQ_CONF = "/etc/dnsmasq.conf"
 DNSMASQ_DIR = "/etc/dnsmasq.d"
 DNSMASQ_FILE = "/etc/dnsmasq.d/lanvex.conf"
+NETPLAN_LANVEX = "/etc/netplan/60-lanvex.yaml"  # the VLANs Lanvex manages on a netplan server
+IFUPDOWN_MAIN = "/etc/network/interfaces"
+IFUPDOWN_DIR = "/etc/network/interfaces.d"
+IFUPDOWN_LANVEX = "/etc/network/interfaces.d/lanvex"  # the VLANs Lanvex manages on an ifupdown server
+# Which VLAN interfaces Lanvex manages here, readable without root (netplan files are not): Lanvex's
+# server reads it to tell its own VLANs from others. Written as part of each change, so a rollback
+# restores it with everything else.
+MANIFEST = "/etc/lanvex/networks.json"
+UFW_MARK = "lanvex:"  # the comment on every ufw rule Lanvex adds, so it can find and remove its own
+UFW_FILES = ("/etc/ufw/user.rules", "/etc/ufw/user6.rules")
 MANAGED = "Managed by Lanvex. Edits here are replaced by the next Lanvex change."
 ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "LANG": "C"}
 KEEP_CHANGES = 20
@@ -954,7 +965,8 @@ def render_vlan_keyfile(v: dict, uuid_: str, zone: str | None) -> str:
     return "\n".join(lines)
 
 
-def render_zone(v: dict, services: list) -> str:
+def render_zone(v: dict, services: list, bind: bool = False) -> str:
+    """bind: the zone names its interface itself (netplan, ifupdown); NetworkManager sets it per profile."""
     # No double hyphen in the comment: XML forbids it there, and firewalld then rejects the file.
     out = [
         '<?xml version="1.0" encoding="utf-8"?>',
@@ -964,19 +976,31 @@ def render_zone(v: dict, services: list) -> str:
         "  <description>Devices on %s (VLAN %d) may use these services on this server.</description>"
         % (v["name"], v["id"]),
     ]
+    if bind:
+        out.append('  <interface name="%s"/>' % v["name"])
     out += ['  <service name="%s"/>' % s for s in services]
     out.append("</zone>")
     return "\n".join(out) + "\n"
 
 
-def render_dnsmasq(pools: list) -> str:
+def render_dnsmasq(pools: list, interfaces: bool = True, bind_dynamic: bool = False) -> str:
+    """interfaces: list each interface (dnsmasq then answers only on the listed ones). Left out when
+    another configuration has dnsmasq answer on every interface, which the lines would end.
+    bind_dynamic: bind only those interfaces' addresses, so dnsmasq starts next to systemd-resolved."""
     lines = ["# " + MANAGED, "# One block per network Lanvex serves DHCP on.", ""]
+    if bind_dynamic:
+        lines += [
+            "# Bind only the interfaces dnsmasq serves (systemd-resolved holds 127.0.0.53:53).",
+            "bind-dynamic",
+            "",
+        ]
     for p in pools:
         tag = zone_name(p["interface"])
         mask = str(ipaddress.ip_network(p["network"]).netmask)
+        lines += ["# %s: %s" % (p["interface"], p["network"])]
+        if interfaces:
+            lines.append("interface=" + p["interface"])
         lines += [
-            "# %s: %s" % (p["interface"], p["network"]),
-            "interface=" + p["interface"],
             "dhcp-range=set:%s,%s,%s,%s,%s" % (tag, p["start"], p["end"], mask, p["lease"]),
             "dhcp-option=tag:%s,option:router,%s" % (tag, p["router"]),
             "dhcp-option=tag:%s,option:dns-server,%s" % (tag, ",".join(p["dns"])),
@@ -987,6 +1011,233 @@ def render_dnsmasq(pools: list) -> str:
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def render_netplan_vlans(vlans: list, links: dict) -> str:
+    """Lanvex's netplan file: its VLANs only. links: parent interface -> its netplan ID."""
+    doc = {
+        "network": {
+            "version": 2,
+            "vlans": {
+                v["name"]: {"id": v["id"], "link": links[v["parent"]], "addresses": list(v["addresses"])}
+                for v in vlans
+            },
+        }
+    }
+    return "# " + MANAGED + "\n" + dump_netplan(doc)
+
+
+def render_ifupdown_vlans(vlans: list) -> str:
+    """Lanvex's ifupdown file. The VLAN device is created and deleted by the stanza itself, so any name
+    works and Debian's vlan package is not needed."""
+    lines = ["# " + MANAGED, ""]
+    for v in vlans:
+        name = v["name"]
+        lines += [
+            "auto %s" % name,
+            "iface %s inet static" % name,
+            # Skipped when ifupdown created it already (it does for names like eth0.50).
+            "    pre-up [ -e /sys/class/net/%s ] || ip link add link %s name %s type vlan id %d"
+            % (name, v["parent"], name, v["id"]),
+            "    address %s" % v["addresses"][0],
+        ]
+        lines += ["    up ip address add %s dev %s" % (a, name) for a in v["addresses"][1:]]
+        lines += ["    post-down ip link delete %s" % name, ""]
+    return "\n".join(lines)
+
+
+def ifupdown_stanzas(text: str) -> dict:
+    """iface name -> its stanza's text, for files in the form render_ifupdown_vlans writes."""
+    out, name = {}, None
+    for line in text.splitlines():
+        words = line.split()
+        if words[:1] == ["iface"] and len(words) > 1:
+            name = words[1]
+            out.setdefault(name, [])
+        elif words[:1] in (["auto"], ["allow-hotplug"]) or not line.startswith((" ", "\t")):
+            name = None if not line.startswith("#") else name
+        if name is not None:
+            out[name].append(line)
+    return {k: "\n".join(v) for k, v in out.items()}
+
+
+def ifupdown_sources_dir() -> bool:
+    """Does /etc/network/interfaces read the files in /etc/network/interfaces.d (Debian's default)?"""
+    try:
+        text = read_text(IFUPDOWN_MAIN)
+    except OSError:
+        return False
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] == "source" and words[1].startswith(IFUPDOWN_DIR + "/"):
+            return True
+        if len(words) == 2 and words[0] == "source-directory" and words[1].rstrip("/") == IFUPDOWN_DIR:
+            return True
+    return False
+
+
+def ifupdown_defined_elsewhere(name: str) -> str | None:
+    """Another ifupdown file that defines `name`."""
+    files = [IFUPDOWN_MAIN]
+    if os.path.isdir(IFUPDOWN_DIR):
+        files += sorted(os.path.join(IFUPDOWN_DIR, f) for f in os.listdir(IFUPDOWN_DIR))
+    for path in files:
+        if path == IFUPDOWN_LANVEX or not os.path.isfile(path):
+            continue
+        try:
+            for line in read_text(path).splitlines():
+                words = line.split()
+                if len(words) > 1 and words[0] == "iface" and words[1] == name:
+                    return path
+        except OSError:
+            continue
+    return None
+
+
+def netplan_docs(exclude: str | None = None) -> dict:
+    yaml = _yaml()
+    docs = {}
+    if os.path.isdir(NETPLAN_DIR):
+        for f in sorted(os.listdir(NETPLAN_DIR)):
+            path = os.path.join(NETPLAN_DIR, f)
+            if f.endswith(".yaml") and path != exclude:
+                try:
+                    docs[path] = yaml.safe_load(read_text(path))
+                except yaml.YAMLError as e:
+                    raise Refused("unsupported", "%s is not valid YAML: %s" % (path, e)) from e
+    return docs
+
+
+def nm_device_states() -> dict:
+    r = run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"], timeout=15)
+    out = {}
+    for line in r.stdout.splitlines():
+        parts = nm_split(line)
+        if len(parts) >= 2:
+            out[parts[0]] = parts[1]
+    return out
+
+
+def read_manifest() -> dict:
+    try:
+        data = json.loads(read_text(MANIFEST))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def render_manifest(backend: str, names: list, dnsmasq_before: dict | None = None) -> str:
+    doc = {"managed_by": "Lanvex", "backend": backend, "vlans": sorted(names)}
+    if dnsmasq_before is not None:
+        # How dnsmasq ran before Lanvex served DHCP here, so it is left that way once Lanvex stops.
+        doc["dnsmasq_before"] = dnsmasq_before
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def choose_backend(change: dict) -> str:
+    """How this server's VLANs are configured: by whoever manages their parent interfaces. Once Lanvex
+    has VLANs here, it keeps using the same way."""
+    known = read_manifest().get("backend")
+    if known in ("networkmanager", "netplan", "ifupdown") and read_manifest().get("vlans"):
+        return known
+    parents = sorted({v["parent"] for v in change["vlans"]})
+    if nm_running():
+        states = nm_device_states()
+        if not parents or all(
+            states.get(p, "unmanaged") not in ("unmanaged", "unavailable") for p in parents
+        ):
+            return "networkmanager"
+    if which("netplan") and os.path.isdir(NETPLAN_DIR):
+        docs = netplan_docs(exclude=NETPLAN_LANVEX)
+        if not parents or all(netplan_definitions(p, docs) for p in parents):
+            return "netplan"
+    if which("ifup") and os.path.exists(IFUPDOWN_MAIN):
+        return "ifupdown"
+    raise Refused(
+        "unsupported",
+        "Lanvex creates VLAN interfaces where NetworkManager, netplan or ifupdown manages their parent "
+        "interface (%s); none of them does here." % ", ".join(parents),
+    )
+
+
+def dnsmasq_others() -> dict:
+    """What other dnsmasq configuration already decides: whether it restricts the interfaces dnsmasq
+    answers on, and whether it chooses how dnsmasq binds."""
+    restricted = bind = False
+    files = [DNSMASQ_CONF]
+    if os.path.isdir(DNSMASQ_DIR):
+        files += sorted(os.path.join(DNSMASQ_DIR, f) for f in os.listdir(DNSMASQ_DIR) if f.endswith(".conf"))
+    for path in files:
+        if path == DNSMASQ_FILE:
+            continue
+        try:
+            text = read_text(path)
+        except OSError:
+            continue
+        for line in text.splitlines():
+            key = line.split("#", 1)[0].strip().split("=", 1)[0].strip()
+            restricted = restricted or key in ("interface", "listen-address", "except-interface")
+            bind = bind or key in ("bind-interfaces", "bind-dynamic")
+    return {"restricted": restricted, "bind": bind}
+
+
+def dnsmasq_mode(active: bool) -> tuple:
+    """(list interfaces, bind-dynamic) for Lanvex's file. Kept as it is once Lanvex wrote the file, so
+    the next change does not flip it; decided the first time from what dnsmasq does already."""
+    if os.path.exists(DNSMASQ_FILE):
+        lines = [x.strip() for x in read_text(DNSMASQ_FILE).splitlines()]
+        return any(x.startswith("interface=") for x in lines), "bind-dynamic" in lines
+    others = dnsmasq_others()
+    if active and not others["restricted"]:
+        # dnsmasq already answers on every interface for someone else: listing ours would end that.
+        return False, False
+    return True, not others["bind"] and not active
+
+
+def ufw_wanted_rules(iface: str) -> list:
+    """The ufw rules that let devices on `iface` use DHCP and DNS on this server, as `ufw show added`
+    prints them."""
+    return [
+        "ufw allow in on %s to any port %s proto %s comment '%s%s'" % (iface, port, proto, UFW_MARK, iface)
+        for port, proto in (("67", "udp"), ("53", "udp"), ("53", "tcp"))
+    ]
+
+
+def ufw_state() -> dict | None:
+    """None without ufw. Otherwise whether it is active and the rules Lanvex added."""
+    if not which("ufw"):
+        return None
+    status = run(["ufw", "status"], timeout=30)
+    added = run(["ufw", "show", "added"], timeout=30)
+    ours = [
+        line.strip()
+        for line in added.stdout.splitlines()
+        if line.startswith("ufw ") and ("comment '%s" % UFW_MARK) in line
+    ]
+    return {"active": status.stdout.splitlines()[:1] == ["Status: active"], "ours": ours}
+
+
+def ufw_argv(rule: str, delete: bool = False) -> list:
+    words = shlex.split(rule)[1:]  # without the leading "ufw"
+    if delete:
+        return ["ufw", "delete"] + words[: words.index("comment")]
+    return ["ufw"] + words
+
+
+def nft_drops_input() -> str | None:
+    """A table whose input chain drops what no rule allows (a hand-written nftables firewall)."""
+    if not which("nft"):
+        return None
+    r = run(["nft", "-j", "list", "chains"], timeout=15)
+    try:
+        items = json.loads(r.stdout or "{}").get("nftables") or []
+    except ValueError:
+        return None
+    for item in items:
+        chain = item.get("chain") if isinstance(item, dict) else None
+        if isinstance(chain, dict) and chain.get("hook") == "input" and chain.get("policy") == "drop":
+            return "%s %s" % (chain.get("family"), chain.get("table"))
+    return None
 
 
 def nm_profiles() -> list:
@@ -1088,17 +1339,27 @@ def dnsmasq_conflicts(pools: list) -> list:
 
 
 def networks_plan(change: dict) -> dict:
-    if not nm_running():
-        raise Refused(
-            "unsupported",
-            "NetworkManager is not running. Lanvex creates VLAN interfaces with NetworkManager so far.",
-        )
-    profiles = nm_profiles()
-    ours = {}  # interface -> profile, for profiles Lanvex owns
-    for p in profiles:
-        if p["name"].startswith(LANVEX_PROFILE) and p["file"].startswith(NM_KEYFILE_DIR):
-            ours[nm_interface_name(p["file"]) or p["name"][len(LANVEX_PROFILE) :]] = p
+    backend = choose_backend(change)
     wanted = {v["name"]: v for v in change["vlans"]}
+    nm_ours, profiles = {}, []
+    if backend == "networkmanager":
+        profiles = nm_profiles()
+        for p in profiles:
+            if p["name"].startswith(LANVEX_PROFILE) and p["file"].startswith(NM_KEYFILE_DIR):
+                nm_ours[nm_interface_name(p["file"]) or p["name"][len(LANVEX_PROFILE) :]] = p
+        ours = {name: {"active": bool(p["device"])} for name, p in nm_ours.items()}
+    elif backend == "netplan":
+        own = (netplan_docs().get(NETPLAN_LANVEX) or {}) if os.path.exists(NETPLAN_LANVEX) else {}
+        ours = {name: {} for name in ((own.get("network") or {}).get("vlans") or {})}
+    else:
+        ours = (
+            {name: {} for name in ifupdown_stanzas(read_text(IFUPDOWN_LANVEX))}
+            if os.path.exists(IFUPDOWN_LANVEX)
+            else {}
+        )
+
+    links = {}  # parent -> netplan ID
+    docs = netplan_docs(exclude=NETPLAN_LANVEX) if backend == "netplan" else {}
     for name, v in wanted.items():
         if not os.path.exists("/sys/class/net/%s" % v["parent"]):
             raise Refused(
@@ -1108,26 +1369,52 @@ def networks_plan(change: dict) -> dict:
             raise Refused(
                 "unsupported", "%s: its parent %s is a Lanvex VLAN interface." % (name, v["parent"])
             )
+        if backend == "netplan":
+            found = netplan_definitions(v["parent"], docs)
+            if len(found) != 1:
+                raise Refused(
+                    "unsupported",
+                    "%s: Lanvex adds VLANs only on interfaces netplan defines once; %s is defined %d times in %s."
+                    % (name, v["parent"], len(found), NETPLAN_DIR),
+                )
+            links[v["parent"]] = found[0][2]
         if name in ours:
             continue
-        other = next(
-            (
-                p
-                for p in profiles
-                if p["device"] == name or (p["file"] and nm_interface_name(p["file"]) == name)
-            ),
-            None,
-        )
-        if other is not None:
-            raise Refused(
-                "conflict",
-                "%s is managed by the NetworkManager profile '%s', which Lanvex did not create. Lanvex does not "
-                "change it; choose another name, or remove that profile first." % (name, other["name"]),
+        if backend == "networkmanager":
+            other = next(
+                (
+                    p
+                    for p in profiles
+                    if p["device"] == name or (p["file"] and nm_interface_name(p["file"]) == name)
+                ),
+                None,
             )
+            if other is not None:
+                raise Refused(
+                    "conflict",
+                    "%s is managed by the NetworkManager profile '%s', which Lanvex did not create. Lanvex does not "
+                    "change it; choose another name, or remove that profile first." % (name, other["name"]),
+                )
+        if backend == "netplan" and netplan_definitions(name, docs):
+            raise Refused(
+                "conflict", "%s is defined in another netplan file. Lanvex does not change it." % name
+            )
+        if backend == "ifupdown":
+            elsewhere = ifupdown_defined_elsewhere(name)
+            if elsewhere:
+                raise Refused(
+                    "conflict", "%s is defined in %s. Lanvex does not change it." % (name, elsewhere)
+                )
         if os.path.exists("/sys/class/net/%s" % name):
             raise Refused(
                 "conflict", "%s already exists on this server and was not created by Lanvex." % name
             )
+    if backend == "ifupdown" and wanted and not ifupdown_sources_dir():
+        raise Refused(
+            "unsupported",
+            "%s does not read the files in %s. Add the line 'source %s/*' to it first (Debian's default)."
+            % (IFUPDOWN_MAIN, IFUPDOWN_DIR, IFUPDOWN_DIR),
+        )
 
     firewalld = service_state("firewalld")["active"] and bool(which("firewall-cmd"))
     # None: DHCP stays as it is. A list (possibly empty): exactly these pools.
@@ -1143,7 +1430,7 @@ def networks_plan(change: dict) -> dict:
     else:
         served = set()
 
-    files, warnings, touched = [], [], []  # touched: profiles to (re)activate, created or modified
+    files, warnings, touched = [], [], []  # touched: VLANs to (re)activate, created or changed
 
     def add(path: str, label: str, after: str | None) -> str | None:
         exists = os.path.exists(path)
@@ -1163,41 +1450,78 @@ def networks_plan(change: dict) -> dict:
         )
         return action
 
-    import uuid as uuidlib  # noqa: PLC0415 - only needed here
+    vlans = [wanted[n] for n in sorted(wanted)]
+    if backend == "networkmanager":
+        import uuid as uuidlib  # noqa: PLC0415 - only needed here
 
-    for name, v in sorted(wanted.items()):
-        uuid_ = (
-            ours[name]["uuid"]
-            if name in ours
-            else str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "lanvex:vlan:" + name))
+        for v in vlans:
+            name = v["name"]
+            uuid_ = (
+                nm_ours[name]["uuid"]
+                if name in nm_ours
+                else str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "lanvex:vlan:" + name))
+            )
+            path = (
+                nm_ours[name]["file"]
+                if name in nm_ours
+                else os.path.join(NM_KEYFILE_DIR, LANVEX_PROFILE + name + ".nmconnection")
+            )
+            if add(
+                path,
+                "NetworkManager profile for %s (VLAN %d on %s)" % (name, v["id"], v["parent"]),
+                render_vlan_keyfile(v, uuid_, zone_name(name) if firewalld else None),
+            ):
+                touched.append(name)
+        for name, p in sorted(nm_ours.items()):
+            if name not in wanted:
+                add(p["file"], "NetworkManager profile for %s (removed)" % name, None)
+    elif backend == "netplan":
+        old = (
+            ((netplan_docs().get(NETPLAN_LANVEX) or {}).get("network") or {}).get("vlans") or {}
+            if os.path.exists(NETPLAN_LANVEX)
+            else {}
         )
-        path = (
-            ours[name]["file"]
-            if name in ours
-            else os.path.join(NM_KEYFILE_DIR, LANVEX_PROFILE + name + ".nmconnection")
+        touched = [
+            v["name"]
+            for v in vlans
+            if old.get(v["name"])
+            != {"id": v["id"], "link": links[v["parent"]], "addresses": list(v["addresses"])}
+        ]
+        add(
+            NETPLAN_LANVEX,
+            "netplan file with Lanvex's VLAN interfaces",
+            render_netplan_vlans(vlans, links) if vlans else None,
         )
-        if add(
-            path,
-            "NetworkManager profile for %s (VLAN %d on %s)" % (name, v["id"], v["parent"]),
-            render_vlan_keyfile(v, uuid_, zone_name(name) if firewalld else None),
-        ):
-            touched.append(LANVEX_PROFILE + name)
-        if firewalld:
-            services = ["dhcp", "dns"] if name in served else []
+    else:
+        old_stanzas = ifupdown_stanzas(read_text(IFUPDOWN_LANVEX)) if os.path.exists(IFUPDOWN_LANVEX) else {}
+        new_stanzas = ifupdown_stanzas(render_ifupdown_vlans(vlans))
+        touched = [v["name"] for v in vlans if old_stanzas.get(v["name"]) != new_stanzas.get(v["name"])]
+        add(
+            IFUPDOWN_LANVEX,
+            "ifupdown file with Lanvex's VLAN interfaces",
+            render_ifupdown_vlans(vlans) if vlans else None,
+        )
+    removed = sorted(name for name in ours if name not in wanted)
+    created = sorted(name for name in wanted if name not in ours)
+    if firewalld:
+        for v in vlans:
+            add(
+                os.path.join(ZONE_DIR, zone_name(v["name"]) + ".xml"),
+                "firewalld zone %s" % zone_name(v["name"]),
+                render_zone(
+                    v, ["dhcp", "dns"] if v["name"] in served else [], bind=backend != "networkmanager"
+                ),
+            )
+        for name in removed:
             add(
                 os.path.join(ZONE_DIR, zone_name(name) + ".xml"),
-                "firewalld zone %s" % zone_name(name),
-                render_zone(v, services),
+                "firewalld zone %s (removed)" % zone_name(name),
+                None,
             )
-    for name, p in sorted(ours.items()):
-        if name not in wanted:
-            add(p["file"], "NetworkManager profile for %s (removed)" % name, None)
-            if firewalld:
-                add(
-                    os.path.join(ZONE_DIR, zone_name(name) + ".xml"),
-                    "firewalld zone %s (removed)" % zone_name(name),
-                    None,
-                )
+    known_before = read_manifest().get("dnsmasq_before")
+    if not isinstance(known_before, dict) or not os.path.exists(DNSMASQ_FILE):
+        known_before = None
+    dnsmasq_before = known_before
 
     dnsmasq = None
     if pools is not None:
@@ -1221,50 +1545,116 @@ def networks_plan(change: dict) -> dict:
                     "Another dnsmasq configuration already serves this: %s (%s). Lanvex does not change it."
                     % (clash[0][0], clash[0][1]),
                 )
-        add(DNSMASQ_FILE, "dnsmasq: DHCP for the Lanvex networks", render_dnsmasq(pools) if pools else None)
-        if dnsmasq_service():
-            dnsmasq = dict(service_state("dnsmasq"), wanted=bool(pools))
+        state = service_state("dnsmasq") if dnsmasq_service() else None
+        if pools and not os.path.exists(DNSMASQ_FILE) and state is not None:
+            dnsmasq_before = {"active": state["active"], "enabled": state["enabled"]}
+        elif not pools:
+            dnsmasq_before = None
+        listed, bind_dynamic = dnsmasq_mode(bool(state and state["active"]))
+        if pools and not listed:
+            warnings.append(
+                "dnsmasq answers on every interface of this server for another configuration; Lanvex adds its pools "
+                "without restricting that."
+            )
+        add(
+            DNSMASQ_FILE,
+            "dnsmasq: DHCP for the Lanvex networks",
+            render_dnsmasq(pools, listed, bind_dynamic) if pools else None,
+        )
+        if state is not None:
+            # Lanvex stops serving DHCP here: dnsmasq goes back to how it ran before (unknown for
+            # pools Lanvex 0.7 added: then it keeps running).
+            put_back = known_before if not pools and os.path.exists(DNSMASQ_FILE) else None
+            dnsmasq = dict(state, wanted=bool(pools), put_back=put_back)
+
+    # Removed with the last VLAN interface.
+    manifest = render_manifest(backend, list(wanted), dnsmasq_before) if wanted else None
+    add(MANIFEST, "Lanvex's list of the VLAN interfaces it manages here", manifest)
+
+    # ufw: DHCP and DNS on the networks Lanvex serves, with rules it marks so it can remove them again.
+    ufw = ufw_state()
+    ufw_add, ufw_delete = [], []
+    if ufw is not None and (ufw["active"] or ufw["ours"]):
+        wanted_rules = [r for name in sorted(served & set(wanted)) for r in ufw_wanted_rules(name)]
+        ufw_add = [r for r in wanted_rules if r not in ufw["ours"]]
+        ufw_delete = [r for r in ufw["ours"] if r not in wanted_rules]
+    elif not firewalld and served and nft_drops_input():
+        warnings.append(
+            "nftables on this server drops incoming traffic no rule allows (table %s). Lanvex does not change "
+            "nftables rules yet: allow DHCP (UDP 67) and DNS (port 53) on the new interfaces yourself, or "
+            "devices get no address." % nft_drops_input()
+        )
 
     commands = []
     if any(f["path"].startswith(ZONE_DIR) for f in files):
         commands.append("firewall-cmd --reload")
-    if any(f["path"].startswith(NM_KEYFILE_DIR) for f in files):
+    vlan_changed = bool(touched or removed)
+    if backend == "networkmanager" and vlan_changed:
         commands.append("nmcli connection reload")
-        commands += ["nmcli connection up id %s" % name for name in touched]
+        commands += ["nmcli connection up id %s%s" % (LANVEX_PROFILE, name) for name in touched]
+    elif backend == "netplan" and vlan_changed:
+        commands += ["ip link delete %s" % n for n in removed]
+        commands += ["netplan generate", "netplan apply"]
+    elif backend == "ifupdown" and vlan_changed:
+        commands = ["ifdown %s" % n for n in sorted(set(removed) | (set(touched) - set(created)))] + commands
+        commands += ["ifup %s" % n for n in touched]
     dnsmasq_file_changed = any(f["path"] == DNSMASQ_FILE for f in files)
-    vlan_changed = any(f["path"].startswith(NM_KEYFILE_DIR) for f in files)
+    put_back = (dnsmasq or {}).get("put_back") or {}
+    stop_dnsmasq = bool(put_back) and not put_back.get("active") and dnsmasq["active"]
+    disable_dnsmasq = bool(put_back) and not put_back.get("enabled") and dnsmasq["enabled"]
     restart_dnsmasq = (
         dnsmasq is not None
-        and (dnsmasq_file_changed or (vlan_changed and served))
+        and (dnsmasq_file_changed or (vlan_changed and bool(served)))
         and (dnsmasq["wanted"] or dnsmasq["active"])
+        and not stop_dnsmasq
     )
+    commands += [" ".join(shlex.quote(w) for w in ufw_argv(r, delete=True)) for r in ufw_delete]
+    commands += [" ".join(shlex.quote(w) for w in ufw_argv(r)) for r in ufw_add]
     if dnsmasq is not None and dnsmasq["wanted"] and not dnsmasq["enabled"]:
         commands.append("systemctl enable dnsmasq")
         warnings.append("dnsmasq is not enabled on this server yet; Lanvex enables and starts it.")
-    if restart_dnsmasq:
+    if restart_dnsmasq or (dnsmasq and dnsmasq["wanted"] and not dnsmasq["active"]):
         commands.append("systemctl restart dnsmasq")
+    if disable_dnsmasq:
+        commands.append("systemctl disable dnsmasq")
+    if stop_dnsmasq:
+        commands.append("systemctl stop dnsmasq")
+    if stop_dnsmasq or disable_dnsmasq:
+        warnings.append(
+            "Lanvex no longer serves DHCP on this server: dnsmasq is %s, as it was before Lanvex's first pool."
+            % " and ".join(w for w, on in (("stopped", stop_dnsmasq), ("disabled", disable_dnsmasq)) if on)
+        )
     if pools and not firewalld and service_state("firewalld")["enabled"]:
         warnings.append("firewalld is enabled but not running; Lanvex writes no zones.")
-    if any(f["action"] == "delete" and f["path"].startswith(NM_KEYFILE_DIR) for f in files):
+    if removed:
         warnings.append(
             "Removing a VLAN interface disconnects every device on that network from this server."
         )
     return {
-        "backend": "networkmanager",
+        "backend": backend,
         "files": files,
         "commands": commands,
         "warnings": warnings,
         "_write": {f["path"]: (f["after"] if f["action"] != "delete" else None) for f in files},
-        "_changed": bool(files)
+        "_changed": bool(files or ufw_add or ufw_delete)
         or (dnsmasq is not None and dnsmasq["wanted"] and not (dnsmasq["active"] and dnsmasq["enabled"])),
+        # Files another tool writes that the change alters through it; backed up for a rollback.
+        "_backup": [f for f in UFW_FILES if os.path.exists(f)] if (ufw_add or ufw_delete) else [],
         "_networks": {
+            "backend": backend,
             "firewalld": firewalld,
             "dnsmasq": dnsmasq,
+            "stop_dnsmasq": stop_dnsmasq,
+            "disable_dnsmasq": disable_dnsmasq,
             "restart_dnsmasq": restart_dnsmasq
             or bool(dnsmasq and dnsmasq["wanted"] and not dnsmasq["active"]),
             "up": touched,
-            "active_before": [p["uuid"] for p in ours.values() if p["device"]],
-            "removed": sorted(name for name in ours if name not in wanted),
+            "created": created,
+            "removed": removed,
+            "ours_before": sorted(ours),
+            "active_before": [p["uuid"] for p in nm_ours.values() if p["device"]],
+            "ufw": {"add": ufw_add, "delete": ufw_delete} if (ufw_add or ufw_delete) else None,
+            "ufw_check": sorted(served & set(wanted)) if ufw is not None and ufw["active"] else [],
         },
     }
 
@@ -1287,39 +1677,98 @@ def dnsmasq_validate(text: str) -> None:
         os.unlink(tmp)
 
 
-def networks_apply(plan: dict) -> None:
-    n = plan["_networks"]
-    for path, text in plan["_write"].items():
+def _write_files(write: dict) -> None:
+    for path, text in write.items():
         if text is None:
             if os.path.exists(path):
                 os.unlink(path)
-        elif path.startswith(NM_KEYFILE_DIR):
-            atomic_write(path, text.encode("utf-8"), 0o600, 0, 0)  # NetworkManager ignores readable profiles
+            continue
+        if path.startswith(NM_KEYFILE_DIR) or path.startswith(NETPLAN_DIR):
+            mode = 0o600  # NetworkManager and netplan refuse configuration files others can read
         else:
-            atomic_write(path, text.encode("utf-8"), 0o644, 0, 0)
+            mode = 0o644
+        os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+        atomic_write(path, text.encode("utf-8"), mode, 0, 0)
+
+
+def _delete_links(names: list) -> None:
+    for name in names:
+        if os.path.exists("/sys/class/net/%s" % name):
+            run(["ip", "link", "delete", name], timeout=30)
+
+
+def networks_apply(plan: dict) -> None:
+    n = plan["_networks"]
+    backend = n["backend"]
+    if backend == "ifupdown":
+        # Down with the configuration it came up with, before the file changes.
+        for name in sorted(set(n["removed"]) | (set(n["up"]) - set(n["created"]))):
+            run(["ifdown", name], timeout=60)
+        _delete_links(n["removed"])
+    _write_files(plan["_write"])
     if any(p.startswith(ZONE_DIR) for p in plan["_write"]):
         run(["firewall-cmd", "--reload"], timeout=60, check=True)
-    if any(p.startswith(NM_KEYFILE_DIR) for p in plan["_write"]):
+    if backend == "networkmanager" and (n["up"] or n["removed"]):
         run(["nmcli", "connection", "reload"], timeout=30, check=True)
         for name in n["up"]:
-            run(["nmcli", "connection", "up", "id", name], timeout=90, check=True)
+            run(["nmcli", "connection", "up", "id", LANVEX_PROFILE + name], timeout=90, check=True)
+    elif backend == "netplan" and (n["up"] or n["removed"]):
+        # netplan apply leaves VLAN devices it no longer defines, and cannot change a VLAN's ID or parent.
+        _delete_links(sorted(set(n["removed"]) | (set(n["up"]) - set(n["created"]))))
+        netplan_apply()
+    elif backend == "ifupdown":
+        for name in n["up"]:
+            run(["ifup", name], timeout=90, check=True)
+    u = n.get("ufw")
+    if u is not None:
+        for rule in u["delete"]:
+            run(ufw_argv(rule, delete=True), timeout=60, check=True)
+        for rule in u["add"]:
+            run(ufw_argv(rule), timeout=60, check=True)
     d = n["dnsmasq"]
     if d is not None and d["wanted"] and not d["enabled"]:
         run(["systemctl", "enable", "dnsmasq"], timeout=30, check=True)
     if n["restart_dnsmasq"]:
         run(["systemctl", "restart", "dnsmasq"], timeout=60, check=True)
+    if n.get("disable_dnsmasq"):
+        run(["systemctl", "disable", "dnsmasq"], timeout=30, check=True)
+    if n.get("stop_dnsmasq"):
+        run(["systemctl", "stop", "dnsmasq"], timeout=60, check=True)
+
+
+def networks_before_restore(state: dict) -> None:
+    """Before the old files come back: take down what the change brought up, with the configuration
+    it brought it up with (ifupdown needs that)."""
+    n = state["networks"]
+    if n["backend"] == "ifupdown":
+        for name in n["up"]:
+            run(["ifdown", name], timeout=60)
+        _delete_links(n["up"])
 
 
 def networks_restore(state: dict) -> None:
-    """After the files are back: make NetworkManager, firewalld and dnsmasq use them again."""
+    """After the files are back: make NetworkManager, netplan or ifupdown, firewalld and dnsmasq use them."""
     n = state["networks"]
+    backend = n.get("backend", "networkmanager")
     paths = [r["path"] for r in state.get("files") or []]
     if any(p.startswith(ZONE_DIR) for p in paths) and which("firewall-cmd"):
         run(["firewall-cmd", "--reload"], timeout=60)
-    if any(p.startswith(NM_KEYFILE_DIR) for p in paths):
+    if backend == "networkmanager" and any(p.startswith(NM_KEYFILE_DIR) for p in paths):
         run(["nmcli", "connection", "reload"], timeout=30)
         for uuid_ in n.get("active_before") or []:
             run(["nmcli", "connection", "up", uuid_], timeout=90)
+    elif backend == "netplan" and NETPLAN_LANVEX in paths:
+        _delete_links(n.get("up") or [])  # created or changed by the change; netplan re-creates the old ones
+        try:
+            netplan_apply()
+        except Refused:
+            pass
+    elif backend == "ifupdown":
+        for name in n.get("ours_before") or []:
+            if name in (n.get("up") or []) or name in (n.get("removed") or []):
+                run(["ifup", name], timeout=90)
+    if n.get("ufw") is not None and which("ufw"):
+        run(["ufw", "reload"], timeout=60)  # the restored rule files
     d = n.get("dnsmasq")
     if d is not None:
         if not d["enabled"]:
@@ -1391,6 +1840,18 @@ def networks_verify(st: dict) -> list:
                 "detail": "Gone." if gone else "Still present.",
             }
         )
+    if n.get("ufw_check"):
+        added = run(["ufw", "show", "added"], timeout=30).stdout
+        for name in n["ufw_check"]:
+            missing = [r for r in ufw_wanted_rules(name) if r not in added]
+            checks.append(
+                {
+                    "id": "ufw:" + name,
+                    "label": "ufw allows DHCP and DNS on %s" % name,
+                    "ok": not missing,
+                    "detail": "Rules present." if not missing else "Missing: %s" % "; ".join(missing),
+                }
+            )
     d = n.get("dnsmasq")
     if d is not None and d["wanted"]:
 
@@ -1427,8 +1888,14 @@ def detect_and_plan(change: dict) -> dict:
         raise Refused(
             "unsupported", "%s is part of a bridge or bond; change the bridge or bond instead." % iface
         )
+    if iface in (read_manifest().get("vlans") or []):
+        raise Refused("unsupported", "%s is one of Lanvex's VLAN interfaces; change it as a network." % iface)
     if nm_running():
         profile = nm_active_profile(iface)
+        if profile is not None and profile["name"].startswith(LANVEX_PROFILE):
+            raise Refused(
+                "unsupported", "%s is one of Lanvex's VLAN interfaces; change it as a network." % iface
+            )
         if profile is not None:
             if profile["file"].startswith(NM_NETPLAN_PREFIX):
                 return netplan_plan(iface, change)  # NetworkManager renders what netplan defines
@@ -1586,6 +2053,8 @@ def cmd_version(_req: dict) -> dict:
             "ping": bool(which("ping")),
             "dnsmasq": dnsmasq_service(),
             "firewall_cmd": bool(which("firewall-cmd")),
+            "ifup": bool(which("ifup")),
+            "ufw": bool(which("ufw")),
         },
         "kinds": ["interface_ipv4", "networks"],
         "pending": pending_changes(),
@@ -1607,6 +2076,8 @@ def plan_for(req: dict) -> tuple:
 def validate_plan(kind: str, plan: dict) -> None:
     if kind == "networks":
         dnsmasq_validate(plan["_write"].get(DNSMASQ_FILE) or "")
+        if plan["backend"] == "netplan" and plan["_write"].get(NETPLAN_LANVEX):
+            netplan_validate({NETPLAN_LANVEX: plan["_write"][NETPLAN_LANVEX]})
     elif plan["backend"] == "netplan":
         netplan_validate(plan["_write"])
 
@@ -1668,7 +2139,7 @@ def cmd_apply(req: dict) -> dict:
         "networks": plan.get("_networks"),
     }
     event(state, "received")
-    state["files"] = backup(cid, [f["path"] for f in plan["files"]])
+    state["files"] = backup(cid, [f["path"] for f in plan["files"]] + list(plan.get("_backup") or []))
     save_state(cid, state)
 
     try:
@@ -1708,6 +2179,11 @@ def cmd_apply(req: dict) -> dict:
 
 
 def do_rollback(cid: str, state: dict, reason: str) -> None:
+    if state.get("kind") == "networks":
+        try:
+            networks_before_restore(state)
+        except Refused:
+            pass  # restore the files whatever happens
     restore_files(cid, state.get("files") or [])
     error = None
     try:

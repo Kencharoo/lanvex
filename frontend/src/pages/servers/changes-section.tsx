@@ -83,6 +83,7 @@ export function ChangesSection({
       actions={
         isAdmin &&
         r?.ready &&
+        r.interface_changes !== false &&
         !r.open_change && (
           <Button variant="primary" onClick={() => setDialog("change")} disabled={!facts}>
             <Settings2 /> Change IP settings
@@ -106,9 +107,10 @@ export function ChangesSection({
                   </>
                 )}
               </Requirement>
-              <Requirement ok={r.stack_supported} label="Network managed by netplan or NetworkManager">
+              <Requirement ok={r.stack_supported} label="Network managed by netplan, NetworkManager or ifupdown">
                 {r.stack_label ? `This server uses ${r.stack_label}.` : "Read the server first."}
                 {r.stack_supported === false && " Lanvex cannot change this kind of setup yet."}
+                {r.interface_changes === false && r.stack_supported && " Lanvex manages its VLAN networks; changing interface settings works on netplan and NetworkManager servers."}
               </Requirement>
               <Requirement ok={r.helper.state === "ok" ? true : r.helper.state === "unknown" ? null : false} label={`Change helper: ${HELPER_LABEL[r.helper.state]}`}>
                 <span className="grid gap-1.5">

@@ -1,0 +1,12 @@
+# /etc/network/interfaces (Lanvex lab target), as Debian's installer writes it.
+source /etc/network/interfaces.d/*
+
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    # Docker pre-assigns the same address; clear it so ifupdown owns the configuration.
+    pre-up ip addr flush dev eth0 || true
+    address 172.30.0.15/24
+    gateway 172.30.0.1

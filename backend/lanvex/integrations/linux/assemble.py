@@ -202,12 +202,14 @@ def assemble(results: Results) -> HostFacts:
         neighbors=neighbors,
         lldp=lldp,
         dhcp=_dhcp(results),
+        lanvex_vlans=P.parse_lanvex_manifest(_out(results, Cmd.LANVEX_NETWORKS)),
         warnings=warnings,
     )
 
 
 def _dhcp(results: Results) -> DhcpFacts | None:
-    """Lanvex's DHCP pools and dnsmasq's leases, where they were read (NetworkManager servers)."""
+    """Lanvex's DHCP pools and dnsmasq's leases, where they were read (not by Lanvex before 0.8 on
+    servers without NetworkManager)."""
     config, leases = results.get(Cmd.DHCP_CONFIG), results.get(Cmd.DHCP_LEASES)
     if config is None or not config.ok:
         return None

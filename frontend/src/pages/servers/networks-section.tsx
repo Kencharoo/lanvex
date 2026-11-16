@@ -99,7 +99,7 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
       )}
       {v?.linked && v.supported === false && (
         <Notice tone="warn" title="Not on this server yet">
-          Lanvex creates VLAN interfaces and serves DHCP on servers whose network NetworkManager manages (Fedora, RHEL, Ubuntu with NetworkManager). {s.name} uses {v.stack_label}.
+          Lanvex creates VLAN interfaces and serves DHCP on servers whose network NetworkManager, netplan or ifupdown manages (Fedora, RHEL, Ubuntu Server, Debian). {s.name} uses {v.stack_label}.
         </Notice>
       )}
       {v && v.missing_fields.length > 0 && (

@@ -622,6 +622,8 @@ export interface ChangeReadiness {
   stack_key: string | null;
   stack_label: string | null;
   stack_supported: boolean | null;
+  /** Interface settings can be changed here (netplan, NetworkManager); on ifupdown only networks. */
+  interface_changes: boolean | null;
   helper: { state: HelperState; version: number | null; expected_version: number; message: string | null; checked_at: string | null };
   helper_path: string;
   helper_sha256: string;
