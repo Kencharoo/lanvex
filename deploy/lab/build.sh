@@ -10,9 +10,17 @@ MIRROR=${LANVEX_LAB_MIRROR:-http://archive.ubuntu.com/ubuntu}
 if ! docker image inspect lanvex-target:base >/dev/null 2>&1; then
   if [ ! -x "$ROOT/sbin/init" ]; then
     mkdir -p "$(dirname "$ROOT")"
-    debootstrap --variant=minbase \
-      --include=systemd,systemd-sysv,dbus,openssh-server,iproute2,ca-certificates,sudo,less,iputils-ping \
-      noble "$ROOT" "$MIRROR"
+    # Mirrors drop a download now and then; one more try (on archive.ubuntu.com) before giving up.
+    for mirror in "$MIRROR" http://archive.ubuntu.com/ubuntu; do
+      rm -rf "$ROOT"
+      if debootstrap --variant=minbase \
+        --include=systemd,systemd-sysv,dbus,openssh-server,iproute2,ca-certificates,sudo,less,iputils-ping \
+        noble "$ROOT" "$mirror"; then
+        break
+      fi
+      echo "debootstrap from $mirror failed; trying the next mirror." >&2
+    done
+    [ -x "$ROOT/sbin/init" ] || { echo "Could not build the Ubuntu base system." >&2; exit 1; }
   fi
   tar -C "$ROOT" -c . | docker import - lanvex-target:base
 fi
