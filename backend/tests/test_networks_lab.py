@@ -33,6 +33,11 @@ pytestmark = [
 ]
 
 CLIENT = "lab-nm"  # Ubuntu with NetworkManager: a device on the new VLAN
+# lab-ifup plays the rest of the world for access rules: a host on the main LAN (172.30.0.13), a stand-in
+# for the Internet (198.51.100.10, a documentation address, routed to it by the server), and a device on
+# VLAN 60 (192.168.60.20).
+OTHER = "lab-ifup"
+INTERNET = "198.51.100.10"
 HELPER = "/usr/local/libexec/lanvex/lanvex-netapply"
 BACKENDS = {"lab-fedora": "networkmanager", "lab-netplan": "netplan", "lab-debian": "ifupdown"}
 VLAN_FILE = {
@@ -104,9 +109,16 @@ def reset(host: str) -> None:
         host,
         "systemctl stop 'lanvex-rollback-*.timer' 2>/dev/null; rm -rf /var/lib/lanvex/changes; "
         f"{RESET[host]}; rm -f /etc/lanvex/networks.json /etc/dnsmasq.d/lanvex.conf /etc/dnsmasq.d/nv-vlans.conf; "
-        "for l in vlan50 vlan60; do ip link del $l 2>/dev/null; done; true",
+        "for l in vlan50 vlan60; do ip link del $l 2>/dev/null; done; "
+        # Access rules: Lanvex's nftables table and its unit, firewalld policies, forwarding as built.
+        "nft delete table inet lanvex 2>/dev/null; systemctl disable lanvex-firewall 2>/dev/null; "
+        "rm -f /etc/lanvex/firewall.nft /etc/systemd/system/lanvex-firewall.service /etc/sysctl.d/60-lanvex.conf "
+        "/etc/firewalld/policies/lxf-*; systemctl daemon-reload; "
+        "if command -v firewall-cmd >/dev/null; then firewall-cmd --reload >/dev/null; fi; "
+        "ip route del 198.51.100.10/32 2>/dev/null; true",
     )
     sh(CLIENT, "nmcli connection delete client50 >/dev/null 2>&1; ip link del eth0.50 2>/dev/null; true")
+    sh(OTHER, "ip addr del 198.51.100.10/32 dev eth0 2>/dev/null; ip link del eth0.60 2>/dev/null; true")
 
 
 def call(
@@ -170,6 +182,13 @@ def client_gets(address: str) -> None:
     assert f"{address}/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
 
 
+OWN_TABLE = [
+    "systemctl daemon-reload",
+    "nft -f /etc/lanvex/firewall.nft",
+    "systemctl enable lanvex-firewall.service",
+]
+
+
 def test_a_new_vlan_with_dhcp_serves_a_real_client(host: str) -> None:
     backend = BACKENDS[host]
     mac = client_mac()
@@ -184,6 +203,7 @@ def test_a_new_vlan_with_dhcp_serves_a_real_client(host: str) -> None:
     if backend == "networkmanager":
         assert by_path["/etc/firewalld/zones/lx-vlan50.xml"]["action"] == "create"
         assert plan["commands"] == [
+            "firewall-cmd --check-config",
             "firewall-cmd --reload",
             "nmcli connection reload",
             "nmcli connection up id lanvex-vlan50",
@@ -193,18 +213,24 @@ def test_a_new_vlan_with_dhcp_serves_a_real_client(host: str) -> None:
     elif backend == "netplan":
         # systemd-resolved holds port 53: dnsmasq binds only the interfaces it serves.
         assert "\nbind-dynamic\n" in dnsmasq and "\ninterface=vlan50\n" in dnsmasq
-        assert plan["commands"] == ["netplan generate", "netplan apply", "systemctl restart dnsmasq"]
+        assert plan["commands"] == [
+            "netplan generate",
+            "netplan apply",
+            *OWN_TABLE,
+            "systemctl restart dnsmasq",
+        ]
     else:
         # dnsmasq answers on every interface already: Lanvex adds its pool without restricting that.
         assert "interface=" not in dnsmasq and "bind-dynamic" not in dnsmasq
         assert any("every interface" in w for w in plan["warnings"])
-        assert plan["commands"] == ["ifup vlan50", "systemctl restart dnsmasq"]
+        assert plan["commands"] == ["ifup vlan50", *OWN_TABLE, "systemctl restart dnsmasq"]
     assert "vlan50" not in links(host)  # planning changes nothing
 
     cid, _ = apply(host, request)
     result = call(host, "verify", {"id": cid})
     assert result["passed"], result["checks"]
-    expected = {"vlan:vlan50", "dhcp"} | ({"zone:vlan50"} if backend == "networkmanager" else set())
+    # Without firewalld, Lanvex's own nftables table limits what devices on its networks reach.
+    expected = {"vlan:vlan50", "dhcp"} | ({"zone:vlan50"} if backend == "networkmanager" else {"nftables"})
     assert {c["id"] for c in result["checks"]} == expected
     if backend == "networkmanager":
         assert sh(host, "firewall-cmd --zone=lx-vlan50 --list-services").split() == ["dhcp", "dns"]
@@ -315,3 +341,98 @@ def test_ufw_lets_dhcp_through_and_takes_lanvexs_rules_back(host: str) -> None:
     assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
     assert sh(host, "ufw show added").count("comment 'lanvex:vlan50'") == 3
     assert "67/udp on vlan50" in sh(host, "ufw status")
+
+
+def reaches(host: str, address: str, port: int = 22) -> bool:
+    """A TCP connection from `host` to address:port (every lab host has SSH listening)."""
+    r = subprocess.run(
+        ["docker", "exec", host, "timeout", "4", "bash", "-c", f"</dev/tcp/{address}/{port}"],
+        capture_output=True,
+        text=True,
+    )
+    return r.returncode == 0
+
+
+VLAN60 = {"name": "vlan60", "parent": "eth0", "id": 60, "addresses": ["192.168.60.1/24"]}
+
+
+def access_request(rules: list[dict[str, Any]], mac: str) -> dict[str, Any]:
+    vlan50 = networks(None)["vlans"][0]
+    return {
+        "kind": "networks",
+        "vlans": [vlan50, VLAN60],
+        "dhcp": {"pools": [pool(reservations=[{"mac": mac, "ip": "192.168.50.20"}])]},
+        "access": {"rules": rules},
+    }
+
+
+@pytest.mark.parametrize("ufw", [False, True], ids=["own-firewall", "ufw"])
+def test_access_rules_let_devices_reach_exactly_what_is_allowed(host: str, ufw: bool) -> None:
+    if ufw and host != "lab-netplan":
+        pytest.skip("ufw is tested on Ubuntu (lab-netplan)")
+    if ufw:
+        sh(host, "ufw --force enable >/dev/null")  # denies everything coming in; docker exec still works
+    mac = client_mac()
+
+    # First: the Internet only. Private networks, the server's SSH and VLAN 60 stay closed.
+    first = access_request([{"interface": "vlan50", "internet": True}], mac)
+    plan = call(host, "plan", first)
+    cid, _ = apply(host, first)
+    result = call(host, "verify", {"id": cid})
+    assert result["passed"], result["checks"]
+    ids = {c["id"] for c in result["checks"]}
+    assert "forwarding" in ids
+    firewall = "policies" if BACKENDS[host] == "networkmanager" else ("ufw:vlan50" if ufw else "nftables")
+    assert firewall in ids, (ids, plan["commands"])
+    call(host, "confirm", {"id": cid})
+
+    # The world beyond the server: the Internet stand-in behind the uplink (routed there only now, since
+    # netplan apply drops routes systemd-networkd did not configure), a LAN host, a device on VLAN 60.
+    sh(OTHER, f"ip addr add {INTERNET}/32 dev eth0")
+    sh(host, f"ip route add {INTERNET}/32 via 172.30.0.13")
+    client_gets("192.168.50.20")
+    for net in (f"{INTERNET}/32", "172.30.0.13/32", "192.168.60.0/24"):
+        sh(CLIENT, f"ip route add {net} via 192.168.50.1 dev eth0.50")  # through the server, not eth0
+    sh(
+        OTHER,
+        "ip link add link eth0 name eth0.60 type vlan id 60 && ip addr add 192.168.60.20/24 dev eth0.60 "
+        "&& ip link set eth0.60 up && ip route add 192.168.50.0/24 via 192.168.60.1",
+    )
+    assert reaches(CLIENT, INTERNET)  # the Internet, masqueraded
+    assert not reaches(CLIENT, "172.30.0.13")  # a private network
+    assert not reaches(CLIENT, "192.168.50.1")  # SSH on the server
+    assert not reaches(CLIENT, "192.168.60.20")  # another Lanvex network
+    assert not reaches(OTHER, "192.168.50.20")  # and from VLAN 60 to VLAN 50
+
+    # Then: the LAN host on port 22, all of VLAN 60, SSH on the server.
+    second = access_request(
+        [
+            {
+                "interface": "vlan50",
+                "internet": True,
+                "destinations": [
+                    {"network": "172.30.0.13", "ports": ["22/tcp"]},
+                    {"network": "192.168.60.0/24"},
+                ],
+                "services": ["22/tcp"],
+            }
+        ],
+        mac,
+    )
+    cid, _ = apply(host, second)
+    assert call(host, "verify", {"id": cid})["passed"]
+    assert (
+        reaches(CLIENT, "172.30.0.13")
+        and reaches(CLIENT, "192.168.50.1")
+        and reaches(CLIENT, "192.168.60.20")
+    )
+    assert not reaches(OTHER, "192.168.50.20")  # VLAN 60's own rules did not change
+    assert reaches(CLIENT, INTERNET)
+
+    # Rolled back: as after the first change.
+    assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
+    assert not reaches(CLIENT, "172.30.0.13") and not reaches(CLIENT, "192.168.50.1")
+    assert not reaches(CLIENT, "192.168.60.20")
+    assert reaches(CLIENT, INTERNET)
+    applied = json.loads(sh(host, "cat /etc/lanvex/networks.json"))["access"]
+    assert applied == [{"interface": "vlan50", "internet": True, "destinations": [], "services": []}]

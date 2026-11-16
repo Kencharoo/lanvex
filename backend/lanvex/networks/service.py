@@ -14,8 +14,19 @@ import fnmatch
 import ipaddress
 from typing import Any
 
-from lanvex.changes.schemas import DhcpPool, DhcpSpec, NetworksRequest, Reservation, VlanSpec
-from lanvex.changes.service import NETWORK_STACKS
+from pydantic import ValidationError
+
+from lanvex.changes.schemas import (
+    AccessRule,
+    AccessSettings,
+    AccessSpec,
+    DhcpPool,
+    DhcpSpec,
+    NetworksRequest,
+    Reservation,
+    VlanSpec,
+)
+from lanvex.changes.service import NETWORK_STACKS, check_ssh_kept
 from lanvex.core.errors import Conflict, LanvexError, NotFound, ValidationFailed
 from lanvex.integrations.linux.facts import HostFacts
 from lanvex.ipam.prefixes import GATEWAY_TAG_SLUG
@@ -37,6 +48,7 @@ from lanvex.servers.service import ServerService
 DHCP_TAG_SLUG = "lanvex-dhcp"
 MAC_FIELD = "mac_address"
 LEASE_FIELD = "dhcp_lease_time"
+ACCESS_FIELD = "lanvex_access"
 DEFAULT_LEASE = "12h"
 INTERFACES, IPS, RANGES, PREFIXES, VLANS = (
     "dcim/interfaces/",
@@ -61,6 +73,26 @@ def _vid(iface: dict[str, Any]) -> tuple[int | None, str | None]:
 def _is_vlan_interface(iface: dict[str, Any]) -> bool:
     kind = (iface.get("type") or {}).get("value")
     return kind == "virtual" and bool(iface.get("parent")) and _vid(iface)[0] is not None
+
+
+def _access(raw: dict[str, Any]) -> AccessSettings:
+    """Access rules as the helper applied them (it validated them)."""
+    try:
+        return AccessSettings.model_validate({k: v for k, v in raw.items() if k != "interface"})
+    except ValidationError:
+        return AccessSettings()
+
+
+def _documented_access(iface: dict[str, Any]) -> tuple[AccessSettings | None, str | None]:
+    """The network's access rules from the interface's custom field: (rules, problem)."""
+    raw = (iface.get("custom_fields") or {}).get(ACCESS_FIELD)
+    if raw in (None, "", {}):
+        return AccessSettings(), None
+    try:
+        return AccessSettings.model_validate(raw), None
+    except ValidationError as e:
+        first = e.errors()[0]
+        return None, f"The access rules documented for {iface['name']} cannot be used: {first['msg']}"
 
 
 class NetworksService:
@@ -117,6 +149,9 @@ class NetworksService:
             missing_fields.append(f"{MAC_FIELD} (on IP addresses)")
         if ranges and LEASE_FIELD not in (ranges[0].get("custom_fields") or {}):
             missing_fields.append(f"{LEASE_FIELD} (on IP ranges)")
+        if documented and ACCESS_FIELD not in (documented[0].get("custom_fields") or {}):
+            missing_fields.append(f"{ACCESS_FIELD} (on interfaces)")
+        applied = {r["interface"]: _access(r) for r in (facts.lanvex_access if facts is not None else [])}
 
         ours = {}
         present = {}
@@ -130,6 +165,7 @@ class NetworksService:
         networks: list[ServerNetwork] = []
         vlans: list[VlanSpec] = []
         pools: list[DhcpPool] = []
+        rules: list[AccessRule] = []
         claimed: set[str] = set()
 
         def keep_as_is(name: str) -> None:
@@ -142,6 +178,9 @@ class NetworksService:
             if not current or p.parent is None or p.vlan_id is None:
                 return
             vlans.append(VlanSpec(name=name, parent=p.parent, id=p.vlan_id, addresses=current))
+            keep = applied.get(name)
+            if keep is not None and not keep.is_default:
+                rules.append(AccessRule(interface=name, **keep.model_dump()))
             if name in served:
                 sp = served[name]
                 pools.append(
@@ -176,10 +215,15 @@ class NetworksService:
                 )
             status, note = self._status(s, name, i, vid, addresses, facts, ours, on_server)
             spec_pool = None
+            access, problem = _documented_access(i)
             if status in ("protected", "incomplete"):
                 keep_as_is(name)
             if status in ("in_sync", "missing", "differs"):
                 vlans.append(VlanSpec(name=name, parent=i["parent"]["name"], id=vid, addresses=addresses))  # type: ignore[arg-type]
+                # Unreadable documentation: the rules stay as the server has them until it is fixed.
+                wanted = access if access is not None else applied.get(name)
+                if wanted is not None and not wanted.is_default:
+                    rules.append(AccessRule(interface=name, **wanted.model_dump()))
                 if pool is not None:
                     own = _host(addresses[0])
                     spec_pool = DhcpPool(
@@ -214,6 +258,18 @@ class NetworksService:
                         else None
                     ),
                     leases=[self._lease(lz, fixed_macs) for lz in here],
+                    access=access,
+                    access_on_server=(applied.get(name) or AccessSettings()) if name in ours else None,
+                    access_status=(
+                        "invalid"
+                        if problem
+                        else (
+                            ("in_sync" if (applied.get(name) or AccessSettings()) == access else "differs")
+                            if status in ("in_sync", "differs")
+                            else None
+                        )
+                    ),
+                    access_problem=problem,
                 )
             )
         documented_names = {i["name"] for i in documented}
@@ -251,8 +307,10 @@ class NetworksService:
                 )
             )
         supported = facts.stack.key in NETWORK_STACKS if facts else None
-        in_sync = all(n.status not in ("missing", "differs", "removed") for n in networks) and all(
-            n.dhcp in (None, "in_sync", "none") for n in networks
+        in_sync = (
+            all(n.status not in ("missing", "differs", "removed") for n in networks)
+            and all(n.dhcp in (None, "in_sync", "none") for n in networks)
+            and all(n.access_status in (None, "in_sync", "invalid") for n in networks)
         )
         # Lanvex's dnsmasq file serving an interface no longer in the plan also needs a change.
         if (
@@ -265,7 +323,9 @@ class NetworksService:
             in_sync = False
         change = None
         if facts is not None and supported and not in_sync:
-            change = NetworksRequest(kind="networks", vlans=vlans, dhcp=DhcpSpec(pools=pools))
+            change = NetworksRequest(
+                kind="networks", vlans=vlans, dhcp=DhcpSpec(pools=pools), access=AccessSpec(rules=rules)
+            )
         return NetworksView(
             linked=True,
             supported=supported,
@@ -524,6 +584,32 @@ class NetworksService:
         if n is None:
             raise NotFound(f"Lanvex Core documents no network {name} on {s.name}.")
         return n
+
+    async def set_access(self, s: Server, name: str, body: AccessSettings) -> None:
+        """What devices on the network may reach, in the interface's custom field (null: the default)."""
+        self._device(s)
+        assert self.nb is not None
+        view = await self.view(s)
+        if any(f.startswith(ACCESS_FIELD) for f in view.missing_fields):
+            raise ValidationFailed(
+                f"{self.nb.name} has no custom field {ACCESS_FIELD} on interfaces yet. Lanvex Core 0.9 creates it; "
+                "with your own NetBox, see docs/networks.md."
+            )
+        n = await self._network(s, name)
+        if not n.network:
+            raise ValidationFailed(f"Document an IPv4 address on {name} first.")
+        own = ipaddress.ip_network(n.network)
+        for d in body.destinations:
+            if ipaddress.ip_network(d.network).overlaps(own):
+                raise ValidationFailed(
+                    f"{d.network} is {name}'s own network.",
+                    fields={"destinations": [f"{d.network} is this network."]},
+                )
+        await check_ssh_kept(s, {name: body}, {name: n.addresses})
+        await self.nb.patch(
+            f"{INTERFACES}{n.netbox_interface_id}/",
+            {"custom_fields": {ACCESS_FIELD: None if body.is_default else body.model_dump(mode="json")}},
+        )
 
     async def set_pool(self, s: Server, name: str, start: str | None, end: str | None, lease: str) -> None:
         """Create, change or remove a network's DHCP pool (None for both removes it)."""

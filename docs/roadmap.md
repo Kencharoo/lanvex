@@ -17,8 +17,8 @@ not the target: nothing in Lanvex is specific to it.
 |---|---|
 | **The documentation drives the configuration.** A network is defined in Lanvex Core (VLAN, prefix, the server's interface and address, DHCP pool, fixed addresses); Lanvex compares that with the server and prepares the change that makes the server match | Lanvex's rule from the start: Lanvex Core says what should be, the server says what is, and a change is what is pending. Nothing is configured that is not documented |
 | **Changes to the server Lanvex runs on are confirmed by the administrator's browser.** The server keeps a change only if the browser still reaches Lanvex over that server's own network before the deadline; otherwise its timer restores the previous configuration | Lanvex in a container on the same machine reaches it only through loopback, which proves nothing. This is how Netzverwaltung confirms its changes too |
-| **VLANs and DHCP first**, then access rules, then DNS filtering | The first two are needed for any new network; access rules build on the zones they create |
-| **Every common server stack, one after another, each tested on a real host in CI.** NetworkManager with firewalld (Fedora, RHEL; 0.7), then netplan (Ubuntu Server) and ifupdown (Debian) with ufw or no firewall (0.8), then Kea next to dnsmasq | The model is the same everywhere; only the files written and the commands run differ. A stack counts as supported once a real DHCP client gets its address through a new VLAN on it in the lab |
+| **VLANs and DHCP first**, then access rules, then DNS filtering and taking over a running setup: 1.0 is the version that replaces Netzverwaltung | The first two are needed for any new network; access rules build on the zones they create. Kea waits until after 1.0: Netzverwaltung uses dnsmasq, so Kea does not stand between Lanvex and replacing it |
+| **Every common server stack, one after another, each tested on a real host in CI.** NetworkManager with firewalld (Fedora, RHEL; 0.7), then netplan (Ubuntu Server) and ifupdown (Debian) with ufw or no firewall (0.8); access rules on firewalld, ufw and nftables alike (0.9); Kea next to dnsmasq after 1.0 | The model is the same everywhere; only the files written and the commands run differ. A stack counts as supported once a real DHCP client gets its address through a new VLAN on it in the lab |
 | **Lanvex writes its own files and never edits another tool's.** `/etc/dnsmasq.d/lanvex.conf`, NetworkManager profiles named `lanvex-…`, `/etc/netplan/60-lanvex.yaml`, `/etc/network/interfaces.d/lanvex`, firewalld zones `lx-…`, ufw rules marked `lanvex:` | The same rule Netzverwaltung follows with `nv-`. A conflict (another file serving the same interface) is shown and refused, never overwritten |
 
 ## What a server router needs (Netzverwaltung's features as the checklist)
@@ -29,7 +29,7 @@ not the target: nothing in Lanvex is specific to it.
 | DHCP per VLAN: pool, lease time, router and DNS options, reservations | Pool = an IP range tagged `lanvex-dhcp`; reservation = an IP address with a MAC address; router and DNS = the server's address in that network | 0.7 |
 | Devices: active leases, one click to a fixed address | Leases read from the server, shown per network and in Discovery; one click records a fixed address in Lanvex Core | 0.7 |
 | Zone per VLAN: which services on the server it may use | A firewalld zone per network; in 0.7 only what DHCP and DNS need, the rest in 0.9 | 0.7 / 0.9 |
-| Access matrix: Internet, main LAN, switch interface, VLAN to VLAN | Access rules between networks, the Internet and named destinations, as firewalld policies (later nftables) | 0.9 |
+| Access matrix: Internet, main LAN, switch interface, VLAN to VLAN | Access rules per network: the Internet, other networks, destinations with ports, services on the server; as firewalld policies, ufw rules or Lanvex's own nftables table | 0.9 |
 | DNS filter per VLAN | Block lists per network | 1.0 |
 | "Take over existing setup" | Import a server's existing VLANs, DHCP and firewall setup into Lanvex Core, including Netzverwaltung's `netz.yaml` | 1.0 |
 | Diff, 120 s confirmation, rollback unit, backups | Lanvex's change pipeline; one change can now touch several files and services | 0.7 |
@@ -68,22 +68,50 @@ ran once the last pool is removed; ufw rules for DHCP and DNS, marked `lanvex:<i
 0.7 test (a real DHCP client on a new VLAN, removal, rollback, the server's own timer, another tool's
 configuration refused) runs on Fedora 44, Ubuntu 24.04 and Debian 12, and through an active ufw.
 
-**Next in this line: Kea** as an alternative DHCP server, for servers that already run it.
-
 ### 0.9: Access rules
 
-- Per network: the Internet, other networks, named destinations (a switch's web interface), and the
-  services on the server itself. Shown as a matrix like Netzverwaltung's.
-- firewalld policies first, then nftables (Debian/Ubuntu) and ufw.
-- Lanvex's own connection and the administrator's network can never be locked out: a rule that would
-  do so is refused before it is prepared.
+What devices on each Lanvex network may reach, documented in Lanvex Core with the network and brought
+to the server in the same approved change as its VLAN and DHCP:
 
-### 1.0: DNS filtering and taking over existing setups
+- **The Internet**: forwarded and masqueraded out of the server's uplink; private networks stay closed
+  unless allowed below.
+- **Other networks and destinations**: another Lanvex network, a documented prefix (the main LAN), or
+  one address with ports (a switch's web interface). Traffic leaving towards a network the server does
+  not route for is masqueraded, so answers come back through the server.
+- **Services on the server** beyond DHCP and DNS (SSH, a web interface, any port).
+- Shown as a matrix like Netzverwaltung's, one row per network, editable on the server page.
 
-- Block lists per network.
-- Import of an existing setup into Lanvex Core: VLAN interfaces, DHCP configuration and firewall rules
-  a server already has, written by hand or by another tool (Netzverwaltung's `netz.yaml` and `nv-` files
-  among them), so Lanvex can take over a running router without rebuilding it.
+Stored as a custom field on the network's interface in Lanvex Core (`lanvex_access`), so the
+documentation still says everything. On the server, by whatever firewall runs there:
+
+| Firewall | Lanvex writes |
+|---|---|
+| firewalld (Fedora, RHEL, also elsewhere) | The network's zone lists the services; policies `lx…` from its zone to each zone it may reach, with masquerade towards the uplink |
+| ufw (Ubuntu) | Rules marked `lanvex:<interface>`, also `ufw route` rules for forwarding; masquerading in Lanvex's own nftables table, since ufw has no command for it |
+| None, or hand-written nftables (Debian) | Lanvex's own table `inet lanvex`: input and forwarding for its networks only, and masquerading; loaded at boot by its own unit. A hand-written ruleset that drops forwarded traffic is pointed out |
+
+IP forwarding is switched on in Lanvex's own sysctl file. A network that carries Lanvex's connection
+keeps SSH to the server. **Done when** the lab shows, on Fedora, Ubuntu and Debian, a real client on a
+Lanvex network reaching exactly what its rules allow (a stand-in for the Internet, a host on the main
+LAN on one port, another Lanvex network, a service on the server) and nothing else, with rollback.
+
+### 1.0: Replacing Netzverwaltung
+
+- **DNS filter** per network: block lists, your own blocked domains, exceptions. As in Netzverwaltung,
+  a second dnsmasq that only filtered networks use as their DNS server, and that hands everything it
+  does not block to the main one, so local names keep working.
+- **Taking over a running setup**: import a server's existing VLANs, DHCP, fixed addresses and access
+  rules into Lanvex Core (Netzverwaltung's `netz.yaml` first), then let Lanvex adopt the running
+  configuration without rebuilding it and without an outage. Files other tools keep by hand stay as
+  they are.
+- **On KlassenServer**: a Lanvex network next to Netzverwaltung first, then the takeover.
+
+**Done when** KlassenServer runs on Lanvex instead of Netzverwaltung, with every VLAN, pool, fixed
+address, access rule and DNS filter it had.
+
+### After 1.0
+
+- **Kea** as an alternative DHCP server, for servers that already run it.
 
 ## Alongside
 

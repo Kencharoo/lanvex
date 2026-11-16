@@ -1,7 +1,7 @@
 """Normalised facts about a Linux host, as read over SSH. This is *actual* state, never documented state."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -172,6 +172,8 @@ class HostFacts(BaseModel):
     # VLAN interfaces Lanvex's helper lists as its own (/etc/lanvex/networks.json); NetworkManager
     # profiles named lanvex-* count too, see lanvex_owned().
     lanvex_vlans: list[str] = Field(default_factory=list)
+    # The access rules Lanvex last applied, per VLAN interface (from the same file).
+    lanvex_access: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
     def lanvex_owned(self, iface: "Interface") -> bool:

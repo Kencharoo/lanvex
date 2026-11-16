@@ -67,6 +67,7 @@ class CoreStandIn:
                 {"id": vlan["id"], "vid": vlan["vid"], "name": vlan["name"]} if vlan else None
             )
             out["tagged_vlans"] = []
+            out["custom_fields"] = {"lanvex_access": o.get("custom_fields", {}).get("lanvex_access")}
         if kind == "ipam/ip-addresses":
             iface = self.t("dcim/interfaces").get(o.get("assigned_object_id") or 0)
             out["assigned_object"] = {"id": iface["id"], "name": iface["name"]} if iface else None
@@ -357,7 +358,7 @@ async def test_the_server_in_line_with_its_leases(
     view = r.json()
     (n,) = view["networks"]
     assert n["status"] == "removed" and n["dhcp"] == "removed"
-    assert view["change"] == {"kind": "networks", "vlans": [], "dhcp": {"pools": []}}
+    assert view["change"] == {"kind": "networks", "vlans": [], "dhcp": {"pools": []}, "access": {"rules": []}}
     assert not core.t("dcim/interfaces").get(n.get("netbox_interface_id") or 0)
     assert not core.t("ipam/ip-ranges")
     prepared = (await admin.post(f"/api/v1/servers/{sid}/networks/change")).json()
@@ -387,3 +388,72 @@ async def test_what_lanvex_refuses_to_document(
     assert view["linked"] is False and view["change"] is None
     r = await admin.post(f"/api/v1/servers/{sid}/networks", json=NEW)
     assert r.status_code == 422 and "Link router-01 to its device" in r.text
+
+
+async def test_access_rules_are_documented_compared_and_brought_to_the_server(
+    admin: httpx.AsyncClient, core: CoreStandIn, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await router_01(admin, fake)
+    await admin.post(f"/api/v1/servers/{sid}/networks", json=NEW)
+    rule = {
+        "internet": True,
+        "destinations": [
+            {"network": "192.168.178.3", "ports": ["443/tcp", "80/tcp"]},
+            {"network": "10.60.0.9/16"},
+        ],
+        "services": ["22/tcp"],
+    }
+    r = await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/access", json=rule)
+    assert r.status_code == 200, r.text
+    (n,) = r.json()["networks"]
+    stored = {
+        "internet": True,
+        "destinations": [
+            {"network": "10.60.0.0/16", "ports": []},
+            {"network": "192.168.178.3/32", "ports": ["80/tcp", "443/tcp"]},
+        ],
+        "services": ["22/tcp"],
+    }
+    assert n["access"] == stored and n["access_status"] is None  # comes with the new network
+    iface = next(i for i in core.t("dcim/interfaces").values() if i["name"] == "vlan50")
+    assert iface["custom_fields"]["lanvex_access"] == stored  # documented in Lanvex Core
+    change = r.json()["change"]
+    assert change["access"] == {"rules": [{"interface": "vlan50"} | stored]}
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/change")
+    assert r.status_code == 201, r.text
+    assert (
+        "access vlan50: Internet, 10.60.0.0/16, 192.168.178.3/32 (80/tcp, 443/tcp), server 22/tcp"
+        in r.json()["summary"]
+    )
+    await admin.post(f"/api/v1/changes/{r.json()['id']}/cancel")
+
+    # The server has the network, with other rules applied: they differ; with these, in line.
+    facts = with_lanvex_vlan(assemble(load("nm")), "192.168.50.1")
+    fake.facts = facts.model_copy(update={"lanvex_access": [{"interface": "vlan50", "internet": True}]})
+    await admin.post(f"/api/v1/servers/{sid}/collect")
+    (n,) = (await admin.get(f"/api/v1/servers/{sid}/networks")).json()["networks"]
+    assert n["access_status"] == "differs" and n["access_on_server"]["internet"] is True
+    fake.facts = facts.model_copy(update={"lanvex_access": [{"interface": "vlan50"} | stored]})
+    await admin.post(f"/api/v1/servers/{sid}/collect")
+    (n,) = (await admin.get(f"/api/v1/servers/{sid}/networks")).json()["networks"]
+    assert n["access_status"] == "in_sync"
+
+    # Back to the default: the custom field is emptied.
+    r = await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/access", json={})
+    assert r.status_code == 200 and iface["custom_fields"]["lanvex_access"] is None
+    assert r.json()["networks"][0]["access_status"] == "differs"
+
+    # Rules Lanvex cannot use (edited by hand in Lanvex Core) are pointed out; the server keeps its rules.
+    iface["custom_fields"]["lanvex_access"] = {"internet": "maybe"}
+    view = (await admin.get(f"/api/v1/servers/{sid}/networks")).json()
+    (n,) = view["networks"]
+    assert n["access_status"] == "invalid" and "cannot be used" in n["access_problem"]
+    assert view["change"] is None or view["change"]["access"]["rules"][0]["internet"] is True
+
+    for bad, message in (
+        ({"destinations": [{"network": "192.168.50.7"}]}, "own network"),
+        ({"services": ["ssh"]}, "not a port"),
+        ({"destinations": [{"network": "0.0.0.0/0"}]}, "Internet"),
+    ):
+        r = await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/access", json=bad)
+        assert r.status_code == 422 and message in r.text, r.text

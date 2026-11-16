@@ -11,7 +11,7 @@ import { Badge, Notice, Skeleton, type Tone } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
 import { useNetBoxLabel } from "@/lib/system";
-import type { ChangeDetail, DhcpStatus, HostFacts, NetworkLease, NetworksView, NetworkStatus, Server, ServerNetwork } from "@/lib/types";
+import type { AccessSettings, ChangeDetail, DhcpStatus, HostFacts, NetworkLease, NetworksView, NetworkStatus, Server, ServerNetwork } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
 
 const STATUS: Record<NetworkStatus, { tone: Tone; label: string }> = {
@@ -45,6 +45,7 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
   const [pool, setPool] = React.useState<ServerNetwork | null>(null);
   const [fixed, setFixed] = React.useState<{ network: ServerNetwork; ip?: string; mac?: string; name?: string } | null>(null);
   const [open, setOpen] = React.useState<string | null>(null);
+  const [access, setAccess] = React.useState<ServerNetwork | null>(null);
   const update = (v: NetworksView) => qc.setQueryData(key, v);
   const prepare = useMutation({
     mutationFn: () => api<ChangeDetail>(`/servers/${s.id}/networks/change`, { method: "POST" }),
@@ -71,7 +72,9 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
   });
 
   const v = q.data;
-  const pending = v ? v.networks.filter((n) => ["missing", "differs", "removed"].includes(n.status) || ["missing", "differs", "removed"].includes(n.dhcp ?? "")).length : 0;
+  const pending = v
+    ? v.networks.filter((n) => ["missing", "differs", "removed"].includes(n.status) || ["missing", "differs", "removed"].includes(n.dhcp ?? "") || n.access_status === "differs").length
+    : 0;
   return (
     <Section
       title="Networks"
@@ -104,7 +107,7 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
       )}
       {v && v.missing_fields.length > 0 && (
         <Notice tone="warn" title={`${nbName} lacks fields Lanvex needs for DHCP`}>
-          Missing custom fields: {v.missing_fields.join(", ")}. Lanvex Core 0.7 has them; in your own NetBox, add them as text fields.
+          Missing custom fields: {v.missing_fields.join(", ")}. Lanvex Core 0.9 has them; in your own NetBox, add them as described in docs/networks.md.
         </Notice>
       )}
       {v?.linked && (
@@ -147,15 +150,18 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
               </table>
             </div>
           )}
+          {v.networks.some((n) => n.access !== null || n.access_problem) && (
+            <AccessMatrix networks={v.networks} isAdmin={isAdmin} onEdit={setAccess} />
+          )}
           <p className="text-xs text-muted">
             {v.read_at ? `Compared with the server's read ${relativeTime(v.read_at)}. ` : "Read the server to compare. "}
-            {v.in_sync ? `${s.name} has the networks ${nbName} documents.` : `${pending} network${pending === 1 ? "" : "s"} to bring in line: prepare the change.`}{" "}
-            Devices on these networks reach this server's DHCP and DNS; reaching other networks and the Internet comes with access rules (Lanvex 0.9).
+            {v.in_sync ? `${s.name} has the networks ${nbName} documents.` : `${pending} network${pending === 1 ? "" : "s"} to bring in line: prepare the change.`}
           </p>
         </>
       )}
       <AddNetworkDialog server={s} facts={facts} open={adding} onClose={() => setAdding(false)} onSaved={update} />
       <PoolDialog server={s} network={pool} onClose={() => setPool(null)} onSaved={update} />
+      <AccessDialog server={s} network={access} networks={v?.networks ?? []} onClose={() => setAccess(null)} onSaved={update} />
       <FixedDialog server={s} seed={fixed} onClose={() => setFixed(null)} onSaved={update} />
     </Section>
   );
@@ -600,6 +606,238 @@ function FixedDialog({
               <Input id="fx-name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
             </Field>
             {save.error && !fieldError(save.error, "ip", "mac", "name") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={save.isPending}>
+              Save
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const SERVICES: { port: string; label: string }[] = [
+  { port: "22/tcp", label: "SSH" },
+  { port: "80/tcp", label: "Web (HTTP)" },
+  { port: "443/tcp", label: "Web (HTTPS)" },
+  { port: "123/udp", label: "Time (NTP)" },
+];
+const serviceLabel = (p: string) => SERVICES.find((x) => x.port === p)?.label ?? p;
+
+/** One row per network: what its devices may reach, like Netzverwaltung's matrix. */
+function AccessMatrix({ networks, isAdmin, onEdit }: { networks: ServerNetwork[]; isAdmin: boolean; onEdit: (n: ServerNetwork) => void }) {
+  const rows = networks.filter((n) => n.netbox_interface_id !== null && n.network);
+  const yes = <span className="font-medium text-[var(--color-ok)]">Yes</span>;
+  const no = <span className="text-faint">No</span>;
+  return (
+    <div className="grid gap-2">
+      <h3 className="text-[13px] font-semibold">What devices on each network may reach</h3>
+      <div className="overflow-x-auto rounded-[var(--radius-panel)] border border-line bg-surface">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b border-line text-left text-xs text-muted">
+              <th className="px-3 py-2 font-medium">From</th>
+              <th className="px-3 py-2 font-medium">Internet</th>
+              {rows.map((t) => (
+                <th key={t.name} className="px-3 py-2 font-medium">
+                  {t.name}
+                </th>
+              ))}
+              <th className="px-3 py-2 font-medium">Elsewhere</th>
+              <th className="px-3 py-2 font-medium">On the server</th>
+              <th className="px-3 py-2 font-medium">State</th>
+              {isAdmin && <th className="px-3 py-2" />}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((n) => {
+              const a = n.access;
+              const others = new Set(rows.map((t) => t.network));
+              return (
+                <tr key={n.name} className="border-b border-line last:border-0 align-top">
+                  <td className="px-3 py-2 font-medium">{n.name}</td>
+                  <td className="px-3 py-2">{a ? (a.internet ? yes : no) : "?"}</td>
+                  {rows.map((t) => {
+                    if (t.name === n.name) return <td key={t.name} className="px-3 py-2 text-faint">–</td>;
+                    const d = a?.destinations.find((x) => x.network === t.network);
+                    return (
+                      <td key={t.name} className="px-3 py-2">
+                        {!a ? "?" : d ? d.ports.length ? <span className="addr">{d.ports.join(", ")}</span> : yes : no}
+                      </td>
+                    );
+                  })}
+                  <td className="px-3 py-2">
+                    {a && a.destinations.filter((d) => !others.has(d.network)).length > 0 ? (
+                      <ul className="grid gap-0.5">
+                        {a.destinations
+                          .filter((d) => !others.has(d.network))
+                          .map((d) => (
+                            <li key={d.network} className="addr">
+                              {d.network.replace(/\/32$/, "")}
+                              {d.ports.length > 0 && <span className="text-muted"> {d.ports.join(", ")}</span>}
+                            </li>
+                          ))}
+                      </ul>
+                    ) : (
+                      <span className="text-faint">{a ? "Nothing" : "?"}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {a ? ["DHCP", "DNS", ...a.services.map(serviceLabel)].join(", ") : "?"}
+                  </td>
+                  <td className="px-3 py-2">
+                    {n.access_status === "invalid" ? (
+                      <Badge tone="danger" title={n.access_problem ?? undefined}>
+                        Cannot be used
+                      </Badge>
+                    ) : n.access_status === "differs" ? (
+                      <Badge tone="warn">Differs on the server</Badge>
+                    ) : n.access_status === "in_sync" ? (
+                      <Badge tone="ok">On the server</Badge>
+                    ) : (
+                      <span className="text-faint">With the network</span>
+                    )}
+                  </td>
+                  {isAdmin && (
+                    <td className="px-3 py-2 text-right">
+                      <Button size="sm" variant="ghost" onClick={() => onEdit(n)}>
+                        Edit
+                      </Button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {rows.filter((n) => n.access_problem).map((n) => (
+        <Notice key={n.name} tone="danger">
+          {n.access_problem} The server keeps its current rules for {n.name}; edit them here to replace what is documented.
+        </Notice>
+      ))}
+    </div>
+  );
+}
+
+type DestinationRow = { network: string; ports: string };
+
+function AccessDialog({
+  server: s,
+  network: n,
+  networks,
+  onClose,
+  onSaved,
+}: {
+  server: Server;
+  network: ServerNetwork | null;
+  networks: ServerNetwork[];
+  onClose: () => void;
+  onSaved: (v: NetworksView) => void;
+}) {
+  const nbName = useNetBoxLabel();
+  const others = networks.filter((t) => n && t.name !== n.name && t.network && t.netbox_interface_id !== null);
+  const [internet, setInternet] = React.useState(false);
+  const [lanvex, setLanvex] = React.useState<string[]>([]);
+  const [rows, setRows] = React.useState<DestinationRow[]>([]);
+  const [services, setServices] = React.useState<string[]>([]);
+  const [extra, setExtra] = React.useState("");
+  React.useEffect(() => {
+    if (!n) return;
+    const a: AccessSettings = n.access ?? n.access_on_server ?? { internet: false, destinations: [], services: [] };
+    const otherNets = new Set(others.map((t) => t.network));
+    setInternet(a.internet);
+    setLanvex(a.destinations.filter((d) => otherNets.has(d.network) && d.ports.length === 0).map((d) => d.network));
+    setRows(
+      a.destinations
+        .filter((d) => !(otherNets.has(d.network) && d.ports.length === 0))
+        .map((d) => ({ network: d.network.replace(/\/32$/, ""), ports: d.ports.join(", ") })),
+    );
+    setServices(a.services.filter((p) => SERVICES.some((x) => x.port === p)));
+    setExtra(a.services.filter((p) => !SERVICES.some((x) => x.port === p)).join(", "));
+    save.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [n]);
+  const split = (text: string) => text.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  const save = useMutation({
+    mutationFn: () =>
+      api<NetworksView>(`/servers/${s.id}/networks/${encodeURIComponent(n?.name ?? "")}/access`, {
+        method: "PUT",
+        body: {
+          internet,
+          destinations: [
+            ...lanvex.map((network) => ({ network, ports: [] })),
+            ...rows.filter((r) => r.network.trim()).map((r) => ({ network: r.network.trim(), ports: split(r.ports) })),
+          ],
+          services: [...services, ...split(extra)],
+        },
+      }),
+    onSuccess: (v) => {
+      onSaved(v);
+      onClose();
+    },
+  });
+  const toggle = (list: string[], value: string, on: boolean) => (on ? [...list, value] : list.filter((x) => x !== value));
+  return (
+    <Dialog open={n !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        title={`What devices on ${n?.name ?? ""} may reach`}
+        description={`Documented in ${nbName} at once; ${s.name} gets it with the next change you prepare and approve. Answers to allowed connections always come back.`}
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate();
+          }}
+        >
+          <DialogBody>
+            <fieldset className="grid gap-2">
+              <legend className="mb-1 text-xs font-medium text-muted">Through the server</legend>
+              <Checkbox id="ac-internet" label="The Internet (private networks stay closed unless allowed below)" checked={internet} onChange={(e) => setInternet(e.target.checked)} />
+              {others.map((t) => (
+                <Checkbox
+                  key={t.name}
+                  id={`ac-${t.name}`}
+                  label={`${t.name} (${t.network})`}
+                  checked={lanvex.includes(t.network ?? "")}
+                  onChange={(e) => setLanvex(toggle(lanvex, t.network ?? "", e.target.checked))}
+                />
+              ))}
+            </fieldset>
+            <fieldset className="grid gap-2">
+              <legend className="mb-1 text-xs font-medium text-muted">Other networks and addresses (the main LAN, a switch's web interface)</legend>
+              {rows.map((r, i) => (
+                <div key={i} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                  <Input aria-label="Network or address" className="addr" placeholder="192.168.178.3 or 192.168.178.0/24" value={r.network} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, network: e.target.value } : x)))} />
+                  <Input aria-label="Ports" className="addr" placeholder="All ports, or 443/tcp, 80/tcp" value={r.ports} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, ports: e.target.value } : x)))} />
+                  <Button type="button" variant="ghost" aria-label="Remove" onClick={() => setRows(rows.filter((_, j) => j !== i))}>
+                    <X />
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button type="button" size="sm" variant="secondary" onClick={() => setRows([...rows, { network: "", ports: "" }])}>
+                  <Plus /> Add destination
+                </Button>
+              </div>
+            </fieldset>
+            <fieldset className="grid gap-2">
+              <legend className="mb-1 text-xs font-medium text-muted">On {s.name} itself (DHCP and DNS always)</legend>
+              <div className="grid grid-cols-2 gap-2">
+                {SERVICES.map((x) => (
+                  <Checkbox key={x.port} id={`ac-${x.port}`} label={`${x.label} (${x.port})`} checked={services.includes(x.port)} onChange={(e) => setServices(toggle(services, x.port, e.target.checked))} />
+                ))}
+              </div>
+              <Field label="Other ports" htmlFor="ac-extra" error={fieldError(save.error, "services")}>
+                <Input id="ac-extra" className="addr" placeholder="8100/tcp, 5000-5010/udp" value={extra} onChange={(e) => setExtra(e.target.value)} />
+              </Field>
+            </fieldset>
+            {save.error && !fieldError(save.error, "services") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
           </DialogBody>
           <DialogFooter>
             <Button type="button" onClick={onClose}>

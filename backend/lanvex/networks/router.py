@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Request, status
 from pydantic import Field, model_validator
 
-from lanvex.changes.schemas import LEASE_RE, ChangeDetail
+from lanvex.changes.schemas import LEASE_RE, AccessSettings, ChangeDetail
 from lanvex.changes.service import ChangeService, to_detail
 from lanvex.core.errors import Conflict
 from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
@@ -86,6 +86,29 @@ async def remove_network(
         "server.network.remove", "server", target_id=s.id, target_repr=f"{s.name} {name}"
     ) as t:
         t.detail["removed"] = await svc.remove(s, name)
+    return await svc.view(s)
+
+
+@router.put("/servers/{server_id}/networks/{name}/access", response_model=NetworksView)
+async def set_access(
+    server_id: uuid.UUID,
+    name: str,
+    body: AccessSettings,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    _: AdminUser,
+    audit: Audit,
+) -> NetworksView:
+    """What devices on the network may reach, documented in Lanvex Core. The server changes only through
+    the approved change."""
+    svc, servers = _svc(request, db, settings)
+    s = await servers.get(server_id)
+    async with audit.track(
+        "server.network.access", "server", target_id=s.id, target_repr=f"{s.name} {name}"
+    ) as t:
+        t.detail.update(body.model_dump(mode="json"))
+        await svc.set_access(s, name, body)
     return await svc.view(s)
 
 

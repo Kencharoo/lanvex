@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from lanvex.changes.schemas import HOSTNAME_RE, IFACE_RE, LEASE_RE, MAC_RE, NetworksRequest
+from lanvex.changes.schemas import HOSTNAME_RE, IFACE_RE, LEASE_RE, MAC_RE, AccessSettings, NetworksRequest
 from lanvex.schemas import ApiModel
 
 NetworkStatus = Literal[
@@ -48,6 +48,9 @@ class OnServer(ApiModel):
     addresses: list[str]
 
 
+AccessStatus = Literal["in_sync", "differs", "invalid"]
+
+
 class ServerNetwork(ApiModel):
     name: str
     parent: str | None
@@ -63,6 +66,12 @@ class ServerNetwork(ApiModel):
     fixed: list[FixedAddress]
     dhcp: DhcpStatus | None  # None: the server's DHCP has not been read
     leases: list[Lease]
+    # What devices on it may reach: as documented (None: the documentation cannot be read, see
+    # access_problem), and as last applied on the server (None: not on the server).
+    access: AccessSettings | None = None
+    access_on_server: AccessSettings | None = None
+    access_status: AccessStatus | None = None  # None: comes with the network, or not Lanvex's
+    access_problem: str | None = None
 
 
 class NetworksView(ApiModel):

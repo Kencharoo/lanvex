@@ -1073,6 +1073,16 @@ async def test_networks_change_safety_rules(
     assert r.status_code == 422 and "which is on vlan50" in r.text, r.text
     r = await admin.post(f"/api/v1/servers/{via}/changes", json=networks_body(dhcp=None))
     assert r.status_code == 201 and r.json()["summary"] == "Networks: DHCP unchanged", r.text
+    await admin.post(f"/api/v1/changes/{r.json()['id']}/cancel")
+
+    # ... and keeps SSH to the server, whatever its access rules say.
+    closed = {"rules": [{"interface": "vlan50", "internet": True}]}
+    r = await admin.post(f"/api/v1/servers/{via}/changes", json=networks_body(dhcp=None, access=closed))
+    assert r.status_code == 422 and "Allow 22/tcp on the server for vlan50" in r.text, r.text
+    ssh = {"rules": [{"interface": "vlan50", "internet": True, "services": ["22/tcp"]}]}
+    r = await admin.post(f"/api/v1/servers/{via}/changes", json=networks_body(dhcp=None, access=ssh))
+    assert r.status_code == 201, r.text
+    assert r.json()["summary"].endswith("access vlan50: Internet, server 22/tcp"), r.json()["summary"]
 
 
 async def test_networks_on_netplan_servers(

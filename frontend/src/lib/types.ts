@@ -536,10 +536,27 @@ export interface DhcpPoolSpec {
 }
 
 /** Every VLAN interface Lanvex manages on a server, and the DHCP pools on them. */
+export interface AccessDestination {
+  network: string;
+  ports: string[];
+}
+
+/** What devices on one Lanvex network may reach. Default: DHCP and DNS on the server, nothing else. */
+export interface AccessSettings {
+  internet: boolean;
+  destinations: AccessDestination[];
+  services: string[];
+}
+
+export interface AccessRule extends AccessSettings {
+  interface: string;
+}
+
 export interface NetworksRequestBody {
   kind: "networks";
   vlans: VlanSpec[];
   dhcp: { pools: DhcpPoolSpec[] } | null;
+  access?: { rules: AccessRule[] } | null;
 }
 
 export interface InterfaceBefore {
@@ -582,7 +599,7 @@ export interface ChangeCheck {
 export type ChangeDetail = ChangeDetailBase &
   (
     | { kind: "interface_ipv4"; request: ChangeRequestBody; before: InterfaceBefore | null }
-    | { kind: "networks"; request: NetworksRequestBody; before: { vlans: VlanSpec[]; dhcp: null } | null }
+    | { kind: "networks"; request: NetworksRequestBody; before: { vlans: VlanSpec[]; dhcp: null; access?: AccessRule[] } | null }
   );
 
 interface ChangeDetailBase extends ChangeOut {
@@ -714,6 +731,10 @@ export interface ServerNetwork {
   fixed: { ip: string; mac: string; name: string | null; ip_id: number | null }[];
   dhcp: DhcpStatus | null;
   leases: NetworkLease[];
+  access: AccessSettings | null;
+  access_on_server: AccessSettings | null;
+  access_status: "in_sync" | "differs" | "invalid" | null;
+  access_problem: string | null;
 }
 
 export interface NetworksView {

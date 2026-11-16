@@ -1,7 +1,7 @@
 import { CheckCircle2, CircleHelp, XCircle } from "lucide-react";
 import type * as React from "react";
 import { Badge, type Tone } from "@/components/ui/misc";
-import type { ChangeCheck, ChangeDetail, ChangeStatus, InterfaceBefore } from "@/lib/types";
+import type { AccessSettings, ChangeCheck, ChangeDetail, ChangeStatus, InterfaceBefore } from "@/lib/types";
 import { absoluteTime, cn } from "@/lib/utils";
 
 /** Wording reflects what Lanvex knows, never more: "rolled back" and "needs attention" are not successes. */
@@ -166,6 +166,17 @@ function NetworksBeforeAfter({ change }: { change: Extract<ChangeDetail, { kind:
   const after = new Map(change.request.vlans.map((v) => [v.name, v]));
   const names = [...new Set([...before.keys(), ...after.keys()])].sort();
   const pools = new Map((change.request.dhcp?.pools ?? []).map((p) => [p.interface, p]));
+  const rules = new Map((change.request.access?.rules ?? []).map((r) => [r.interface, r]));
+  const rulesBefore = new Map((change.before?.access ?? []).map((r) => [r.interface, r]));
+  const access = (r: AccessSettings | undefined) => {
+    if (!r) return "DHCP and DNS only";
+    const parts = [
+      ...(r.internet ? ["Internet"] : []),
+      ...r.destinations.map((d) => d.network.replace(/\/32$/, "") + (d.ports.length ? ` (${d.ports.join(", ")})` : "")),
+      ...(r.services.length ? [`server ${r.services.join(", ")}`] : []),
+    ];
+    return parts.join(" · ") || "DHCP and DNS only";
+  };
   const pending = change.status === "pending_approval";
   const label = (v: { parent: string; id: number; addresses: string[] } | undefined) =>
     v ? `VLAN ${v.id} on ${v.parent} · ${v.addresses.join(", ")}` : <span className="text-faint">Not there</span>;
@@ -178,6 +189,7 @@ function NetworksBeforeAfter({ change }: { change: Extract<ChangeDetail, { kind:
             <th className="px-3 py-2 font-medium">{pending ? "Now (last read)" : "Before"}</th>
             <th className="px-3 py-2 font-medium">{pending ? "After the change" : "Requested"}</th>
             <th className="px-3 py-2 font-medium">DHCP</th>
+            <th className="px-3 py-2 font-medium">May reach</th>
           </tr>
         </thead>
         <tbody>
@@ -210,12 +222,21 @@ function NetworksBeforeAfter({ change }: { change: Extract<ChangeDetail, { kind:
                     <span className="text-faint">None</span>
                   )}
                 </td>
+                <td className="px-3 py-2 text-xs">
+                  {!a ? (
+                    <span className="text-faint">–</span>
+                  ) : change.request.access == null ? (
+                    <span className="text-faint">Unchanged</span>
+                  ) : (
+                    <span className={cn(access(rules.get(name)) !== access(rulesBefore.get(name)) && "font-medium text-ink")}>{access(rules.get(name))}</span>
+                  )}
+                </td>
               </tr>
             );
           })}
           {names.length === 0 && (
             <tr>
-              <td colSpan={4} className="px-3 py-3 text-muted">
+              <td colSpan={5} className="px-3 py-3 text-muted">
                 No VLAN interfaces managed by Lanvex, before or after.
               </td>
             </tr>

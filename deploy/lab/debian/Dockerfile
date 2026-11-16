@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-lab-retries \
  && apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends systemd systemd-sysv dbus ifupdown iproute2 \
-      openssh-server sudo python3 dnsmasq iputils-ping procps >/dev/null \
+      openssh-server sudo python3 dnsmasq iputils-ping procps nftables >/dev/null \
  && rm -rf /var/lib/apt/lists/*
 # lanvex: unprivileged account Lanvex logs in with (key auth). ops: password auth test account.
 RUN useradd -m -s /bin/bash lanvex && useradd -m -s /bin/bash ops && echo 'ops:ops-lab-password-1' | chpasswd \

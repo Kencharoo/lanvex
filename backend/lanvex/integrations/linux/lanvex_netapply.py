@@ -49,7 +49,7 @@ import sys
 import tempfile
 import time
 
-HELPER_VERSION = 3
+HELPER_VERSION = 4
 STATE_DIR = "/var/lib/lanvex/changes"
 LOCK_FILE = "/run/lanvex-netapply.lock"
 NETPLAN_DIR = "/etc/netplan"
@@ -58,6 +58,20 @@ NM_NETPLAN_PREFIX = "/run/NetworkManager/system-connections/netplan-"
 LANVEX_PROFILE = "lanvex-"  # NetworkManager profiles Lanvex owns: lanvex-<interface>
 ZONE_PREFIX = "lx-"  # firewalld zones Lanvex owns: lx-<interface>; firewalld allows 17 characters
 ZONE_DIR = "/etc/firewalld/zones"
+POLICY_DIR = "/etc/firewalld/policies"
+POLICY_PREFIX = "lxf-"  # firewalld policies Lanvex owns: lxf-<interface>-<zone hash>, 17 characters at most
+# Without firewalld: Lanvex's own nftables table, loaded at boot by its own unit.
+NFT_FILE = "/etc/lanvex/firewall.nft"
+NFT_TABLE = ("inet", "lanvex")
+NFT_UNIT_NAME = "lanvex-firewall.service"
+NFT_UNIT = "/etc/systemd/system/" + NFT_UNIT_NAME
+SYSCTL_FILE = (
+    "/etc/sysctl.d/60-lanvex.conf"  # IP forwarding, while a Lanvex network may reach beyond the server
+)
+FORWARD_KEY = "/proc/sys/net/ipv4/ip_forward"
+# Never reached through "the Internet": private, shared (CGNAT) and link-local addresses.
+PRIVATE4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16")
+PORT_RE = re.compile(r"^([0-9]{1,5})(?:-([0-9]{1,5}))?/(tcp|udp)$")
 DNSMASQ_CONF = "/etc/dnsmasq.conf"
 DNSMASQ_DIR = "/etc/dnsmasq.d"
 DNSMASQ_FILE = "/etc/dnsmasq.d/lanvex.conf"
@@ -936,7 +950,93 @@ def validate_networks(req: dict) -> dict:
                 }
             )
         dhcp = {"pools": sorted(pools, key=lambda x: x["interface"])}
-    return {"kind": "networks", "vlans": sorted(vlans, key=lambda x: x["name"]), "dhcp": dhcp}
+    access = validate_access(req.get("access"), {v["name"]: v for v in vlans})
+    return {
+        "kind": "networks",
+        "vlans": sorted(vlans, key=lambda x: x["name"]),
+        "dhcp": dhcp,
+        "access": access,
+    }
+
+
+def check_port(value: object, field: str) -> str:
+    """'22/tcp' or '8000-8100/udp'."""
+    m = PORT_RE.match(value) if isinstance(value, str) else None
+    if not m:
+        raise Refused(
+            "invalid_request", "%s: %r is not a port like 22/tcp or 8000-8100/udp." % (field, value)
+        )
+    first, last = int(m.group(1)), int(m.group(2) or m.group(1))
+    if not 1 <= first <= last <= 65535:
+        raise Refused("invalid_request", "%s: %r is not a port between 1 and 65535." % (field, value))
+    return "%d%s/%s" % (first, "-%d" % last if last != first else "", m.group(3))
+
+
+def validate_access(access: object, vlans: dict) -> dict | None:
+    """What devices on each Lanvex network may reach. None: as last applied."""
+    if access is None:
+        return None
+    if not isinstance(access, dict) or not isinstance(access.get("rules"), list) or len(access["rules"]) > 64:
+        raise Refused("invalid_request", 'access must be null or {"rules": [...]}, at most 64 rules.')
+    rules = {}
+    for r in access["rules"]:
+        if not isinstance(r, dict) or r.get("interface") not in vlans:
+            raise Refused(
+                "invalid_request", "Access rules apply to Lanvex's VLAN interfaces in this request only."
+            )
+        name = r["interface"]
+        if name in rules:
+            raise Refused("invalid_request", "%s has more than one access rule." % name)
+        if not isinstance(r.get("internet", False), bool):
+            raise Refused("invalid_request", "%s: internet must be true or false." % name)
+        dests, services = r.get("destinations") or [], r.get("services") or []
+        if (
+            not isinstance(dests, list)
+            or len(dests) > 64
+            or not isinstance(services, list)
+            or len(services) > 32
+        ):
+            raise Refused("invalid_request", "%s: at most 64 destinations and 32 services." % name)
+        own = ipaddress.ip_interface(vlans[name]["addresses"][0]).network
+        out = []
+        for d in dests:
+            if not isinstance(d, dict):
+                raise Refused("invalid_request", "%s: a destination is {network, ports}." % name)
+            try:
+                net = ipaddress.IPv4Network(str(d.get("network")), strict=False)
+            except ValueError as e:
+                raise Refused(
+                    "invalid_request", "%s: %r is not an IPv4 network." % (name, d.get("network"))
+                ) from e
+            if net.prefixlen == 0:
+                raise Refused(
+                    "invalid_request", "%s: allow the Internet with internet, not 0.0.0.0/0." % name
+                )
+            if net.overlaps(own):
+                raise Refused("invalid_request", "%s: %s is this network itself." % (name, net))
+            ports = d.get("ports") or []
+            if not isinstance(ports, list) or len(ports) > 16:
+                raise Refused("invalid_request", "%s: at most 16 ports per destination." % name)
+            out.append(
+                {"network": str(net), "ports": sorted({check_port(x, name) for x in ports}, key=_port_key)}
+            )
+        rules[name] = {
+            "interface": name,
+            "internet": bool(r.get("internet", False)),
+            "destinations": sorted(out, key=lambda x: (ipaddress.ip_network(x["network"]), x["ports"])),
+            "services": sorted({check_port(x, name) for x in services}, key=_port_key),
+        }
+    return {"rules": [rules[k] for k in sorted(rules)]}
+
+
+def _port_key(port: str) -> tuple:
+    number, proto = port.split("/")
+    return (int(number.split("-")[0]), number, proto)
+
+
+def default_rule(name: str) -> dict:
+    """A Lanvex network without access rules: DHCP and DNS on the server, nothing else."""
+    return {"interface": name, "internet": False, "destinations": [], "services": []}
 
 
 def render_vlan_keyfile(v: dict, uuid_: str, zone: str | None) -> str:
@@ -965,7 +1065,7 @@ def render_vlan_keyfile(v: dict, uuid_: str, zone: str | None) -> str:
     return "\n".join(lines)
 
 
-def render_zone(v: dict, services: list, bind: bool = False) -> str:
+def render_zone(v: dict, services: list, bind: bool = False, ports: list | None = None) -> str:
     """bind: the zone names its interface itself (netplan, ifupdown); NetworkManager sets it per profile."""
     # No double hyphen in the comment: XML forbids it there, and firewalld then rejects the file.
     out = [
@@ -979,6 +1079,7 @@ def render_zone(v: dict, services: list, bind: bool = False) -> str:
     if bind:
         out.append('  <interface name="%s"/>' % v["name"])
     out += ['  <service name="%s"/>' % s for s in services]
+    out += ['  <port port="%s" protocol="%s"/>' % pp for pp in _fw_ports(ports or [])]
     out.append("</zone>")
     return "\n".join(out) + "\n"
 
@@ -1126,11 +1227,21 @@ def read_manifest() -> dict:
         return {}
 
 
-def render_manifest(backend: str, names: list, dnsmasq_before: dict | None = None) -> str:
+def render_manifest(
+    backend: str,
+    names: list,
+    dnsmasq_before: dict | None = None,
+    access: list | None = None,
+    forward_before: str | None = None,
+) -> str:
     doc = {"managed_by": "Lanvex", "backend": backend, "vlans": sorted(names)}
     if dnsmasq_before is not None:
         # How dnsmasq ran before Lanvex served DHCP here, so it is left that way once Lanvex stops.
         doc["dnsmasq_before"] = dnsmasq_before
+    if access:
+        doc["access"] = access  # the access rules last applied, for Lanvex to compare
+    if forward_before is not None:
+        doc["forward_before"] = forward_before  # IP forwarding before Lanvex switched it on
     return json.dumps(doc, indent=2) + "\n"
 
 
@@ -1246,13 +1357,6 @@ def ufw_state() -> dict | None:
     return {"active": status.stdout.splitlines()[:1] == ["Status: active"], "ours": ours}
 
 
-def ufw_argv(rule: str, delete: bool = False) -> list:
-    words = shlex.split(rule)[1:]  # without the leading "ufw"
-    if delete:
-        return ["ufw", "delete"] + words[: words.index("comment")]
-    return ["ufw"] + words
-
-
 def nft_drops_input() -> str | None:
     """A table whose input chain drops what no rule allows (a hand-written nftables firewall)."""
     if not which("nft"):
@@ -1267,6 +1371,292 @@ def nft_drops_input() -> str | None:
         if isinstance(chain, dict) and chain.get("hook") == "input" and chain.get("policy") == "drop":
             return "%s %s" % (chain.get("family"), chain.get("table"))
     return None
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Access rules
+
+
+def policy_name(iface: str, zone: str) -> str:
+    """lxf-<interface>-<4 hex of the egress zone>: unique, and short enough for any firewalld version."""
+    return "%s%s-%s" % (POLICY_PREFIX, iface[:8], hashlib.sha256(zone.encode()).hexdigest()[:4])
+
+
+def default_route_dev() -> str | None:
+    r = run(["ip", "-j", "-4", "route", "show", "default"], timeout=15)
+    try:
+        routes = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    return next((x.get("dev") for x in routes if x.get("dev")), None)
+
+
+def route_dev(address: str) -> str | None:
+    r = run(["ip", "-j", "-4", "route", "get", address], timeout=15)
+    try:
+        routes = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    return routes[0].get("dev") if routes else None
+
+
+def firewalld_zone_of(dev: str) -> str:
+    r = run(["firewall-cmd", "--get-zone-of-interface=" + dev], timeout=15)
+    zone = r.stdout.strip()
+    if r.returncode == 0 and zone:
+        return zone
+    return run(["firewall-cmd", "--get-default-zone"], timeout=15).stdout.strip() or "public"
+
+
+def forwarding_needed(rules: list) -> bool:
+    return any(r["internet"] or r["destinations"] for r in rules)
+
+
+def egress_of(rules: list, vlans: dict, uplink: str | None) -> dict:
+    """For each network's destinations, the interface they leave the server through:
+    {interface: [(destination, egress interface)]}. Lanvex networks are known from the request."""
+    out = {}
+    for r in rules:
+        pairs = []
+        for d in r["destinations"]:
+            net = ipaddress.ip_network(d["network"])
+            dev = next(
+                (
+                    name
+                    for name, v in vlans.items()
+                    if net.subnet_of(ipaddress.ip_interface(v["addresses"][0]).network)
+                ),
+                None,
+            ) or route_dev(str(net.network_address if net.prefixlen < 32 else net.network_address))
+            if dev is None:
+                raise Refused("invalid_request", "%s: the server has no route to %s." % (r["interface"], net))
+            if dev == "lo":
+                raise Refused(
+                    "invalid_request",
+                    "%s: %s is this server itself; allow it as a service on the server instead."
+                    % (r["interface"], net),
+                )
+            pairs.append((d, dev))
+        out[r["interface"]] = pairs
+        if r["internet"] and uplink is None:
+            raise Refused(
+                "invalid_request",
+                "%s may reach the Internet, but this server has no default route to send it through."
+                % r["interface"],
+            )
+    return out
+
+
+def _fw_ports(ports: list) -> list:
+    return [(p.split("/")[0], p.split("/")[1]) for p in ports]
+
+
+def render_policy(
+    iface: str, ingress: str, egress: str, rule: dict, dests: list, internet: bool, nat: bool
+) -> str:
+    """One firewalld policy: what network `iface` (zone `ingress`) may reach in zone `egress`."""
+    out = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        "<!-- %s -->" % MANAGED,
+        '<policy target="%s">' % ("ACCEPT" if internet else "CONTINUE"),
+        "  <short>Lanvex: %s to %s</short>" % (iface, egress),
+        "  <description>What devices on %s may reach in zone %s.</description>" % (iface, egress),
+    ]
+    if nat:
+        out.append("  <masquerade/>")
+    for d in dests:
+        if not d["ports"]:
+            out += [
+                '  <rule family="ipv4" priority="-100">',
+                '    <destination address="%s"/>' % d["network"],
+                "    <accept/>",
+                "  </rule>",
+            ]
+        for port, proto in _fw_ports(d["ports"]):
+            out += [
+                '  <rule family="ipv4" priority="-100">',
+                '    <destination address="%s"/>' % d["network"],
+                '    <port port="%s" protocol="%s"/>' % (port, proto),
+                "    <accept/>",
+                "  </rule>",
+            ]
+    if internet:
+        # The Internet, not every private network behind the uplink: those only as allowed above.
+        for net in PRIVATE4:
+            out += [
+                '  <rule family="ipv4" priority="0">',
+                '    <destination address="%s"/>' % net,
+                "    <reject/>",
+                "  </rule>",
+            ]
+    out += ['  <ingress-zone name="%s"/>' % ingress, '  <egress-zone name="%s"/>' % egress, "</policy>"]
+    return "\n".join(out) + "\n"
+
+
+def ufw_access_rules(rule: dict, served: bool, pairs: list, uplink: str | None) -> list:
+    """Lanvex's ufw rules for one network, in the order ufw must see them (first match wins)."""
+    iface, mark = rule["interface"], "comment '%s%s'" % (UFW_MARK, rule["interface"])
+    out = ufw_wanted_rules(iface) if served else []
+    for p in rule["services"]:
+        port, proto = p.split("/")
+        out.append(
+            "ufw allow in on %s to any port %s proto %s %s" % (iface, port.replace("-", ":"), proto, mark)
+        )
+    for d, dev in pairs:
+        # As `ufw show added` prints it: one address without /32.
+        to = "to %s" % (d["network"][:-3] if d["network"].endswith("/32") else d["network"])
+        if not d["ports"]:
+            out.append("ufw route allow in on %s out on %s %s %s" % (iface, dev, to, mark))
+        for p in d["ports"]:
+            port, proto = p.split("/")
+            out.append(
+                "ufw route allow in on %s out on %s %s port %s proto %s %s"
+                % (iface, dev, to, port.replace("-", ":"), proto, mark)
+            )
+    if rule["internet"]:
+        out += ["ufw route deny in on %s out on %s to %s %s" % (iface, uplink, net, mark) for net in PRIVATE4]
+        out.append("ufw route allow in on %s out on %s %s" % (iface, uplink, mark))
+    return out
+
+
+def ufw_rule_argv(rule: str, delete: bool = False) -> list:
+    words = shlex.split(rule)[1:]  # without the leading "ufw"
+    if not delete:
+        return ["ufw"] + words
+    words = words[: words.index("comment")]
+    if words[0] == "route":
+        return ["ufw", "route", "delete"] + words[1:]
+    return ["ufw", "delete"] + words
+
+
+def _nft_ports(ports: list, proto: str) -> str:
+    chosen = [p.split("/")[0] for p in ports if p.endswith("/" + proto)]
+    return "{ %s }" % ", ".join(chosen) if chosen else ""
+
+
+def render_nft(
+    rules: list, pairs: dict, uplink: str | None, served: set, lanvex_ifaces: list, filtering: bool
+) -> str:
+    """Lanvex's nftables table. filtering: input and forwarding for Lanvex's networks (servers without
+    firewalld or ufw); otherwise only masquerading (next to ufw)."""
+    family, table = NFT_TABLE
+    out = ["# " + MANAGED, "table %s %s" % NFT_TABLE, "delete table %s %s" % NFT_TABLE, ""]
+    out.append("table %s %s {" % (family, table))
+    out += [
+        "  set private4 {",
+        "    type ipv4_addr",
+        "    flags interval",
+        "    elements = { %s }" % ", ".join(PRIVATE4),
+        "  }",
+        "",
+    ]
+    if filtering:
+        out += ["  chain input {", "    type filter hook input priority filter; policy accept;"]
+        out += [
+            '    iifname "%s" jump in_%s' % (r["interface"], r["interface"].replace("-", "_")) for r in rules
+        ]
+        out += ["  }", ""]
+        for r in rules:
+            name = r["interface"]
+            out += [
+                "  chain in_%s {" % name.replace("-", "_"),
+                "    ct state established,related accept",
+                "    meta l4proto icmp accept",
+            ]
+            if name in served:
+                out += ["    udp dport { 53, 67 } accept", "    tcp dport 53 accept"]
+            for proto in ("tcp", "udp"):
+                ports = _nft_ports(r["services"], proto)
+                if ports:
+                    out.append("    %s dport %s accept" % (proto, ports))
+            out += ["    drop", "  }", ""]
+        out += [
+            "  chain forward {",
+            "    type filter hook forward priority filter; policy accept;",
+            "    ct state established,related accept",
+        ]
+        out += [
+            '    iifname "%s" jump fwd_%s' % (r["interface"], r["interface"].replace("-", "_")) for r in rules
+        ]
+        if lanvex_ifaces:
+            # New connections into a Lanvex network only as another Lanvex network's rules allow (above).
+            out.append("    oifname { %s } drop" % ", ".join('"%s"' % i for i in lanvex_ifaces))
+        out += ["  }", ""]
+        for r in rules:
+            name = r["interface"]
+            out.append("  chain fwd_%s {" % name.replace("-", "_"))
+            for d, dev in pairs.get(name, []):
+                if not d["ports"]:
+                    out.append('    oifname "%s" ip daddr %s accept' % (dev, d["network"]))
+                for proto in ("tcp", "udp"):
+                    ports = _nft_ports(d["ports"], proto)
+                    if ports:
+                        out.append(
+                            '    oifname "%s" ip daddr %s %s dport %s accept'
+                            % (dev, d["network"], proto, ports)
+                        )
+            if r["internet"]:
+                out += ["    ip daddr @private4 drop", '    oifname "%s" accept' % uplink]
+            out += ["    drop", "  }", ""]
+    nat = nat_pairs(rules, pairs, uplink, lanvex_ifaces)
+    if nat:
+        out += ["  chain postrouting {", "    type nat hook postrouting priority srcnat; policy accept;"]
+        out += ['    iifname "%s" oifname "%s" masquerade' % pair for pair in nat]
+        out += ["  }"]
+    out.append("}")
+    return "\n".join(out) + "\n"
+
+
+def nat_pairs(rules: list, pairs: dict, uplink: str | None, lanvex_ifaces: list) -> list:
+    """(from, out) interface pairs Lanvex masquerades: traffic from its networks leaving towards a network
+    that does not route back through this server (anything but another Lanvex network)."""
+    found = set()
+    for r in rules:
+        for _, dev in pairs.get(r["interface"], []):
+            if dev not in lanvex_ifaces:
+                found.add((r["interface"], dev))
+        if r["internet"]:
+            found.add((r["interface"], uplink))
+    return sorted(found)
+
+
+def render_nft_unit() -> str:
+    nft = which("nft") or "/usr/sbin/nft"
+    family, table = NFT_TABLE
+    return "\n".join(
+        [
+            "# " + MANAGED,
+            "[Unit]",
+            "Description=Lanvex network rules (nftables table %s %s)" % NFT_TABLE,
+            "Wants=network-pre.target",
+            "Before=network-pre.target",
+            "",
+            "[Service]",
+            "Type=oneshot",
+            "RemainAfterExit=yes",
+            "ExecStart=%s -f %s" % (nft, NFT_FILE),
+            "ExecReload=%s -f %s" % (nft, NFT_FILE),
+            "ExecStop=-%s delete table %s %s" % (nft, family, table),
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        ]
+    )
+
+
+def render_sysctl() -> str:
+    return "# %s\n# Devices on Lanvex networks reach beyond this server.\nnet.ipv4.ip_forward = 1\n" % MANAGED
+
+
+def our_policies() -> list:
+    if not os.path.isdir(POLICY_DIR):
+        return []
+    return sorted(
+        os.path.join(POLICY_DIR, f)
+        for f in os.listdir(POLICY_DIR)
+        if f.startswith(POLICY_PREFIX) and f.endswith(".xml")
+    )
 
 
 def nm_profiles() -> list:
@@ -1517,13 +1907,27 @@ def networks_plan(change: dict) -> dict:
         )
     removed = sorted(name for name in ours if name not in wanted)
     created = sorted(name for name in wanted if name not in ours)
+    # Access rules: as requested, or as last applied (access is null), for every Lanvex network.
+    manifest_now = read_manifest()
+    if change.get("access") is None:
+        applied = {r.get("interface"): r for r in manifest_now.get("access") or [] if isinstance(r, dict)}
+    else:
+        applied = {r["interface"]: r for r in change["access"]["rules"]}
+    rules = [applied.get(n) or default_rule(n) for n in sorted(wanted)]
+    by_name = {r["interface"]: r for r in rules}
+    uplink = default_route_dev()
+    pairs = egress_of(rules, wanted, uplink)
+    forwarding = forwarding_needed(rules)
     if firewalld:
         for v in vlans:
             add(
                 os.path.join(ZONE_DIR, zone_name(v["name"]) + ".xml"),
                 "firewalld zone %s" % zone_name(v["name"]),
                 render_zone(
-                    v, ["dhcp", "dns"] if v["name"] in served else [], bind=backend != "networkmanager"
+                    v,
+                    ["dhcp", "dns"] if v["name"] in served else [],
+                    bind=backend != "networkmanager",
+                    ports=by_name[v["name"]]["services"],
                 ),
             )
         for name in removed:
@@ -1581,27 +1985,115 @@ def networks_plan(change: dict) -> dict:
             put_back = known_before if not pools and os.path.exists(DNSMASQ_FILE) else None
             dnsmasq = dict(state, wanted=bool(pools), put_back=put_back)
 
+    # Firewall: firewalld policies; or ufw rules (marked lanvex:<interface>) with masquerading in Lanvex's
+    # own nftables table; or, without either, that table filters Lanvex's networks itself.
+    ufw = ufw_state()
+    ufw_on = ufw is not None and (ufw["active"] or bool(ufw["ours"]))
+    fw = "firewalld" if firewalld else ("ufw" if ufw_on else "nftables")
+    policies = {}
+    if firewalld:
+        uplink_zone = firewalld_zone_of(uplink) if uplink else None
+        for r in rules:
+            name, zones = r["interface"], {}
+            for d, dev in pairs[name]:
+                zones.setdefault(zone_name(dev) if dev in wanted else firewalld_zone_of(dev), []).append(d)
+            if r["internet"]:
+                zones.setdefault(uplink_zone, [])
+            for zone, dests in sorted(zones.items()):
+                lanvex_zone = zone.startswith(ZONE_PREFIX) and any(zone == zone_name(n) for n in wanted)
+                policies[os.path.join(POLICY_DIR, policy_name(name, zone) + ".xml")] = render_policy(
+                    name,
+                    zone_name(name),
+                    zone,
+                    r,
+                    dests,
+                    internet=r["internet"] and zone == uplink_zone,
+                    nat=not lanvex_zone,
+                )
+        for path, text in sorted(policies.items()):
+            add(path, "firewalld policy %s" % os.path.basename(path)[:-4], text)
+        for path in our_policies():
+            if path not in policies:
+                add(path, "firewalld policy %s (removed)" % os.path.basename(path)[:-4], None)
+
+    ufw_wanted, ufw_add, ufw_delete = {}, [], []
+    if fw == "ufw":
+        for r in rules:
+            ufw_wanted[r["interface"]] = ufw_access_rules(
+                r, r["interface"] in served, pairs[r["interface"]], uplink
+            )
+        current = {}
+        for rule in ufw["ours"]:
+            current.setdefault(rule.rsplit("'", 2)[-2][len(UFW_MARK) :], []).append(rule)
+        for name in sorted(set(current) | set(ufw_wanted)):
+            if current.get(name, []) != ufw_wanted.get(name, []):
+                # ufw takes the first rule that matches: replace the network's rules in their order.
+                ufw_delete += current.get(name, [])
+                ufw_add += ufw_wanted.get(name, [])
+
+    nat = nat_pairs(rules, pairs, uplink, sorted(wanted))
+    nft_text = None
+    if fw == "nftables" and wanted:
+        if which("nft"):
+            nft_text = render_nft(rules, pairs, uplink, served, sorted(wanted), filtering=True)
+        elif forwarding:
+            raise Refused(
+                "missing_tool",
+                "Without firewalld or ufw, Lanvex keeps its networks' rules in its own nftables table, and nft is "
+                "not installed. Install the package nftables, then prepare the change again.",
+            )
+        else:
+            warnings.append(
+                "This server has no firewall Lanvex can use (firewalld, ufw, or nftables): devices on Lanvex "
+                "networks reach every service on it. Install nftables so Lanvex can limit that."
+            )
+        hand = nft_drops_input()
+        if hand and served:
+            warnings.append(
+                "nftables on this server drops incoming traffic no rule allows (table %s). Lanvex's own table "
+                "cannot override that: allow DHCP (UDP 67) and DNS (port 53) on Lanvex's networks there too."
+                % hand
+            )
+    elif fw == "ufw" and nat:
+        if not which("nft"):
+            raise Refused(
+                "missing_tool",
+                "ufw cannot masquerade by command, so Lanvex does it in its own nftables table, and nft is not "
+                "installed. Install the package nftables, then prepare the change again.",
+            )
+        nft_text = render_nft(rules, pairs, uplink, served, sorted(wanted), filtering=False)
+    nft_before = os.path.exists(NFT_FILE)
+    add(NFT_FILE, "Lanvex's nftables table (%s %s)" % NFT_TABLE, nft_text)
+    add(NFT_UNIT, "systemd unit that loads it at boot", render_nft_unit() if nft_text else None)
+
+    forward_now = read_text(FORWARD_KEY).strip() if os.path.exists(FORWARD_KEY) else "0"
+    forward_before = manifest_now.get("forward_before") if os.path.exists(SYSCTL_FILE) else None
+    if forwarding and forward_before is None:
+        forward_before = forward_now
+    add(SYSCTL_FILE, "IP forwarding for Lanvex's networks", render_sysctl() if forwarding else None)
+    set_forward = None
+    if forwarding and forward_now != "1":
+        set_forward = "1"
+    elif not forwarding and os.path.exists(SYSCTL_FILE):
+        if manifest_now.get("forward_before") == "0" and forward_now == "1":
+            set_forward = "0"  # back to how it was before Lanvex switched it on
+    if not forwarding:
+        forward_before = None
+
     # Removed with the last VLAN interface.
-    manifest = render_manifest(backend, list(wanted), dnsmasq_before) if wanted else None
+    access_record = (
+        [by_name[n] for n in sorted(wanted)] if any(by_name[n] != default_rule(n) for n in wanted) else None
+    )
+    manifest = (
+        render_manifest(backend, list(wanted), dnsmasq_before, access_record, forward_before)
+        if wanted
+        else None
+    )
     add(MANIFEST, "Lanvex's list of the VLAN interfaces it manages here", manifest)
 
-    # ufw: DHCP and DNS on the networks Lanvex serves, with rules it marks so it can remove them again.
-    ufw = ufw_state()
-    ufw_add, ufw_delete = [], []
-    if ufw is not None and (ufw["active"] or ufw["ours"]):
-        wanted_rules = [r for name in sorted(served & set(wanted)) for r in ufw_wanted_rules(name)]
-        ufw_add = [r for r in wanted_rules if r not in ufw["ours"]]
-        ufw_delete = [r for r in ufw["ours"] if r not in wanted_rules]
-    elif not firewalld and served and nft_drops_input():
-        warnings.append(
-            "nftables on this server drops incoming traffic no rule allows (table %s). Lanvex does not change "
-            "nftables rules yet: allow DHCP (UDP 67) and DNS (port 53) on the new interfaces yourself, or "
-            "devices get no address." % nft_drops_input()
-        )
-
     commands = []
-    if any(f["path"].startswith(ZONE_DIR) for f in files):
-        commands.append("firewall-cmd --reload")
+    if any(f["path"].startswith((ZONE_DIR, POLICY_DIR)) for f in files):
+        commands += ["firewall-cmd --check-config", "firewall-cmd --reload"]
     vlan_changed = bool(touched or removed)
     if backend == "networkmanager" and vlan_changed:
         commands.append("nmcli connection reload")
@@ -1622,8 +2114,18 @@ def networks_plan(change: dict) -> dict:
         and (dnsmasq["wanted"] or dnsmasq["active"])
         and not stop_dnsmasq
     )
-    commands += [" ".join(shlex.quote(w) for w in ufw_argv(r, delete=True)) for r in ufw_delete]
-    commands += [" ".join(shlex.quote(w) for w in ufw_argv(r)) for r in ufw_add]
+    commands += [" ".join(shlex.quote(w) for w in ufw_rule_argv(r, delete=True)) for r in ufw_delete]
+    commands += [" ".join(shlex.quote(w) for w in ufw_rule_argv(r)) for r in ufw_add]
+    nft_changed = any(f["path"] == NFT_FILE for f in files)
+    unit_changed = any(f["path"] == NFT_UNIT for f in files)
+    if unit_changed:
+        commands.append("systemctl daemon-reload")
+    if nft_changed and nft_text:
+        commands += ["nft -f " + NFT_FILE, "systemctl enable " + NFT_UNIT_NAME]
+    elif nft_changed:
+        commands += ["nft delete table %s %s" % NFT_TABLE, "systemctl disable " + NFT_UNIT_NAME]
+    if set_forward is not None:
+        commands.append("sysctl -w net.ipv4.ip_forward=" + set_forward)
     if dnsmasq is not None and dnsmasq["wanted"] and not dnsmasq["enabled"]:
         commands.append("systemctl enable dnsmasq")
         warnings.append("dnsmasq is not enabled on this server yet; Lanvex enables and starts it.")
@@ -1656,7 +2158,7 @@ def networks_plan(change: dict) -> dict:
         "commands": commands,
         "warnings": warnings,
         "_write": {f["path"]: (f["after"] if f["action"] != "delete" else None) for f in files},
-        "_changed": bool(files or ufw_add or ufw_delete)
+        "_changed": bool(files or ufw_add or ufw_delete or set_forward)
         or (dnsmasq is not None and dnsmasq["wanted"] and not (dnsmasq["active"] and dnsmasq["enabled"])),
         # Files another tool writes that the change alters through it; backed up for a rollback.
         "_backup": [f for f in UFW_FILES if os.path.exists(f)] if (ufw_add or ufw_delete) else [],
@@ -1674,9 +2176,34 @@ def networks_plan(change: dict) -> dict:
             "ours_before": sorted(ours),
             "active_before": [p["uuid"] for p in nm_ours.values() if p["device"]],
             "ufw": {"add": ufw_add, "delete": ufw_delete} if (ufw_add or ufw_delete) else None,
-            "ufw_check": sorted(served & set(wanted)) if ufw is not None and ufw["active"] else [],
+            "ufw_check": ufw_wanted if ufw is not None and ufw["active"] else {},
+            "fw": fw,
+            "policies": sorted(os.path.basename(p)[:-4] for p in policies),
+            "nft": ("load" if nft_text else "delete") if nft_changed else None,
+            "nft_expected": bool(nft_text),
+            "nft_before": nft_before,
+            "unit_changed": unit_changed,
+            "unit_enabled_before": service_state(NFT_UNIT_NAME)["enabled"] if unit_changed else None,
+            "forwarding": forwarding,
+            "forward_now": forward_now,
+            "set_forward": set_forward,
         },
     }
+
+
+def nft_validate(text: str) -> None:
+    """nft -c: the kernel checks the whole table without loading it."""
+    fd, path = tempfile.mkstemp(prefix="lanvex-nft-", suffix=".nft")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        r = run([which("nft") or "nft", "-c", "-f", path], timeout=60)
+        if r.returncode != 0:
+            raise Refused(
+                "rejected", "nft rejected Lanvex's table: %s" % (r.stderr or r.stdout).strip()[:800]
+            )
+    finally:
+        os.unlink(path)
 
 
 def dnsmasq_validate(text: str) -> None:
@@ -1726,7 +2253,9 @@ def networks_apply(plan: dict) -> None:
             run(["ifdown", name], timeout=60)
         _delete_links(n["removed"])
     _write_files(plan["_write"])
-    if any(p.startswith(ZONE_DIR) for p in plan["_write"]):
+    if any(p.startswith((ZONE_DIR, POLICY_DIR)) for p in plan["_write"]):
+        # A configuration firewalld rejects would leave the server without a firewall: check it first.
+        run(["firewall-cmd", "--check-config"], timeout=60, check=True)
         run(["firewall-cmd", "--reload"], timeout=60, check=True)
     if backend == "networkmanager" and (n["up"] or n["removed"]):
         run(["nmcli", "connection", "reload"], timeout=30, check=True)
@@ -1742,9 +2271,20 @@ def networks_apply(plan: dict) -> None:
     u = n.get("ufw")
     if u is not None:
         for rule in u["delete"]:
-            run(ufw_argv(rule, delete=True), timeout=60, check=True)
+            run(ufw_rule_argv(rule, delete=True), timeout=60, check=True)
         for rule in u["add"]:
-            run(ufw_argv(rule), timeout=60, check=True)
+            run(ufw_rule_argv(rule), timeout=60, check=True)
+    if n.get("unit_changed"):
+        run(["systemctl", "daemon-reload"], timeout=60, check=True)
+    if n.get("nft") == "load":
+        run([which("nft") or "nft", "-f", NFT_FILE], timeout=60, check=True)
+        run(["systemctl", "enable", NFT_UNIT_NAME], timeout=30, check=True)
+    elif n.get("nft") == "delete":
+        run([which("nft") or "nft", "delete", "table"] + list(NFT_TABLE), timeout=60)
+        run(["systemctl", "disable", NFT_UNIT_NAME], timeout=30)
+    if n.get("set_forward") is not None:
+        # Last, once the rules for what may be forwarded are in place.
+        run(["sysctl", "-w", "net.ipv4.ip_forward=" + n["set_forward"]], timeout=15, check=True)
     d = n["dnsmasq"]
     if d is not None and d["wanted"] and not d["enabled"]:
         run(["systemctl", "enable", "dnsmasq"], timeout=30, check=True)
@@ -1771,8 +2311,19 @@ def networks_restore(state: dict) -> None:
     n = state["networks"]
     backend = n.get("backend", "networkmanager")
     paths = [r["path"] for r in state.get("files") or []]
-    if any(p.startswith(ZONE_DIR) for p in paths) and which("firewall-cmd"):
+    if n.get("set_forward") is not None:
+        # First, before the rules that limited forwarding go.
+        run(["sysctl", "-w", "net.ipv4.ip_forward=" + n["forward_now"]], timeout=15)
+    if any(p.startswith((ZONE_DIR, POLICY_DIR)) for p in paths) and which("firewall-cmd"):
         run(["firewall-cmd", "--reload"], timeout=60)
+    if n.get("unit_changed"):
+        run(["systemctl", "daemon-reload"], timeout=60)
+        run(["systemctl", "enable" if n.get("unit_enabled_before") else "disable", NFT_UNIT_NAME], timeout=30)
+    if n.get("nft") is not None and which("nft"):
+        if os.path.exists(NFT_FILE):
+            run([which("nft") or "nft", "-f", NFT_FILE], timeout=60)
+        else:
+            run([which("nft") or "nft", "delete", "table"] + list(NFT_TABLE), timeout=60)
     if backend == "networkmanager" and any(p.startswith(NM_KEYFILE_DIR) for p in paths):
         run(["nmcli", "connection", "reload"], timeout=30)
         for uuid_ in n.get("active_before") or []:
@@ -1861,17 +2412,54 @@ def networks_verify(st: dict) -> list:
             }
         )
     if n.get("ufw_check"):
-        added = run(["ufw", "show", "added"], timeout=30).stdout
-        for name in n["ufw_check"]:
-            missing = [r for r in ufw_wanted_rules(name) if r not in added]
+        added = run(["ufw", "show", "added"], timeout=30).stdout.splitlines()
+        for name, wanted_rules in sorted(n["ufw_check"].items()):
+            if not wanted_rules:
+                continue
+            missing = [r for r in wanted_rules if r not in added]
             checks.append(
                 {
                     "id": "ufw:" + name,
-                    "label": "ufw allows DHCP and DNS on %s" % name,
+                    "label": "ufw rules for %s" % name,
                     "ok": not missing,
-                    "detail": "Rules present." if not missing else "Missing: %s" % "; ".join(missing),
+                    "detail": "%d rules present." % len(wanted_rules)
+                    if not missing
+                    else "Missing: %s" % "; ".join(missing),
                 }
             )
+    if n.get("policies"):
+        loaded = set(run(["firewall-cmd", "--get-policies"], timeout=15).stdout.split())
+        missing = [p for p in n["policies"] if p not in loaded]
+        checks.append(
+            {
+                "id": "policies",
+                "label": "firewalld policies for what Lanvex's networks may reach",
+                "ok": not missing,
+                "detail": "Loaded: %s." % ", ".join(n["policies"])
+                if not missing
+                else "Not loaded: %s." % ", ".join(missing),
+            }
+        )
+    if n.get("nft_expected"):
+        r = run([which("nft") or "nft", "list", "table"] + list(NFT_TABLE), timeout=15)
+        checks.append(
+            {
+                "id": "nftables",
+                "label": "Lanvex's nftables table (%s %s)" % NFT_TABLE,
+                "ok": r.returncode == 0,
+                "detail": "Loaded." if r.returncode == 0 else (r.stderr or "Not loaded.").strip()[:300],
+            }
+        )
+    if n.get("forwarding"):
+        value = read_text(FORWARD_KEY).strip() if os.path.exists(FORWARD_KEY) else "?"
+        checks.append(
+            {
+                "id": "forwarding",
+                "label": "IP forwarding",
+                "ok": value == "1",
+                "detail": "On." if value == "1" else "net.ipv4.ip_forward is %s." % value,
+            }
+        )
     d = n.get("dnsmasq")
     if d is not None and d["wanted"]:
 
@@ -2098,6 +2686,8 @@ def validate_plan(kind: str, plan: dict) -> None:
         dnsmasq_validate(plan["_write"].get(DNSMASQ_FILE) or "")
         if plan["backend"] == "netplan" and plan["_write"].get(NETPLAN_LANVEX):
             netplan_validate({NETPLAN_LANVEX: plan["_write"][NETPLAN_LANVEX]})
+        if plan["_write"].get(NFT_FILE):
+            nft_validate(plan["_write"][NFT_FILE])
     elif plan["backend"] == "netplan":
         netplan_validate(plan["_write"])
 

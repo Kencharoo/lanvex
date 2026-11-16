@@ -686,11 +686,15 @@ def test_dnsmasq_modes(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
 def test_ufw_rules_are_marked_and_removable():
     rules = h.ufw_wanted_rules("vlan50")
     assert rules[0] == "ufw allow in on vlan50 to any port 67 proto udp comment 'lanvex:vlan50'"
-    assert h.ufw_argv(rules[0]) == [
+    assert h.ufw_rule_argv(rules[0]) == [
         "ufw", "allow", "in", "on", "vlan50", "to", "any", "port", "67", "proto", "udp", "comment", "lanvex:vlan50",
     ]  # fmt: skip
-    assert h.ufw_argv(rules[2], delete=True) == [
+    assert h.ufw_rule_argv(rules[2], delete=True) == [
         "ufw", "delete", "allow", "in", "on", "vlan50", "to", "any", "port", "53", "proto", "tcp",
+    ]  # fmt: skip
+    route = "ufw route allow in on vlan50 out on eth0 to 10.0.0.0/8 comment 'lanvex:vlan50'"
+    assert h.ufw_rule_argv(route, delete=True) == [
+        "ufw", "route", "delete", "allow", "in", "on", "vlan50", "out", "on", "eth0", "to", "10.0.0.0/8",
     ]  # fmt: skip
 
 
@@ -742,3 +746,143 @@ def test_other_dnsmasq_configuration_is_found_in_every_file_dnsmasq_reads(tmp_pa
     assert h.dnsmasq_conflicts(pools) == []
     (d / "nv-vlans").write_text("dhcp-range=192.168.50.20,192.168.50.30\n")
     assert h.dnsmasq_conflicts(pools) == [(str(d / "nv-vlans"), "dhcp-range=192.168.50.20,192.168.50.30")]
+
+
+ACCESS_VLANS = {
+    "vlan50": {"name": "vlan50", "parent": "eth0", "id": 50, "addresses": ["192.168.50.1/24"]},
+    "vlan60": {"name": "vlan60", "parent": "eth0", "id": 60, "addresses": ["192.168.60.1/24"]},
+}
+
+
+def test_access_rules_are_validated_and_normalised():
+    access = {
+        "rules": [
+            {
+                "interface": "vlan50",
+                "internet": True,
+                "destinations": [
+                    {"network": "192.168.178.3", "ports": ["443/tcp", "80/tcp", "8000-8100/tcp"]},
+                    {"network": "192.168.60.7/24"},
+                ],
+                "services": ["22/tcp", "22/tcp"],
+            }
+        ]
+    }
+    out = h.validate_access(access, ACCESS_VLANS)
+    assert out == {
+        "rules": [
+            {
+                "interface": "vlan50",
+                "internet": True,
+                "destinations": [
+                    {"network": "192.168.60.0/24", "ports": []},
+                    {"network": "192.168.178.3/32", "ports": ["80/tcp", "443/tcp", "8000-8100/tcp"]},
+                ],
+                "services": ["22/tcp"],
+            }
+        ]
+    }
+    assert h.validate_access(None, ACCESS_VLANS) is None  # as last applied
+    for bad, message in [
+        ({"interface": "eth0"}, "Lanvex's VLAN interfaces"),
+        ({"interface": "vlan50", "destinations": [{"network": "0.0.0.0/0"}]}, "with internet"),
+        ({"interface": "vlan50", "destinations": [{"network": "192.168.50.0/25"}]}, "this network itself"),
+        ({"interface": "vlan50", "services": ["ssh"]}, "not a port"),
+        ({"interface": "vlan50", "services": ["0/tcp"]}, "between 1 and 65535"),
+        ({"interface": "vlan50", "services": ["90-80/tcp"]}, "between 1 and 65535"),
+        ({"interface": "vlan50", "internet": "yes"}, "true or false"),
+    ]:
+        with pytest.raises(h.Refused, match=message):
+            h.validate_access({"rules": [bad]}, ACCESS_VLANS)
+
+
+def test_firewalld_policy_for_the_internet_and_a_host_on_the_lan():
+    rule = h.validate_access(
+        {
+            "rules": [
+                {
+                    "interface": "vlan50",
+                    "internet": True,
+                    "destinations": [{"network": "192.168.178.3", "ports": ["443/tcp"]}],
+                }
+            ]
+        },
+        ACCESS_VLANS,
+    )["rules"][0]
+    xml = h.render_policy(
+        "vlan50", "lx-vlan50", "FedoraServer", rule, rule["destinations"], internet=True, nat=True
+    )
+    assert '<policy target="ACCEPT">' in xml and "<masquerade/>" in xml
+    assert '<ingress-zone name="lx-vlan50"/>' in xml and '<egress-zone name="FedoraServer"/>' in xml
+    # The allowed host first (priority -100), then private networks closed (priority 0), then the rest.
+    host = xml.index('<destination address="192.168.178.3/32"/>')
+    assert '<port port="443" protocol="tcp"/>' in xml[host:]
+    assert xml.index('priority="-100"') < xml.index('<destination address="192.168.0.0/16"/>')
+    assert xml.count("<reject/>") == len(h.PRIVATE4)
+    closed = h.render_policy("vlan50", "lx-vlan50", "lx-vlan60", rule, [], internet=False, nat=False)
+    assert '<policy target="CONTINUE">' in closed and "masquerade" not in closed
+    assert len(h.policy_name("a-very-long-name", "FedoraServer")) <= 17
+    assert h.policy_name("vlan50", "a") != h.policy_name("vlan50", "b")
+    zone = h.render_zone(ACCESS_VLANS["vlan50"], ["dhcp", "dns"], ports=["22/tcp", "8000-8100/tcp"])
+    assert '<port port="22" protocol="tcp"/>' in zone and '<port port="8000-8100" protocol="tcp"/>' in zone
+
+
+def test_ufw_rules_keep_their_order():
+    rule = h.validate_access(
+        {
+            "rules": [
+                {
+                    "interface": "vlan50",
+                    "internet": True,
+                    "destinations": [{"network": "192.168.178.3", "ports": ["443/tcp", "8000-8100/tcp"]}],
+                    "services": ["22/tcp"],
+                }
+            ]
+        },
+        ACCESS_VLANS,
+    )["rules"][0]
+    rules = h.ufw_access_rules(rule, True, [(rule["destinations"][0], "eth0")], "eth0")
+    mark = "comment 'lanvex:vlan50'"
+    assert rules[:3] == h.ufw_wanted_rules("vlan50")
+    assert rules[3] == "ufw allow in on vlan50 to any port 22 proto tcp " + mark
+    assert rules[4] == "ufw route allow in on vlan50 out on eth0 to 192.168.178.3 port 443 proto tcp " + mark
+    assert (
+        rules[5]
+        == "ufw route allow in on vlan50 out on eth0 to 192.168.178.3 port 8000:8100 proto tcp " + mark
+    )
+    # Allowed hosts before private networks are closed, and only then everything else.
+    assert rules[6:11] == [f"ufw route deny in on vlan50 out on eth0 to {n} {mark}" for n in h.PRIVATE4]
+    assert rules[11] == "ufw route allow in on vlan50 out on eth0 " + mark
+
+
+def test_lanvex_nftables_table():
+    access = {
+        "rules": [
+            {
+                "interface": "vlan50",
+                "internet": True,
+                "destinations": [
+                    {"network": "192.168.60.0/24"},
+                    {"network": "172.30.0.13", "ports": ["22/tcp"]},
+                ],
+                "services": ["22/tcp", "123/udp"],
+            }
+        ]
+    }
+    rules = h.validate_access(access, ACCESS_VLANS)["rules"] + [h.default_rule("vlan60")]
+    d60, d13 = rules[0]["destinations"][1], rules[0]["destinations"][0]
+    pairs = {"vlan50": [(d60, "vlan60"), (d13, "eth0")], "vlan60": []}
+    text = h.render_nft(rules, pairs, "eth0", {"vlan50"}, ["vlan50", "vlan60"], filtering=True)
+    assert text.startswith("# " + h.MANAGED + "\ntable inet lanvex\ndelete table inet lanvex\n")
+    assert '    iifname "vlan50" jump in_vlan50\n' in text
+    assert "    udp dport { 53, 67 } accept\n    tcp dport 53 accept\n    tcp dport { 22 } accept\n" in text
+    assert "    udp dport { 123 } accept\n    drop\n" in text
+    assert '    oifname "vlan60" ip daddr 192.168.60.0/24 accept\n' in text
+    assert '    oifname "eth0" ip daddr 172.30.0.13/32 tcp dport { 22 } accept\n' in text
+    assert '    ip daddr @private4 drop\n    oifname "eth0" accept\n    drop\n' in text
+    assert '    oifname { "vlan50", "vlan60" } drop\n' in text  # nothing new into Lanvex's networks otherwise
+    assert '    iifname "vlan50" oifname "eth0" masquerade\n' in text  # not towards vlan60
+    assert 'vlan60" oifname' not in text
+    # Next to ufw: masquerading only.
+    nat_only = h.render_nft(rules, pairs, "eth0", {"vlan50"}, ["vlan50", "vlan60"], filtering=False)
+    assert "hook input" not in nat_only and "hook forward" not in nat_only and "masquerade" in nat_only

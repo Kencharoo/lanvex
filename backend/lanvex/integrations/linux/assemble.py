@@ -203,6 +203,7 @@ def assemble(results: Results) -> HostFacts:
         lldp=lldp,
         dhcp=_dhcp(results),
         lanvex_vlans=P.parse_lanvex_manifest(_out(results, Cmd.LANVEX_NETWORKS)),
+        lanvex_access=P.parse_lanvex_access(_out(results, Cmd.LANVEX_NETWORKS)),
         warnings=warnings,
     )
 

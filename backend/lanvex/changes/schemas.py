@@ -220,13 +220,100 @@ class DhcpSpec(ApiModel):
     pools: list[DhcpPool] = Field(default_factory=list, max_length=64)
 
 
+PORT_RE = re.compile(r"^([0-9]{1,5})(?:-([0-9]{1,5}))?/(tcp|udp)$")
+
+
+def check_port(v: str) -> str:
+    """'22/tcp' or '8000-8100/udp', normalised."""
+    m = PORT_RE.match(v.strip().lower())
+    if not m:
+        raise ValueError(f"{v} is not a port like 22/tcp or 8000-8100/udp.")
+    first, last = int(m.group(1)), int(m.group(2) or m.group(1))
+    if not 1 <= first <= last <= 65535:
+        raise ValueError(f"{v}: ports are between 1 and 65535.")
+    return f"{first}{f'-{last}' if last != first else ''}/{m.group(3)}"
+
+
+def _port_key(p: str) -> tuple[int, str, str]:
+    number, proto = p.split("/")
+    return (int(number.split("-")[0]), number, proto)
+
+
+def check_ports(v: list[str]) -> list[str]:
+    return sorted({check_port(x) for x in v}, key=_port_key)
+
+
+class Destination(ApiModel):
+    """Somewhere devices on a Lanvex network may reach through the server: a network or one address,
+    on every port or only on these."""
+
+    network: str
+    ports: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("network")
+    @classmethod
+    def _network(cls, v: str) -> str:
+        try:
+            net = ipaddress.IPv4Network(v.strip(), strict=False)
+        except ValueError:
+            raise ValueError(f"{v} is not an IPv4 network or address.") from None
+        if net.prefixlen == 0:
+            raise ValueError("Allow the Internet with its own switch, not 0.0.0.0/0.")
+        return str(net)
+
+    @field_validator("ports")
+    @classmethod
+    def _ports(cls, v: list[str]) -> list[str]:
+        return check_ports(v)
+
+
+class AccessSettings(ApiModel):
+    """What devices on one Lanvex network may reach. The default: DHCP and DNS on the server, nothing else."""
+
+    internet: bool = False
+    destinations: list[Destination] = Field(default_factory=list, max_length=64)
+    services: list[str] = Field(default_factory=list, max_length=32)  # ports on the server itself
+
+    @field_validator("services")
+    @classmethod
+    def _services(cls, v: list[str]) -> list[str]:
+        return check_ports(v)
+
+    @field_validator("destinations")
+    @classmethod
+    def _destinations(cls, v: list[Destination]) -> list[Destination]:
+        seen: dict[str, Destination] = {}
+        for d in v:
+            if d.network in seen:  # the same network twice: one entry with both sets of ports
+                old = seen[d.network]
+                ports = [] if not old.ports or not d.ports else check_ports(old.ports + d.ports)
+                seen[d.network] = Destination(network=d.network, ports=ports)
+            else:
+                seen[d.network] = d
+        return sorted(seen.values(), key=lambda d: (ipaddress.ip_network(d.network), d.ports))
+
+    @property
+    def is_default(self) -> bool:
+        return not self.internet and not self.destinations and not self.services
+
+
+class AccessRule(AccessSettings):
+    interface: str
+
+
+class AccessSpec(ApiModel):
+    rules: list[AccessRule] = Field(default_factory=list, max_length=64)
+
+
 class NetworksRequest(ApiModel):
-    """Every VLAN interface Lanvex manages on the server, and the DHCP pools on them. A Lanvex VLAN
-    interface missing here is removed. dhcp=None leaves DHCP as it is."""
+    """Every VLAN interface Lanvex manages on the server, the DHCP pools on them, and what devices on
+    them may reach. A Lanvex VLAN interface missing here is removed. dhcp=None leaves DHCP as it is;
+    access=None leaves the access rules as last applied."""
 
     kind: Literal["networks"]
     vlans: list[VlanSpec] = Field(default_factory=list, max_length=64)
     dhcp: DhcpSpec | None = None
+    access: AccessSpec | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> "NetworksRequest":
@@ -250,6 +337,20 @@ class NetworksRequest(ApiModel):
                     raise ValueError(f"{text} is not an IPv4 address.") from None
                 if not any(ip in n for n in nets):
                     raise ValueError(f"{ip} is not in the network of {p.interface}.")
+        seen: set[str] = set()
+        for r in self.access.rules if self.access else []:
+            vlan = by_name.get(r.interface)
+            if vlan is None:
+                raise ValueError(
+                    f"Access rules for {r.interface}: Lanvex sets them only on its own VLAN interfaces."
+                )
+            if r.interface in seen:
+                raise ValueError(f"{r.interface} has more than one access rule.")
+            seen.add(r.interface)
+            own = ipaddress.ip_interface(vlan.addresses[0]).network
+            for d in r.destinations:
+                if ipaddress.ip_network(d.network).overlaps(own):
+                    raise ValueError(f"{r.interface}: {d.network} is that network itself.")
         return self
 
     @property

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lanvex.auth.models import User
 from lanvex.changes.models import OPEN_STATUSES, ChangeStatus, ServerChange
 from lanvex.changes.schemas import (
+    AccessSettings,
     BrowserAddress,
     BrowserState,
     ChangeDetail,
@@ -174,6 +175,36 @@ def lanvex_vlans(facts: HostFacts) -> list[dict[str, Any]]:
     )
 
 
+def _covers(port: str, number: int, proto: str = "tcp") -> bool:
+    ports, p = port.split("/")
+    first, _, last = ports.partition("-")
+    return p == proto and int(first) <= number <= int(last or first)
+
+
+async def check_ssh_kept(s: Server, rules: dict[str, Any], addresses: dict[str, list[str]]) -> None:
+    """Lanvex signs in over SSH: a Lanvex network that carries that connection keeps SSH to the server.
+    rules: network -> its access settings."""
+    mgmt = set(await transport.resolve(s.address)) | ({s.verify_address} if s.verify_address else set())
+    ssh = s.port or 22
+    for name, rule in rules.items():
+        on_it = mgmt & {str(ipaddress.ip_interface(a).ip) for a in addresses.get(name, [])}
+        if on_it and not any(_covers(p, ssh) for p in rule.services):
+            raise ValidationFailed(
+                f"Lanvex connects to {s.name} over SSH at {', '.join(sorted(on_it))}, on {name}. Allow "
+                f"{ssh}/tcp on the server for {name}, or Lanvex loses its connection.",
+                fields={"services": [f"{ssh}/tcp is needed."]},
+            )
+
+
+def _access_text(rule: Any) -> str:
+    parts = (["Internet"] if rule.internet else []) + [
+        d.network + (f" ({', '.join(d.ports)})" if d.ports else "") for d in rule.destinations
+    ]
+    if rule.services:
+        parts.append("server " + ", ".join(rule.services))
+    return f"{rule.interface}: " + (", ".join(parts) or "DHCP and DNS only")
+
+
 def summarize_networks(r: NetworksRequest, before: list[dict[str, Any]]) -> str:
     have = {v["name"]: v for v in before}
     parts = []
@@ -196,6 +227,8 @@ def summarize_networks(r: NetworksRequest, before: list[dict[str, Any]]) -> str:
             + ", ".join(p.interface for p in r.dhcp.pools)
             + (f" ({fixed} fixed address{'' if fixed == 1 else 'es'})" if fixed else "")
         )
+    if r.access is not None and r.access.rules:
+        parts.append("access " + "; ".join(_access_text(x) for x in r.access.rules))
     return ("Networks: " + " · ".join(parts or ["no VLAN interfaces"]))[:500]
 
 
@@ -600,6 +633,13 @@ class ChangeService:
                     "VLAN interface and its address, or Lanvex loses the connection.",
                     fields={"vlans": [f"{v['name']} carries Lanvex's connection."]},
                 )
+        if req.access is not None:
+            given = {r.interface: r for r in req.access.rules}
+            await check_ssh_kept(
+                s,
+                {v.name: given.get(v.name) or AccessSettings() for v in req.vlans},
+                {v.name: v.addresses for v in req.vlans},
+            )
         warnings = [
             f"Removing {name} disconnects every device on that network from {s.name}."
             for name in sorted(mine - set(wanted))
@@ -609,7 +649,7 @@ class ChangeService:
                 "Devices on these networks get addresses and reach this server's DHCP and DNS. Reaching anything "
                 "beyond the server (other networks, the Internet) needs access rules, which come with Lanvex 0.9."
             )
-        return {"vlans": ours, "dhcp": None}, warnings
+        return {"vlans": ours, "dhcp": None, "access": facts.lanvex_access}, warnings
 
     async def _safety(self, s: Server, req: ChangeRequest, before: dict[str, Any]) -> list[str]:
         """Lanvex's own rules on top of the helper's: never cut the connection it relies on."""
