@@ -27,6 +27,7 @@ from lanvex.integrations.linux import adapter, helper, transport
 from lanvex.integrations.linux.adapter import Collection
 from lanvex.integrations.linux.assemble import assemble
 from lanvex.integrations.linux.commands import Cmd
+from lanvex.integrations.linux.lanvex_netapply import HELPER_VERSION
 from lanvex.servers.models import ServerSnapshot
 
 from .conftest import login
@@ -68,7 +69,7 @@ class FakeServer:
         self.states: dict[str, dict[str, Any]] = {}
         self.version: dict[str, Any] | Exception = {
             "ok": True,
-            "version": 1,
+            "version": HELPER_VERSION,
             "sha256": helper.sha256(),
             "python": "3.12.3",
             "tools": {"systemd_run": True},
@@ -291,7 +292,7 @@ async def test_readiness_reports_each_missing_piece(
     # Same version number, different file (an older build, or edited on the server): also outdated.
     fake.version = {
         "ok": True,
-        "version": 1,
+        "version": HELPER_VERSION,
         "sha256": "0" * 64,
         "python": "3.12.3",
         "tools": {"systemd_run": True},

@@ -34,9 +34,14 @@ run lab-netplan lanvex-target:netplan-networkd 172.30.0.11
 run lab-nm      lanvex-target:networkmanager   172.30.0.12
 run lab-ifup    lanvex-target:ifupdown         172.30.0.13
 docker network connect --ip 172.31.0.12 lanvex-lab-b lab-nm
+hosts="lab-netplan lab-nm lab-ifup"
+if docker image inspect lanvex-target:fedora >/dev/null 2>&1; then
+  run lab-fedora lanvex-target:fedora 172.30.0.14
+  hosts="$hosts lab-fedora"
+fi
 
 # Wait for systemd to finish booting.
-for c in lab-netplan lab-nm lab-ifup; do
+for c in $hosts; do
   i=0
   until state=$(docker exec "$c" systemctl is-system-running 2>/dev/null) && { [ "$state" = running ] || [ "$state" = degraded ]; }; do
     i=$((i + 1))
@@ -46,6 +51,10 @@ for c in lab-netplan lab-nm lab-ifup; do
     sleep 1
   done
   # Occasionally the socket unit is skipped on first boot in a container; starting it is idempotent.
-  docker exec "$c" systemctl start ssh-hostkeys.service ssh.socket
+  if [ "$c" = lab-fedora ]; then
+    docker exec "$c" systemctl start sshd.service
+  else
+    docker exec "$c" systemctl start ssh-hostkeys.service ssh.socket
+  fi
   echo "$c: $state"
 done

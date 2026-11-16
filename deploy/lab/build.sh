@@ -21,4 +21,9 @@ docker build --network host --build-arg MIRROR="$MIRROR" -t lanvex-target:common
 for v in netplan-networkd networkmanager ifupdown; do
   docker build --network host -t "lanvex-target:$v" "$v"
 done
+# The Fedora host comes from Fedora's own image, so it needs a container registry (CI has one).
+if [ "${LANVEX_LAB_FEDORA:-}" = 1 ]; then
+  docker build --network host -t lanvex-target:fedora fedora
+  echo "Built lanvex-target:fedora as well."
+fi
 echo "Built lanvex-target:{netplan-networkd,networkmanager,ifupdown}. Start them with ./up.sh"

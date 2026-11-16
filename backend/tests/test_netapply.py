@@ -457,3 +457,148 @@ def test_without_ping_the_arp_table_decides_or_the_check_is_skipped(monkeypatch)
     fake_tools(monkeypatch, None, "[]")
     c = h.gateway_check("eth0", "10.0.0.1")
     assert c["ok"] is None and "not checked" not in c["detail"] and "ARP table" in c["detail"]
+
+
+# ---- networks: VLAN interfaces, firewalld zones and DHCP -------------------------------------------------
+
+TEST_VLAN = {"name": "vlan50", "parent": "eth0", "id": 50, "addresses": ["192.168.50.1/24"]}
+TEST_POOL = {
+    "interface": "vlan50",
+    "start": "192.168.50.100",
+    "end": "192.168.50.199",
+    "lease": "2h",
+    "reservations": [
+        {"mac": "AA-BB-CC-00-00-02", "ip": "192.168.50.20", "name": "drucker"},
+        {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.50.10", "name": ""},
+    ],
+}
+
+
+def networks(vlans=None, pools=None):  # type: ignore[no-untyped-def]
+    return {
+        "kind": "networks",
+        "vlans": vlans if vlans is not None else [TEST_VLAN],
+        "dhcp": None if pools is None else {"pools": pools},
+    }
+
+
+def test_networks_validate_and_defaults():
+    out = h.validate_networks(networks(pools=[TEST_POOL]))
+    assert out["vlans"] == [TEST_VLAN]
+    pool = out["dhcp"]["pools"][0]
+    assert pool["network"] == "192.168.50.0/24"
+    assert pool["router"] == "192.168.50.1" and pool["dns"] == ["192.168.50.1"]  # the server itself
+    # MAC addresses normalised, fixed addresses sorted by address
+    assert [r["mac"] for r in pool["reservations"]] == ["aa:bb:cc:00:00:01", "aa:bb:cc:00:00:02"]
+    assert h.validate_networks(networks())["dhcp"] is None  # DHCP stays as it is
+    assert h.validate_networks(networks(vlans=[], pools=[]))["dhcp"] == {"pools": []}
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (networks(vlans=[TEST_VLAN | {"id": 0}]), "between 1 and 4094"),
+        (networks(vlans=[TEST_VLAN, TEST_VLAN | {"name": "vlan51"}]), "VLAN 50 on eth0 is listed twice"),
+        (networks(vlans=[TEST_VLAN | {"addresses": []}]), "needs between 1 and 8"),
+        (networks(vlans=[TEST_VLAN | {"name": "lo"}]), "loopback"),
+        (
+            networks(vlans=[TEST_VLAN, TEST_VLAN | {"name": "v51", "parent": "vlan50", "id": 51}]),
+            "on another Lanvex VLAN",
+        ),
+        (networks(pools=[TEST_POOL | {"interface": "eth0"}]), "only on VLAN interfaces it manages"),
+        (networks(pools=[TEST_POOL | {"end": "192.168.51.10"}]), "not inside one network"),
+        (
+            networks(pools=[TEST_POOL | {"start": "192.168.50.1"}]),
+            "own address 192.168.50.1 is inside the pool",
+        ),
+        (networks(pools=[TEST_POOL | {"start": "192.168.50.200", "end": "192.168.50.100"}]), "starts"),
+        (networks(pools=[TEST_POOL | {"lease": "forever"}]), "lease time"),
+        (
+            networks(pools=[TEST_POOL | {"reservations": [{"mac": "nope", "ip": "192.168.50.5"}]}]),
+            "not a MAC address",
+        ),
+        (
+            networks(
+                pools=[TEST_POOL | {"reservations": [{"mac": "aa:bb:cc:00:00:01", "ip": "192.168.50.1"}]}]
+            ),
+            "not a free address",
+        ),
+        (networks(pools=[TEST_POOL, TEST_POOL]), "more than one DHCP pool"),
+    ],
+)
+def test_networks_validate_rejects(change, message):  # type: ignore[no-untyped-def]
+    with pytest.raises(h.Refused) as e:
+        h.validate_networks(change)
+    assert message in e.value.message
+
+
+def test_zone_names_fit_firewalld():
+    assert h.zone_name("vlan50") == "lx-vlan50"
+    assert len(h.zone_name("a-very-long-nam")) == 17
+    long = TEST_VLAN | {"name": "classroom-wing1"}
+    with pytest.raises(h.Refused, match="zone name"):
+        h.validate_networks(networks(vlans=[long, long | {"name": "classroom-wing2", "id": 51}]))
+
+
+def test_render_vlan_profile_zone_and_dnsmasq():
+    change = h.validate_networks(networks(pools=[TEST_POOL]))
+    v = change["vlans"][0]
+    keyfile = h.render_vlan_keyfile(v, "11111111-2222-3333-4444-555555555555", "lx-vlan50")
+    assert (
+        "id=lanvex-vlan50\n" in keyfile
+        and "interface-name=vlan50\n" in keyfile
+        and "zone=lx-vlan50\n" in keyfile
+    )
+    assert "[vlan]\nflags=1\nid=50\nparent=eth0\n" in keyfile
+    assert "[ipv4]\nmethod=manual\naddress1=192.168.50.1/24\n" in keyfile
+    assert "zone=" not in h.render_vlan_keyfile(v, "u", None)  # without firewalld
+
+    zone = h.render_zone(v, ["dhcp", "dns"])
+    assert '<service name="dhcp"/>' in zone and '<service name="dns"/>' in zone
+    assert "--" not in zone.split("<!--")[1].split("-->")[0]  # XML forbids "--" inside a comment
+
+    conf = h.render_dnsmasq(change["dhcp"]["pools"])
+    assert "interface=vlan50\n" in conf
+    assert "dhcp-range=set:lx-vlan50,192.168.50.100,192.168.50.199,255.255.255.0,2h\n" in conf
+    assert "dhcp-option=tag:lx-vlan50,option:router,192.168.50.1\n" in conf
+    assert "dhcp-option=tag:lx-vlan50,option:dns-server,192.168.50.1\n" in conf
+    assert "dhcp-host=aa:bb:cc:00:00:01,set:lx-vlan50,192.168.50.10\n" in conf
+    assert "dhcp-host=aa:bb:cc:00:00:02,set:lx-vlan50,192.168.50.20,drucker\n" in conf
+
+
+def test_dnsmasq_reads_its_directory_and_conflicts(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    conf, d = tmp_path / "dnsmasq.conf", tmp_path / "dnsmasq.d"
+    d.mkdir()
+    monkeypatch.setattr(h, "DNSMASQ_CONF", str(conf))
+    monkeypatch.setattr(h, "DNSMASQ_DIR", str(d))
+    monkeypatch.setattr(h, "DNSMASQ_FILE", str(d / "lanvex.conf"))
+    conf.write_text("#conf-dir=/elsewhere\n")
+    assert h.dnsmasq_reads_dir() is False
+    conf.write_text(f"user=dnsmasq\nconf-dir={d},.rpmnew,.rpmsave,.rpmorig\n")  # as Fedora ships it
+    assert h.dnsmasq_reads_dir() is True
+
+    pools = h.validate_networks(networks(pools=[TEST_POOL]))["dhcp"]["pools"]
+    (d / "lanvex.conf").write_text("interface=vlan50\n")  # Lanvex's own file never conflicts
+    (d / "switch-mgmt.conf").write_text("interface=eno2\ndhcp-range=192.168.178.50,192.168.178.99\n")
+    assert h.dnsmasq_conflicts(pools) == []
+    (d / "nv-vlans.conf").write_text("# Netzverwaltung\ninterface=vlan50  # comment\n")
+    assert h.dnsmasq_conflicts(pools) == [(str(d / "nv-vlans.conf"), "interface=vlan50")]
+    (d / "nv-vlans.conf").write_text("dhcp-range=set:x,192.168.50.150,192.168.50.160,12h\n")
+    assert h.dnsmasq_conflicts(pools)[0][0].endswith("nv-vlans.conf")
+
+
+def test_networks_requests_go_through_plan_for(monkeypatch):  # type: ignore[no-untyped-def]
+    seen = {}
+
+    def fake_plan(change):  # type: ignore[no-untyped-def]
+        seen["change"] = change
+        return {"backend": "networkmanager", "files": [], "_changed": False}
+
+    monkeypatch.setattr(h, "networks_plan", fake_plan)
+    kind, change, _ = h.plan_for(networks(pools=[TEST_POOL]))
+    assert kind == "networks" and seen["change"] == change
+    with pytest.raises(h.Refused, match="Unknown kind"):
+        h.plan_for({"kind": "firewall"})
+    with pytest.raises(h.Refused) as e:
+        h.cmd_plan(networks())
+    assert e.value.code == "no_change"

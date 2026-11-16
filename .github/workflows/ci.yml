@@ -151,14 +151,16 @@ jobs:
           --health-cmd "pg_isready -U lanvex" --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@v4
-      - name: Build the lab (three Ubuntu 24.04 servers, one per network stack)
-        # Normally 3 minutes; a stalled mirror download should fail the job, not use up its time.
-        timeout-minutes: 15
+      - name: Build the lab (Ubuntu 24.04 with each network stack, and Fedora 44 like KlassenServer)
+        # Normally 3 to 5 minutes; a stalled mirror download should fail the job, not use up its time.
+        timeout-minutes: 20
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq debootstrap >/dev/null
+          # VLAN interfaces in the lab containers need the host kernel's 802.1Q module.
+          sudo modprobe 8021q
           # The runners' own Ubuntu mirror: archive.ubuntu.com stalled mid-download from them.
           sudo LANVEX_LAB_ROOTFS=/tmp/lanvex-lab/rootfs LANVEX_LAB_MIRROR=http://azure.archive.ubuntu.com/ubuntu \
-            deploy/lab/build.sh
+            LANVEX_LAB_FEDORA=1 deploy/lab/build.sh
       - name: Start the lab
         run: sudo deploy/lab/up.sh
       - uses: actions/setup-python@v5
@@ -192,7 +194,7 @@ jobs:
       - name: Lab state and logs
         if: failure()
         run: |
-          for c in lab-netplan lab-nm lab-ifup; do
+          for c in lab-netplan lab-nm lab-ifup lab-fedora; do
             echo "== $c"; docker exec "$c" systemctl is-system-running || true
             docker exec "$c" journalctl --no-pager -n 30 || true
           done
