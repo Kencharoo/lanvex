@@ -159,12 +159,34 @@ def run(argv: list, timeout: float = 60, check: bool = False) -> subprocess.Comp
     except FileNotFoundError as e:
         raise Refused("missing_tool", "%s is not installed." % argv[0]) from e
     except subprocess.TimeoutExpired as e:
-        raise Refused("timeout", "%s did not finish within %ss." % (" ".join(argv[:2]), timeout)) from e
+        raise Refused(
+            "timeout", "%s did not finish within %ss.%s" % (" ".join(argv[:3]), timeout, _unit_log(argv))
+        ) from e
     if check and r.returncode != 0:
         raise Refused(
-            "command_failed", "%s failed: %s" % (" ".join(argv[:3]), (r.stderr or r.stdout).strip()[:500])
+            "command_failed",
+            "%s failed: %s%s" % (" ".join(argv[:3]), (r.stderr or r.stdout).strip()[:500], _unit_log(argv)),
         )
     return r
+
+
+def _unit_log(argv: list) -> str:
+    """For a service that did not start: its last log lines, which say why."""
+    if len(argv) < 3 or argv[0] != "systemctl" or argv[1] not in ("start", "restart", "reload"):
+        return ""
+    try:
+        r = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["journalctl", "-u", argv[-1], "-n", "12", "-o", "cat", "--no-pager"],
+            env=ENV,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    lines = [x for x in r.stdout.splitlines() if x.strip()][-8:]
+    return (" Its log: " + " | ".join(lines))[:1200] if lines else ""
 
 
 def which(name: str) -> str | None:
@@ -1743,8 +1765,9 @@ def render_dns_unit() -> str:
             "# " + MANAGED,
             "[Unit]",
             "Description=Lanvex DNS filter for %i",
-            "After=network-online.target dnsmasq.service",
-            "Wants=network-online.target",
+            # Not network-online.target: it brings up its own address, and waiting for every link to
+            # be online can take minutes (a bridge without carrier never is).
+            "After=network.target dnsmasq.service",
             "ConditionPathExists=%s/%%i.conf" % DNS_DIR,
             "",
             "[Service]",
