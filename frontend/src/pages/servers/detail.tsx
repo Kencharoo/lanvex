@@ -12,6 +12,7 @@ import { Checkbox, Field, Input, Select } from "@/components/ui/form";
 import { Badge, EmptyState, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Notice, Skeleton, type Tone } from "@/components/ui/misc";
 import { useSession } from "@/app/session";
 import { ChangesSection } from "./changes-section";
+import { NetworksSection } from "./networks-section";
 import { changeSeedFor, differs, RecordDialog, type ChangeSeed } from "./record";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
@@ -190,6 +191,12 @@ export function ServerDetailPage() {
               onPrepareChange={setChangeSeed}
             />
           )}
+        </div>
+      )}
+
+      {s && (
+        <div className="mt-8">
+          <NetworksSection server={s} facts={facts ?? null} isAdmin={isAdmin} />
         </div>
       )}
 

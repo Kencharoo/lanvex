@@ -1,7 +1,7 @@
 import { CheckCircle2, CircleHelp, XCircle } from "lucide-react";
 import type * as React from "react";
 import { Badge, type Tone } from "@/components/ui/misc";
-import type { ChangeCheck, ChangeDetail, ChangeStatus } from "@/lib/types";
+import type { ChangeCheck, ChangeDetail, ChangeStatus, InterfaceBefore } from "@/lib/types";
 import { absoluteTime, cn } from "@/lib/utils";
 
 /** Wording reflects what Lanvex knows, never more: "rolled back" and "needs attention" are not successes. */
@@ -107,7 +107,7 @@ function list(values: string[] | undefined, empty = "None") {
 type Row = [string, React.ReactNode, React.ReactNode, boolean];
 
 /** DNS is only part of a change when the request says so; null means "left as it is". */
-function dnsRow(label: string, b: ChangeDetail["before"], before: string[] | undefined, after: string[] | null): Row {
+function dnsRow(label: string, b: InterfaceBefore | null, before: string[] | undefined, after: string[] | null): Row {
   const now = b && b.dns_known ? list(before) : <span className="text-faint">Not reported</span>;
   if (after === null) return [label, now, <span className="text-faint">Unchanged</span>, false];
   return [label, now, list(after), !b || !b.dns_known || (before ?? []).join() !== after.join()];
@@ -115,6 +115,7 @@ function dnsRow(label: string, b: ChangeDetail["before"], before: string[] | und
 
 /** The interface before (as last read) and after (as requested), row by row, changes highlighted. */
 export function BeforeAfter({ change }: { change: ChangeDetail }) {
+  if (change.kind === "networks") return <NetworksBeforeAfter change={change} />;
   const b = change.before;
   const r = change.request;
   const rows: Row[] = [
@@ -158,3 +159,69 @@ export function BeforeAfter({ change }: { change: ChangeDetail }) {
   );
 }
 
+
+/** A networks change: each VLAN interface and DHCP pool, as the server had it and as requested. */
+function NetworksBeforeAfter({ change }: { change: Extract<ChangeDetail, { kind: "networks" }> }) {
+  const before = new Map((change.before?.vlans ?? []).map((v) => [v.name, v]));
+  const after = new Map(change.request.vlans.map((v) => [v.name, v]));
+  const names = [...new Set([...before.keys(), ...after.keys()])].sort();
+  const pools = new Map((change.request.dhcp?.pools ?? []).map((p) => [p.interface, p]));
+  const pending = change.status === "pending_approval";
+  const label = (v: { parent: string; id: number; addresses: string[] } | undefined) =>
+    v ? `VLAN ${v.id} on ${v.parent} · ${v.addresses.join(", ")}` : <span className="text-faint">Not there</span>;
+  return (
+    <div className="overflow-x-auto rounded-[var(--radius-panel)] border border-line bg-surface">
+      <table className="w-full text-[13px]">
+        <thead>
+          <tr className="border-b border-line text-left text-xs text-muted">
+            <th className="px-3 py-2 font-medium">VLAN interface</th>
+            <th className="px-3 py-2 font-medium">{pending ? "Now (last read)" : "Before"}</th>
+            <th className="px-3 py-2 font-medium">{pending ? "After the change" : "Requested"}</th>
+            <th className="px-3 py-2 font-medium">DHCP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {names.map((name) => {
+            const b = before.get(name);
+            const a = after.get(name);
+            const p = pools.get(name);
+            const changed = JSON.stringify(b ?? null) !== JSON.stringify(a ?? null);
+            return (
+              <tr key={name} className="border-b border-line last:border-0 align-top">
+                <th scope="row" className="addr px-3 py-2 text-left font-medium">
+                  {name}
+                </th>
+                <td className="addr px-3 py-2">{label(b)}</td>
+                <td className={cn("addr px-3 py-2", changed && "font-medium text-ink")}>
+                  {a ? label(a) : <span className="text-danger">Removed</span>}
+                </td>
+                <td className="px-3 py-2 text-xs">
+                  {change.request.dhcp === null ? (
+                    <span className="text-faint">Unchanged</span>
+                  ) : p ? (
+                    <>
+                      <span className="addr">
+                        {p.start} to {p.end}
+                      </span>
+                      , lease {p.lease}
+                      {p.reservations.length > 0 && <>, {p.reservations.length} fixed</>}
+                    </>
+                  ) : (
+                    <span className="text-faint">None</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+          {names.length === 0 && (
+            <tr>
+              <td colSpan={4} className="px-3 py-3 text-muted">
+                No VLAN interfaces managed by Lanvex, before or after.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}

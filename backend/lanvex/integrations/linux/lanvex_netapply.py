@@ -1021,6 +1021,12 @@ def nm_interface_name(path: str) -> str | None:
     return None
 
 
+def dnsmasq_service() -> bool:
+    """Is the dnsmasq service installed? NetworkManager depends on the dnsmasq program alone (Debian's and
+    Ubuntu's dnsmasq-base), which serves nothing by itself."""
+    return bool(which("dnsmasq")) and run(["systemctl", "cat", "dnsmasq.service"], timeout=15).returncode == 0
+
+
 def service_state(unit: str) -> dict:
     active = run(["systemctl", "is-active", unit], timeout=15).stdout.strip()
     enabled = run(["systemctl", "is-enabled", unit], timeout=15).stdout.strip()
@@ -1196,10 +1202,11 @@ def networks_plan(change: dict) -> dict:
     dnsmasq = None
     if pools is not None:
         if pools:
-            if not which("dnsmasq"):
+            if not dnsmasq_service():
                 raise Refused(
                     "missing_tool",
-                    "dnsmasq is not installed. Install it (dnf install dnsmasq), then prepare the change again.",
+                    "The dnsmasq service is not installed (at most the dnsmasq program NetworkManager uses). Install "
+                    "the package dnsmasq (dnf install dnsmasq, or apt install dnsmasq), then prepare the change again.",
                 )
             if not dnsmasq_reads_dir():
                 raise Refused(
@@ -1215,7 +1222,7 @@ def networks_plan(change: dict) -> dict:
                     % (clash[0][0], clash[0][1]),
                 )
         add(DNSMASQ_FILE, "dnsmasq: DHCP for the Lanvex networks", render_dnsmasq(pools) if pools else None)
-        if which("dnsmasq"):
+        if dnsmasq_service():
             dnsmasq = dict(service_state("dnsmasq"), wanted=bool(pools))
 
     commands = []
@@ -1577,7 +1584,7 @@ def cmd_version(_req: dict) -> dict:
             "networkmanager_running": nm_running(),
             "systemd_run": bool(which("systemd-run")),
             "ping": bool(which("ping")),
-            "dnsmasq": bool(which("dnsmasq")),
+            "dnsmasq": dnsmasq_service(),
             "firewall_cmd": bool(which("firewall-cmd")),
         },
         "kinds": ["interface_ipv4", "networks"],

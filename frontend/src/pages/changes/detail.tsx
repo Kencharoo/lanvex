@@ -112,7 +112,7 @@ export function ChangeDetailPage() {
         )}
         {c.can_decide && <BrowserDecision change={c} onDecided={refresh} />}
         <Outcome change={c} />
-        {c.status === "succeeded" && isAdmin && <Documentation change={c} />}
+        {c.status === "succeeded" && isAdmin && c.kind === "interface_ipv4" && <Documentation change={c} />}
 
         <Section title={pending ? "What changes" : "What was requested"} description={c.summary}>
           <BeforeAfter change={c} />

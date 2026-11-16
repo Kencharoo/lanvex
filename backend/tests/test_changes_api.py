@@ -265,7 +265,9 @@ async def prepare(admin: httpx.AsyncClient, sid: str, **over: Any) -> dict[str, 
 async def approve_and_run(
     admin: httpx.AsyncClient, runner: ChangeRunner, change: dict[str, Any]
 ) -> dict[str, Any]:
-    r = await admin.post(f"/api/v1/changes/{change['id']}/approve", json={"confirm_name": change["server_name"]})
+    r = await admin.post(
+        f"/api/v1/changes/{change['id']}/approve", json={"confirm_name": change["server_name"]}
+    )
     assert r.status_code == 200 and r.json()["status"] == "approved", r.text
     assert await runner.run_once() is True
     return (await admin.get(f"/api/v1/changes/{change['id']}")).json()
@@ -981,7 +983,7 @@ async def test_networks_change_end_to_end(
     change = r.json()
     assert change["kind"] == "networks" and change["interface"] == "networks"
     assert change["summary"] == (
-        "Networks: add vlan50 (VLAN 50 on eth0, 192.168.50.1/24) · DHCP on vlan50 (1 fixed addresses)"
+        "Networks: add vlan50 (VLAN 50 on eth0, 192.168.50.1/24) · DHCP on vlan50 (1 fixed address)"
     )
     assert change["request"]["dhcp"]["pools"][0]["reservations"][0]["mac"] == "aa:bb:cc:00:00:01"
     assert any("access rules" in w for w in change["preview"]["warnings"])

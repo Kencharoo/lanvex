@@ -518,6 +518,41 @@ export interface ChangeRequestBody {
   verify_dns_name?: string | null;
 }
 
+export interface VlanSpec {
+  name: string;
+  parent: string;
+  id: number;
+  addresses: string[];
+}
+
+export interface DhcpPoolSpec {
+  interface: string;
+  start: string;
+  end: string;
+  lease: string;
+  router: string | null;
+  dns: string[] | null;
+  reservations: { mac: string; ip: string; name: string }[];
+}
+
+/** Every VLAN interface Lanvex manages on a server, and the DHCP pools on them. */
+export interface NetworksRequestBody {
+  kind: "networks";
+  vlans: VlanSpec[];
+  dhcp: { pools: DhcpPoolSpec[] } | null;
+}
+
+export interface InterfaceBefore {
+  method: "static" | "dhcp";
+  addresses: string[];
+  dynamic_addresses: string[];
+  gateway: string | null;
+  dns_servers: string[];
+  dns_search: string[];
+  dns_known: boolean;
+  managed_by: string | null;
+}
+
 export interface ChangeOut {
   id: string;
   number: number;
@@ -544,18 +579,13 @@ export interface ChangeCheck {
   detail: string;
 }
 
-export interface ChangeDetail extends ChangeOut {
-  request: ChangeRequestBody;
-  before: {
-    method: "static" | "dhcp";
-    addresses: string[];
-    dynamic_addresses: string[];
-    gateway: string | null;
-    dns_servers: string[];
-    dns_search: string[];
-    dns_known: boolean;
-    managed_by: string | null;
-  } | null;
+export type ChangeDetail = ChangeDetailBase &
+  (
+    | { kind: "interface_ipv4"; request: ChangeRequestBody; before: InterfaceBefore | null }
+    | { kind: "networks"; request: NetworksRequestBody; before: { vlans: VlanSpec[]; dhcp: null } | null }
+  );
+
+interface ChangeDetailBase extends ChangeOut {
   preview: {
     backend: string;
     files: { path: string; label: string; diff: string; before: string; after: string }[];
@@ -652,4 +682,46 @@ export interface Topology {
   site_id: number | null;
   truncated: boolean;
   skipped_cables: number;
+}
+
+// ---- networks on a server ----------------------------------------------------------------------------
+
+export type NetworkStatus = "in_sync" | "missing" | "differs" | "removed" | "protected" | "foreign" | "incomplete" | "unknown";
+export type DhcpStatus = "in_sync" | "missing" | "differs" | "removed" | "none";
+
+export interface NetworkLease {
+  ip: string;
+  mac: string;
+  hostname: string | null;
+  expires_at: string | null;
+  fixed: boolean;
+}
+
+export interface ServerNetwork {
+  name: string;
+  parent: string | null;
+  vlan_id: number | null;
+  vlan_name: string | null;
+  addresses: string[];
+  network: string | null;
+  netbox_interface_id: number | null;
+  status: NetworkStatus;
+  note: string | null;
+  on_server: { parent: string | null; id: number | null; addresses: string[] } | null;
+  pool: { start: string; end: string; lease: string; ip_range_id: number | null } | null;
+  fixed: { ip: string; mac: string; name: string | null; ip_id: number | null }[];
+  dhcp: DhcpStatus | null;
+  leases: NetworkLease[];
+}
+
+export interface NetworksView {
+  linked: boolean;
+  supported: boolean | null;
+  stack_label: string | null;
+  read_at: string | null;
+  networks: ServerNetwork[];
+  in_sync: boolean;
+  change: NetworksRequestBody | null;
+  missing_fields: string[];
+  other_leases: NetworkLease[];
 }

@@ -183,7 +183,7 @@ def summarize_networks(r: NetworksRequest, before: list[dict[str, Any]]) -> str:
         parts.append(
             "DHCP on "
             + ", ".join(p.interface for p in r.dhcp.pools)
-            + (f" ({fixed} fixed addresses)" if fixed else "")
+            + (f" ({fixed} fixed address{'' if fixed == 1 else 'es'})" if fixed else "")
         )
     return ("Networks: " + " · ".join(parts or ["no VLAN interfaces"]))[:500]
 
