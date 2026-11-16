@@ -28,8 +28,10 @@ from lanvex.changes.schemas import (
     ConnectionPath,
     HelperInstall,
     HelperStatus,
+    NetworksRequest,
     Preview,
     Readiness,
+    parse_request,
 )
 from lanvex.core.config import Settings
 from lanvex.core.errors import Conflict, NotFound, PermissionDenied, ValidationFailed
@@ -41,6 +43,9 @@ from lanvex.servers.models import Server
 from lanvex.servers.service import ServerService
 
 SUPPORTED_STACKS = {"netplan-networkd", "netplan-networkmanager", "networkmanager"}
+# VLAN interfaces and DHCP: NetworkManager keyfiles, also where netplan hands interfaces to it.
+NETWORK_STACKS = {"networkmanager", "netplan-networkmanager"}
+LANVEX_PROFILE = "lanvex-"
 # Lanvex stops verifying, and stops taking a decision from the browser, this long before the server's
 # own rollback deadline, so a confirmation never races the server's timer.
 CONFIRM_MARGIN = timedelta(seconds=15)
@@ -108,7 +113,8 @@ def to_detail(
         )
     return ChangeDetail(
         **to_out(c).model_dump(),
-        request=ChangeRequest.model_validate(c.request),
+        kind=c.kind,
+        request=parse_request(c.kind, c.request),
         before=c.before,
         preview=preview,
         rollback_seconds=c.rollback_seconds,
@@ -138,6 +144,48 @@ def summarize(r: ChangeRequest) -> str:
         if r.dns_search:
             parts.append("search " + ", ".join(r.dns_search))
     return f"{r.interface}: " + " · ".join(parts)
+
+
+def lanvex_vlans(facts: HostFacts) -> list[dict[str, Any]]:
+    """The VLAN interfaces Lanvex manages on the server (NetworkManager profiles lanvex-*), as last read."""
+    return sorted(
+        (
+            {
+                "name": i.name,
+                "parent": i.parent,
+                "id": i.vlan_id,
+                "addresses": [a.address for a in i.addresses if a.family == 4 and not a.dynamic],
+            }
+            for i in facts.interfaces
+            if i.kind == "vlan" and (i.manager_profile or "").startswith(LANVEX_PROFILE)
+        ),
+        key=lambda v: v["name"],
+    )
+
+
+def summarize_networks(r: NetworksRequest, before: list[dict[str, Any]]) -> str:
+    have = {v["name"]: v for v in before}
+    parts = []
+    for v in r.vlans:
+        old = have.get(v.name)
+        label = f"{v.name} (VLAN {v.id} on {v.parent}, {', '.join(v.addresses)})"
+        if old is None:
+            parts.append("add " + label)
+        elif (old["parent"], old["id"], sorted(old["addresses"])) != (v.parent, v.id, sorted(v.addresses)):
+            parts.append("change " + label)
+    parts += [f"remove {name}" for name in sorted(set(have) - {v.name for v in r.vlans})]
+    if r.dhcp is None:
+        parts.append("DHCP unchanged")
+    elif not r.dhcp.pools:
+        parts.append("no DHCP")
+    else:
+        fixed = sum(len(p.reservations) for p in r.dhcp.pools)
+        parts.append(
+            "DHCP on "
+            + ", ".join(p.interface for p in r.dhcp.pools)
+            + (f" ({fixed} fixed addresses)" if fixed else "")
+        )
+    return ("Networks: " + " · ".join(parts or ["no VLAN interfaces"]))[:500]
 
 
 def interface_state(facts: HostFacts, name: str) -> dict[str, Any] | None:
@@ -354,7 +402,7 @@ class ChangeService:
 
     # ---- preparing --------------------------------------------------------------------------------
 
-    async def prepare(self, s: Server, req: ChangeRequest, user: User) -> ServerChange:
+    async def prepare(self, s: Server, req: ChangeRequest | NetworksRequest, user: User) -> ServerChange:
         readiness = await self.readiness(s)
         if readiness.open_change:
             raise Conflict(
@@ -371,24 +419,13 @@ class ChangeService:
         facts = HostFacts.model_validate(snap.facts)
         if facts.stack.key not in SUPPORTED_STACKS:
             raise Conflict(f"Lanvex cannot change servers managed by {facts.stack.primary}.")
-        guard = next((p for p in s.protected_interfaces or [] if fnmatch.fnmatchcase(req.interface, p)), None)
-        if guard is not None:
-            raise ValidationFailed(
-                f"{req.interface} is protected on {s.name} ({guard}): another tool manages it. Change it there, "
-                "or remove it from the server's protected interfaces.",
-                fields={"interface": ["Protected."]},
-            )
-        before = interface_state(facts, req.interface)
-        if before is None:
-            raise ValidationFailed(
-                f"{s.name} has no interface {req.interface}.", fields={"interface": ["Not on the server."]}
-            )
-        if before["kind"] == "loopback" or before["master"]:
-            raise ValidationFailed(
-                f"{req.interface} is a loopback interface or part of a bridge or bond and cannot be changed.",
-                fields={"interface": ["Not changeable."]},
-            )
-        warnings = await self._safety(s, req, before)
+        before: dict[str, Any]
+        if isinstance(req, NetworksRequest):
+            before, warnings = await self._prepare_networks(s, req, facts)
+            summary = summarize_networks(req, before["vlans"])
+        else:
+            before, warnings = await self._prepare_interface(s, req, facts)
+            summary = summarize(req)
         if s.confirm_in_browser:
             warnings.append(
                 f"You confirm this change in your browser. After it is applied and checked, keep its page open and "
@@ -428,7 +465,10 @@ class ChangeService:
         except helper.HelperRefused as e:
             if e.code == "no_change":
                 raise ValidationFailed(
-                    "This is already the interface's configuration. Nothing to change.", code="no_change"
+                    "The server already has exactly these VLAN interfaces and DHCP pools. Nothing to change."
+                    if isinstance(req, NetworksRequest)
+                    else "This is already the interface's configuration. Nothing to change.",
+                    code="no_change",
                 ) from e
             raise ValidationFailed(f"The server cannot make this change: {e.message}", code=e.code) from e
         except helper.HelperUnavailable as e:
@@ -442,8 +482,9 @@ class ChangeService:
         c = ServerChange(
             server_id=s.id,
             server_name=s.name,
+            kind=req.kind,
             interface=req.interface,
-            summary=summarize(req),
+            summary=summary,
             request=req.model_dump(mode="json"),
             before=before,
             preview={
@@ -467,6 +508,85 @@ class ChangeService:
             await self.db.rollback()
             raise Conflict("Another change for this server was prepared at the same time.") from e
         return c
+
+    def _protected(self, s: Server, name: str) -> str | None:
+        return next((p for p in s.protected_interfaces or [] if fnmatch.fnmatchcase(name, p)), None)
+
+    async def _prepare_interface(
+        self, s: Server, req: ChangeRequest, facts: HostFacts
+    ) -> tuple[dict[str, Any], list[str]]:
+        guard = self._protected(s, req.interface)
+        if guard is not None:
+            raise ValidationFailed(
+                f"{req.interface} is protected on {s.name} ({guard}): another tool manages it. Change it there, "
+                "or remove it from the server's protected interfaces.",
+                fields={"interface": ["Protected."]},
+            )
+        before = interface_state(facts, req.interface)
+        if before is None:
+            raise ValidationFailed(
+                f"{s.name} has no interface {req.interface}.", fields={"interface": ["Not on the server."]}
+            )
+        if before["kind"] == "loopback" or before["master"]:
+            raise ValidationFailed(
+                f"{req.interface} is a loopback interface or part of a bridge or bond and cannot be changed.",
+                fields={"interface": ["Not changeable."]},
+            )
+        return before, await self._safety(s, req, before)
+
+    async def _prepare_networks(
+        self, s: Server, req: NetworksRequest, facts: HostFacts
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Lanvex's own rules for VLAN interfaces, on top of the helper's."""
+        if facts.stack.key not in NETWORK_STACKS:
+            raise Conflict(
+                f"{s.name}'s network is managed by {facts.stack.primary}. Lanvex creates VLAN interfaces and serves DHCP "
+                "on servers whose network NetworkManager manages (Fedora, RHEL, and Ubuntu with NetworkManager); "
+                "other stacks follow.",
+                code="unsupported_stack",
+            )
+        ours = lanvex_vlans(facts)
+        mine = {v["name"] for v in ours}
+        present = {i.name: i for i in facts.interfaces}
+        for v in req.vlans:
+            guard = self._protected(s, v.name)
+            if guard is not None:
+                raise ValidationFailed(
+                    f"{v.name} is protected on {s.name} ({guard}): another tool manages interfaces with this name. "
+                    "Choose another name for the Lanvex network.",
+                    fields={"vlans": [f"{v.name} is protected."]},
+                )
+            if v.name in present and v.name not in mine:
+                raise ValidationFailed(
+                    f"{v.name} already exists on {s.name} and was not created by Lanvex. Lanvex does not change it.",
+                    fields={"vlans": [f"{v.name} exists."]},
+                )
+            if v.parent not in present:
+                raise ValidationFailed(
+                    f"{s.name} has no interface {v.parent} for VLAN {v.id}.",
+                    fields={"vlans": [f"No {v.parent}."]},
+                )
+        # Never cut the connection Lanvex relies on: a Lanvex VLAN carrying it must stay with that address.
+        mgmt = set(await transport.resolve(s.address)) | ({s.verify_address} if s.verify_address else set())
+        wanted = {v.name: {a.split("/")[0] for a in v.addresses} for v in req.vlans}
+        for v in ours:
+            carried = mgmt & {a.split("/")[0] for a in v["addresses"]}
+            if carried and not carried <= wanted.get(v["name"], set()):
+                raise ValidationFailed(
+                    f"Lanvex connects to {s.name} at {', '.join(sorted(carried))}, which is on {v['name']}. Keep that "
+                    "VLAN interface and its address, or Lanvex loses the connection.",
+                    fields={"vlans": [f"{v['name']} carries Lanvex's connection."]},
+                )
+        warnings = [
+            f"Removing {name} disconnects every device on that network from {s.name}."
+            for name in sorted(mine - set(wanted))
+        ]
+        if req.dhcp is not None and req.dhcp.pools:
+            warnings.append(
+                "Devices on these networks get addresses and reach this server's DHCP and DNS. Reaching anything "
+                "beyond the server (other networks, the Internet) needs access rules, which come with Lanvex 0.9."
+            )
+        return {"vlans": ours, "dhcp": None}, warnings
 
     async def _safety(self, s: Server, req: ChangeRequest, before: dict[str, Any]) -> list[str]:
         """Lanvex's own rules on top of the helper's: never cut the connection it relies on."""

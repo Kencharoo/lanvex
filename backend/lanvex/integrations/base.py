@@ -17,6 +17,7 @@ class Capability(StrEnum):
     READ_NETWORK_STACK = "read.network_stack"
     READ_NEIGHBORS = "read.neighbors"  # ARP/neighbour table and LLDP neighbours (discovery)
     CHANGE_INTERFACE_IPV4 = "change.interface_ipv4"  # one interface's IPv4 addresses, gateway and DNS
+    CHANGE_NETWORKS = "change.networks"  # VLAN interfaces, their firewalld zones, and DHCP for them
 
 
 ADAPTERS: dict[str, frozenset[Capability]] = {}

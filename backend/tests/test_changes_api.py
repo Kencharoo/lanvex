@@ -84,6 +84,7 @@ class FakeServer:
         self.deadline: datetime | None = None
         self.down: set[str] = set()  # addresses that do not answer
         self.down_after_apply: set[str] = set()  # addresses a change cuts off
+        self.facts = assemble(load("netplan"))  # what a read of the server returns
 
     def _timer(self) -> None:
         """The server's rollback timer: fires at the deadline unless the change was confirmed."""
@@ -118,6 +119,23 @@ class FakeServer:
         if cmd == Cmd.HELPER_PLAN:
             if self.plan_error:
                 raise self.plan_error
+            if payload and payload.get("kind") == "networks":
+                return {
+                    "ok": True,
+                    "backend": "networkmanager",
+                    "files": [
+                        {
+                            "path": "/etc/NetworkManager/system-connections/lanvex-vlan50.nmconnection",
+                            "label": "NetworkManager profile for vlan50 (VLAN 50 on eth0)",
+                            "before": "",
+                            "after": "[vlan]\nid=50\n",
+                            "sha256": None,
+                            "action": "create",
+                        }
+                    ],
+                    "commands": ["nmcli connection reload", "nmcli connection up id lanvex-vlan50"],
+                    "warnings": [],
+                }
             return {
                 "ok": True,
                 "backend": "netplan",
@@ -187,7 +205,6 @@ def clock() -> FakeClock:
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> FakeServer:
     f = FakeServer(clock)
-    facts = assemble(load("netplan"))
 
     async def resolve(address: str) -> list[str]:
         return [address]
@@ -195,7 +212,7 @@ def fake(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> FakeServer:
     async def collect(target: transport.Target, connect_timeout: float, command_timeout: float) -> Collection:
         if not f.can_connect():
             raise transport.SSHError("unreachable", code="unreachable")
-        return Collection(facts=facts, raw={}, duration_ms=5)
+        return Collection(facts=f.facts, raw={}, duration_ms=5)
 
     async def upload(conn: object, filename: str, data: bytes, timeout: float) -> str:
         return f"/home/lanvex/{filename}"
@@ -248,7 +265,7 @@ async def prepare(admin: httpx.AsyncClient, sid: str, **over: Any) -> dict[str, 
 async def approve_and_run(
     admin: httpx.AsyncClient, runner: ChangeRunner, change: dict[str, Any]
 ) -> dict[str, Any]:
-    r = await admin.post(f"/api/v1/changes/{change['id']}/approve", json={"confirm_name": "web-01"})
+    r = await admin.post(f"/api/v1/changes/{change['id']}/approve", json={"confirm_name": change["server_name"]})
     assert r.status_code == 200 and r.json()["status"] == "approved", r.text
     assert await runner.run_once() is True
     return (await admin.get(f"/api/v1/changes/{change['id']}")).json()
@@ -904,3 +921,125 @@ async def test_a_failed_check_is_rolled_back_without_asking_the_browser(
     fake.verify_passed = False
     done = await approve_and_run(admin, runner, change)
     assert done["status"] == "rolled_back" and done["browser"] is None
+
+
+# ---- networks: VLAN interfaces and DHCP ----------------------------------------------------------------
+
+NM_ADDRESS = "172.30.0.12"  # lab-nm's address in the NetworkManager fixture
+VLAN50 = {"name": "vlan50", "parent": "eth0", "id": 50, "addresses": ["192.168.50.1/24"]}
+POOL50 = {
+    "interface": "vlan50",
+    "start": "192.168.50.100",
+    "end": "192.168.50.199",
+    "lease": "2h",
+    "reservations": [{"mac": "AA:BB:CC:00:00:01", "ip": "192.168.50.10", "name": "drucker"}],
+}
+
+
+def networks_body(**over: Any) -> dict[str, Any]:
+    return {"kind": "networks", "vlans": [VLAN50], "dhcp": {"pools": [POOL50]}} | over
+
+
+async def nm_server(admin: httpx.AsyncClient, fake: FakeServer) -> str:
+    fake.facts = assemble(load("nm"))
+    r = await admin.post("/api/v1/servers", json=server_body(name="router-01", address=NM_ADDRESS, port=22))
+    assert r.status_code == 201, r.text
+    sid = r.json()["server"]["id"]
+    assert (await admin.post(f"/api/v1/servers/{sid}/collect")).status_code == 200
+    assert (await admin.post(f"/api/v1/servers/{sid}/changes/helper/check")).status_code == 200
+    r = await admin.put(f"/api/v1/servers/{sid}/changes/enabled", json={"enabled": True})
+    assert r.json()["ready"] is True, r.json()["blockers"]
+    return sid
+
+
+def with_lanvex_vlan(facts: Any, address: str) -> Any:
+    """The NetworkManager fixture with a Lanvex VLAN interface carrying `address`."""
+    eth0 = next(i for i in facts.interfaces if i.name == "eth0")
+    vlan = eth0.model_copy(
+        update={
+            "name": "vlan50",
+            "kind": "vlan",
+            "parent": "eth0",
+            "vlan_id": 50,
+            "manager_profile": "lanvex-vlan50",
+            "addresses": [
+                a.model_copy(update={"address": f"{address}/24"}) for a in eth0.addresses if a.family == 4
+            ],
+        }
+    )
+    return facts.model_copy(update={"interfaces": [*facts.interfaces, vlan]})
+
+
+async def test_networks_change_end_to_end(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await nm_server(admin, fake)
+    caps = (await admin.get(f"/api/v1/servers/{sid}")).json()["capabilities"]
+    assert "change.networks" in caps
+    r = await admin.post(f"/api/v1/servers/{sid}/changes", json=networks_body())
+    assert r.status_code == 201, r.text
+    change = r.json()
+    assert change["kind"] == "networks" and change["interface"] == "networks"
+    assert change["summary"] == (
+        "Networks: add vlan50 (VLAN 50 on eth0, 192.168.50.1/24) · DHCP on vlan50 (1 fixed addresses)"
+    )
+    assert change["request"]["dhcp"]["pools"][0]["reservations"][0]["mac"] == "aa:bb:cc:00:00:01"
+    assert any("access rules" in w for w in change["preview"]["warnings"])
+    plan = next(p for cmd, p in fake.calls if cmd == Cmd.HELPER_PLAN)
+    assert plan is not None and plan["kind"] == "networks" and plan["vlans"] == [VLAN50]
+
+    done = await approve_and_run(admin, runner, change)
+    assert done["status"] == "succeeded", done["log"]
+    applied = next(p for cmd, p in fake.calls if cmd == Cmd.HELPER_APPLY)
+    assert applied is not None and applied["kind"] == "networks"
+    # A file the change creates is expected not to exist yet.
+    assert applied["expect"]["files"] == {
+        "/etc/NetworkManager/system-connections/lanvex-vlan50.nmconnection": None
+    }
+
+
+async def test_networks_change_safety_rules(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    sid = await nm_server(admin, fake)
+
+    async def refused(body: dict[str, Any], status: int, text: str) -> None:
+        r = await admin.post(f"/api/v1/servers/{sid}/changes", json=body)
+        assert r.status_code == status and text in r.text, r.text
+
+    await refused(
+        networks_body(vlans=[VLAN50 | {"name": "eth1"}], dhcp=None), 422, "was not created by Lanvex"
+    )
+    await refused(networks_body(vlans=[VLAN50 | {"parent": "eno9"}], dhcp=None), 422, "has no interface eno9")
+    await refused(
+        networks_body(dhcp={"pools": [POOL50 | {"interface": "eth0"}]}), 422, "only on VLAN interfaces"
+    )
+    await refused(
+        networks_body(dhcp={"pools": [POOL50 | {"end": "192.168.51.9"}]}), 422, "not in the network"
+    )
+    await refused(networks_body(vlans=[VLAN50, VLAN50 | {"name": "vlan51"}]), 422, "same VLAN")
+    await admin.patch(f"/api/v1/servers/{sid}", json={"protected_interfaces": ["vlan*"]})
+    await refused(networks_body(), 422, "vlan50 is protected on router-01 (vlan*)")
+    await admin.patch(f"/api/v1/servers/{sid}", json={"protected_interfaces": []})
+
+    # A Lanvex VLAN that carries Lanvex's own connection is never removed or moved.
+    fake.facts = with_lanvex_vlan(fake.facts, NM_ADDRESS.replace("172.30.0.12", "192.168.50.1"))
+    await admin.patch(f"/api/v1/servers/{sid}", json={"confirm_in_browser": True})
+    r = await admin.post(
+        "/api/v1/servers", json=server_body(name="via-vlan", address="192.168.50.1", port=22)
+    )
+    via = r.json()["server"]["id"]
+    assert (await admin.post(f"/api/v1/servers/{via}/collect")).status_code == 200
+    await admin.post(f"/api/v1/servers/{via}/changes/helper/check")
+    await admin.put(f"/api/v1/servers/{via}/changes/enabled", json={"enabled": True})
+    r = await admin.post(f"/api/v1/servers/{via}/changes", json=networks_body(vlans=[], dhcp=None))
+    assert r.status_code == 422 and "which is on vlan50" in r.text, r.text
+    r = await admin.post(f"/api/v1/servers/{via}/changes", json=networks_body(dhcp=None))
+    assert r.status_code == 201 and r.json()["summary"] == "Networks: DHCP unchanged", r.text
+
+
+async def test_networks_change_needs_networkmanager(
+    admin: httpx.AsyncClient, ready_server: str, fake: FakeServer
+) -> None:
+    r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=networks_body())
+    assert r.status_code == 409 and r.json()["error"]["code"] == "unsupported_stack"

@@ -2,9 +2,9 @@ import ipaddress
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Discriminator, Field, Tag, field_validator, model_validator
 
 from lanvex.changes.models import ChangeStatus
 from lanvex.schemas import ApiModel
@@ -17,9 +17,39 @@ DOMAIN_RE = re.compile(
 HelperStateName = Literal["unknown", "ok", "outdated", "missing", "no_sudo", "no_python", "timeout", "error"]
 
 
+def check_addresses(v: list[str]) -> list[str]:
+    """IPv4 addresses with prefix length an interface can have."""
+    out: list[str] = []
+    for text in v:
+        text = text.strip()
+        try:
+            a = ipaddress.ip_interface(text)
+        except ValueError:
+            raise ValueError(f"{text} is not an address with prefix length, e.g. 192.0.2.10/24.") from None
+        if not isinstance(a, ipaddress.IPv4Interface):
+            raise ValueError("Only IPv4 addresses can be changed so far.")
+        if "/" not in text or a.network.prefixlen == 0:
+            raise ValueError(f"{text} needs a prefix length, e.g. /24.")
+        if (
+            a.ip.is_loopback
+            or a.ip.is_multicast
+            or a.ip.is_link_local
+            or a.ip.is_unspecified
+            or a.ip.is_reserved
+        ):
+            raise ValueError(f"{a.ip} cannot be assigned to an interface.")
+        if a.network.prefixlen < 31 and a.ip in (a.network.network_address, a.network.broadcast_address):
+            raise ValueError(f"{a.ip} is the network or broadcast address of {a.network}.")
+        out.append(str(a))
+    if len({a.split("/")[0] for a in out}) != len(out):
+        raise ValueError("The same address is listed twice.")
+    return out
+
+
 class ChangeRequest(ApiModel):
     """The IPv4 settings an interface should have. Everything else on the interface stays as it is."""
 
+    kind: Literal["interface_ipv4"] = "interface_ipv4"
     interface: str
     method: Literal["static", "dhcp"]
     addresses: list[str] = Field(default_factory=list, max_length=32)
@@ -41,33 +71,7 @@ class ChangeRequest(ApiModel):
     @field_validator("addresses")
     @classmethod
     def _addresses(cls, v: list[str]) -> list[str]:
-        out: list[str] = []
-        for text in v:
-            text = text.strip()
-            try:
-                a = ipaddress.ip_interface(text)
-            except ValueError:
-                raise ValueError(
-                    f"{text} is not an address with prefix length, e.g. 192.0.2.10/24."
-                ) from None
-            if not isinstance(a, ipaddress.IPv4Interface):
-                raise ValueError("Only IPv4 addresses can be changed so far.")
-            if "/" not in text or a.network.prefixlen == 0:
-                raise ValueError(f"{text} needs a prefix length, e.g. /24.")
-            if (
-                a.ip.is_loopback
-                or a.ip.is_multicast
-                or a.ip.is_link_local
-                or a.ip.is_unspecified
-                or a.ip.is_reserved
-            ):
-                raise ValueError(f"{a.ip} cannot be assigned to an interface.")
-            if a.network.prefixlen < 31 and a.ip in (a.network.network_address, a.network.broadcast_address):
-                raise ValueError(f"{a.ip} is the network or broadcast address of {a.network}.")
-            out.append(str(a))
-        if len({a.split("/")[0] for a in out}) != len(out):
-            raise ValueError("The same address is listed twice.")
-        return out
+        return check_addresses(v)
 
     @field_validator("gateway")
     @classmethod
@@ -146,6 +150,137 @@ class ChangeRequest(ApiModel):
             "ipv4": {"method": self.method, "addresses": self.addresses, "gateway": self.gateway},
             "dns": {"servers": self.dns_servers, "search": self.dns_search} if self.changes_dns else None,
         }
+
+
+MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+LEASE_RE = re.compile(r"^([1-9][0-9]{0,4}[mhd]|infinite)$")
+HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
+class VlanSpec(ApiModel):
+    """A VLAN interface Lanvex manages on the server."""
+
+    name: str
+    parent: str
+    id: int = Field(ge=1, le=4094)
+    addresses: list[str] = Field(min_length=1, max_length=8)
+
+    @field_validator("name", "parent")
+    @classmethod
+    def _iface(cls, v: str) -> str:
+        if not IFACE_RE.match(v) or v == "lo":
+            raise ValueError("Not an interface name.")
+        return v
+
+    @field_validator("addresses")
+    @classmethod
+    def _addresses(cls, v: list[str]) -> list[str]:
+        return check_addresses(v)
+
+
+class Reservation(ApiModel):
+    mac: str
+    ip: str
+    name: str = ""
+
+    @field_validator("mac")
+    @classmethod
+    def _mac(cls, v: str) -> str:
+        v = v.strip().lower().replace("-", ":")
+        if not MAC_RE.match(v):
+            raise ValueError(f"{v} is not a MAC address like aa:bb:cc:dd:ee:ff.")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if v and not HOSTNAME_RE.match(v):
+            raise ValueError(f"{v} is not a host name (letters, digits, hyphens).")
+        return v
+
+
+class DhcpPool(ApiModel):
+    interface: str
+    start: str
+    end: str
+    lease: str = "12h"
+    router: str | None = None  # default: the server's address on the interface
+    dns: list[str] | None = Field(default=None, max_length=4)  # default: the server's address
+    reservations: list[Reservation] = Field(default_factory=list, max_length=1000)
+
+    @field_validator("lease")
+    @classmethod
+    def _lease(cls, v: str) -> str:
+        if not LEASE_RE.match(v):
+            raise ValueError("A lease time like 12h, 30m, 2d or infinite.")
+        return v
+
+
+class DhcpSpec(ApiModel):
+    pools: list[DhcpPool] = Field(default_factory=list, max_length=64)
+
+
+class NetworksRequest(ApiModel):
+    """Every VLAN interface Lanvex manages on the server, and the DHCP pools on them. A Lanvex VLAN
+    interface missing here is removed. dhcp=None leaves DHCP as it is."""
+
+    kind: Literal["networks"]
+    vlans: list[VlanSpec] = Field(default_factory=list, max_length=64)
+    dhcp: DhcpSpec | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "NetworksRequest":
+        names = [v.name for v in self.vlans]
+        if len(set(names)) != len(names):
+            raise ValueError("A VLAN interface is listed twice.")
+        if len({(v.parent, v.id) for v in self.vlans}) != len(self.vlans):
+            raise ValueError("The same VLAN on the same parent is listed twice.")
+        by_name = {v.name: v for v in self.vlans}
+        for p in self.dhcp.pools if self.dhcp else []:
+            vlan = by_name.get(p.interface)
+            if vlan is None:
+                raise ValueError(
+                    f"DHCP on {p.interface}: Lanvex serves DHCP only on VLAN interfaces it manages."
+                )
+            nets = [ipaddress.ip_interface(a).network for a in vlan.addresses]
+            for text in (p.start, p.end, *(r.ip for r in p.reservations)):
+                try:
+                    ip = ipaddress.ip_address(text)
+                except ValueError:
+                    raise ValueError(f"{text} is not an IPv4 address.") from None
+                if not any(ip in n for n in nets):
+                    raise ValueError(f"{ip} is not in the network of {p.interface}.")
+        return self
+
+    @property
+    def interface(self) -> str:
+        return "networks"
+
+    @property
+    def verify_dns_name(self) -> None:
+        return None
+
+    def helper_payload(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+def _kind(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("kind") or "interface_ipv4"
+    return getattr(v, "kind", "interface_ipv4")
+
+
+AnyChangeRequest = Annotated[
+    Annotated[ChangeRequest, Tag("interface_ipv4")] | Annotated[NetworksRequest, Tag("networks")],
+    Discriminator(_kind),
+]
+
+
+def parse_request(kind: str, data: dict[str, Any]) -> "ChangeRequest | NetworksRequest":
+    """A stored request; requests from before kinds existed are interface changes."""
+    if kind == "networks":
+        return NetworksRequest.model_validate(data)
+    return ChangeRequest.model_validate(data)
 
 
 class EnabledUpdate(ApiModel):
@@ -268,7 +403,8 @@ class LogEntry(ApiModel):
 
 
 class ChangeDetail(ChangeOut):
-    request: ChangeRequest
+    kind: str = "interface_ipv4"
+    request: AnyChangeRequest
     before: dict[str, Any] | None
     preview: Preview | None
     rollback_seconds: int

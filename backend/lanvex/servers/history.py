@@ -46,6 +46,10 @@ def _comparable(facts: dict[str, Any]) -> dict[str, Any]:
         for i in sorted(facts.get("interfaces", []), key=lambda i: i["name"])
     ]
     out["routes"] = sorted(facts.get("routes", []), key=lambda r: json.dumps(r, sort_keys=True))
+    # DHCP: the pools are configuration; leases come and go with every device, like neighbours.
+    out.pop("dhcp", None)
+    if (facts.get("dhcp") or {}).get("pools"):
+        out["dhcp"] = sorted(facts["dhcp"]["pools"], key=lambda p: p["interface"])
     stack = dict(facts.get("stack") or {})
     stack.pop("evidence", None)
     out["stack"] = stack

@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lanvex.audit.models import AuditEvent
 from lanvex.changes.models import IN_PROGRESS, ChangeStatus, ServerChange
-from lanvex.changes.schemas import ChangeRequest
+from lanvex.changes.schemas import parse_request
 from lanvex.changes.service import CONFIRM_MARGIN, note
 from lanvex.core.config import Settings
 from lanvex.core.db import Database
@@ -232,7 +232,7 @@ class _Execution:
         self.s = s
         self.settings = runner.settings
         self.servers = ServerService(db, runner.settings, runner.netbox())
-        self.request = ChangeRequest.model_validate(c.request)
+        self.request = parse_request(c.kind, c.request)
         self.id = c.id.hex
         self.lead: str | None = None  # why Lanvex did not confirm, when it lost track afterwards
 

@@ -37,9 +37,10 @@ OWNED_ADDRESSES = ("172.30.0.11", "172.30.0.50", "10.11.0.1", "172.30.0.60", "19
 
 
 def sh(host: str, script: str) -> str:
-    return subprocess.run(
-        ["docker", "exec", host, "sh", "-c", script], check=True, capture_output=True, text=True
-    ).stdout
+    r = subprocess.run(["docker", "exec", host, "sh", "-c", script], capture_output=True, text=True)
+    if r.returncode != 0:  # say why: a bare CalledProcessError hides what the command printed
+        raise AssertionError(f"{host}: exit {r.returncode}: {script}\n{r.stdout}{r.stderr}")
+    return r.stdout
 
 
 def server_fingerprint(host: str) -> str:

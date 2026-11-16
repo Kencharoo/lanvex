@@ -385,3 +385,63 @@ def test_neighbour_entries_without_a_host_are_skipped() -> None:
     )
     [n] = P.parse_neighbors(text)
     assert (n.address, n.mac, n.router) == ("192.0.2.10", "aa:bb:cc:dd:ee:ff", True)
+
+
+# ---- DHCP (constructed in the exact form the helper writes and dnsmasq keeps leases) -----------------
+
+LANVEX_DNSMASQ = """# Managed by Lanvex. Edits here are replaced by the next Lanvex change.
+# One block per network Lanvex serves DHCP on.
+
+# vlan50: 192.168.50.0/24
+interface=vlan50
+dhcp-range=set:lx-vlan50,192.168.50.100,192.168.50.199,255.255.255.0,2h
+dhcp-option=tag:lx-vlan50,option:router,192.168.50.1
+dhcp-option=tag:lx-vlan50,option:dns-server,192.168.50.1,192.168.50.2
+dhcp-host=AA:BB:CC:00:00:01,set:lx-vlan50,192.168.50.10
+dhcp-host=aa:bb:cc:00:00:02,set:lx-vlan50,192.168.50.20,drucker
+
+# vlan60: 10.60.0.0/16
+interface=vlan60
+dhcp-range=set:lx-vlan60,10.60.1.0,10.60.1.255,255.255.0.0,infinite
+dhcp-option=tag:lx-vlan60,option:router,10.60.0.1
+dhcp-option=tag:lx-vlan60,option:dns-server,10.60.0.1
+"""
+
+LEASES = """1789000000 aa:bb:cc:00:00:02 192.168.50.20 drucker 01:aa:bb:cc:00:00:02
+0 02:42:ac:1e:00:0c 192.168.50.101 * *
+1789000300 02:42:AC:1E:00:0D 10.60.1.7 laptop-7 *
+duid 00:01:00:01:2c:5f:5e:2b:02:42:ac:1e:00:0e
+1789000000 1234 fe80::1 * 00:01
+"""
+
+
+def test_lanvex_dnsmasq_file_and_leases() -> None:
+    pools = P.parse_lanvex_dnsmasq(LANVEX_DNSMASQ)
+    assert [(p.interface, p.start, p.end, p.netmask, p.lease, p.router, p.dns) for p in pools] == [
+        (
+            "vlan50",
+            "192.168.50.100",
+            "192.168.50.199",
+            "255.255.255.0",
+            "2h",
+            "192.168.50.1",
+            ["192.168.50.1", "192.168.50.2"],
+        ),
+        ("vlan60", "10.60.1.0", "10.60.1.255", "255.255.0.0", "infinite", "10.60.0.1", ["10.60.0.1"]),
+    ]
+    assert [(r.mac, r.ip, r.name) for r in pools[0].reservations] == [
+        ("aa:bb:cc:00:00:01", "192.168.50.10", None),
+        ("aa:bb:cc:00:00:02", "192.168.50.20", "drucker"),
+    ]
+    leases = P.parse_dnsmasq_leases(LEASES)
+    assert [(x.ip, x.mac, x.hostname) for x in leases] == [
+        ("10.60.1.7", "02:42:ac:1e:00:0d", "laptop-7"),
+        ("192.168.50.20", "aa:bb:cc:00:00:02", "drucker"),
+        ("192.168.50.101", "02:42:ac:1e:00:0c", None),
+    ]
+    assert leases[2].expires_at is None and leases[1].expires_at is not None
+
+
+def test_dhcp_is_read_only_on_networkmanager_servers() -> None:
+    assert assemble(load("nm")).dhcp is not None and assemble(load("nm")).dhcp.pools == []
+    assert assemble(load("netplan")).dhcp is None or assemble(load("netplan")).dhcp.pools == []

@@ -40,8 +40,21 @@ def running(host: str) -> bool:
 def fedora() -> None:
     if not running(HOST):
         pytest.skip("lab-fedora is not running (build the lab with LANVEX_LAB_FEDORA=1)")
-    subprocess.run(["docker", "cp", str(helper.HELPER_FILE), f"{HOST}:/tmp/lanvex-netapply"], check=True)
-    sh(HOST, f"install -D -m 0755 -o root -g root /tmp/lanvex-netapply {HELPER}")
+    # Piped in rather than copied: Fedora mounts a fresh tmpfs on /tmp, which hides what docker cp puts there.
+    subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            HOST,
+            "sh",
+            "-c",
+            f"mkdir -p {HELPER.rsplit('/', 1)[0]} && cat > {HELPER} && chmod 0755 {HELPER}",
+        ],
+        input=helper.HELPER_FILE.read_bytes(),
+        check=True,
+        capture_output=True,
+    )
 
 
 @pytest.fixture(autouse=True)

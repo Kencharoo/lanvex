@@ -34,6 +34,8 @@ class Cmd(StrEnum):
     LLDPD_STATE = "lldpd_state"
     LLDPCLI_NEIGHBORS = "lldpcli_neighbors"
     NETWORKCTL_LLDP = "networkctl_lldp"
+    DHCP_CONFIG = "dhcp_config"
+    DHCP_LEASES = "dhcp_leases"
     HELPER_VERSION = "helper_version"
     HELPER_PLAN = "helper_plan"
     HELPER_APPLY = "helper_apply"
@@ -75,6 +77,10 @@ COMMANDS: dict[Cmd, str] = {
     Cmd.LLDPD_STATE: _ENV + "systemctl is-active lldpd",
     Cmd.LLDPCLI_NEIGHBORS: _ENV + "lldpcli -f json0 show neighbors details",
     Cmd.NETWORKCTL_LLDP: _ENV + "networkctl lldp --no-pager",
+    # DHCP Lanvex serves (its own dnsmasq file) and the leases dnsmasq gave out (Fedora, then Debian path).
+    Cmd.DHCP_CONFIG: _ENV + "sh -c 'cat /etc/dnsmasq.d/lanvex.conf 2>/dev/null; true'",
+    Cmd.DHCP_LEASES: _ENV
+    + "sh -c 'cat /var/lib/dnsmasq/dnsmasq.leases /var/lib/misc/dnsmasq.leases 2>/dev/null; true'",
     Cmd.HELPER_VERSION: _HELPER + "version",
     Cmd.HELPER_PLAN: _HELPER + "plan",
     Cmd.HELPER_APPLY: _HELPER + "apply",
@@ -113,7 +119,7 @@ BASE_COMMANDS = (
     Cmd.NEIGHBORS,
     Cmd.LLDPD_STATE,
 )
-NETWORKMANAGER_COMMANDS = (Cmd.NMCLI_DEVICES,)
+NETWORKMANAGER_COMMANDS = (Cmd.NMCLI_DEVICES, Cmd.DHCP_CONFIG, Cmd.DHCP_LEASES)
 NETWORKD_COMMANDS = (Cmd.NETWORKCTL_LIST, Cmd.NETWORKCTL_LLDP)
 LLDPD_COMMANDS = (Cmd.LLDPCLI_NEIGHBORS,)
 RESOLVED_COMMANDS = (Cmd.RESOLVECTL_DNS, Cmd.RESOLVECTL_DOMAIN)

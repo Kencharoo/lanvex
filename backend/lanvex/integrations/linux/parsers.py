@@ -8,11 +8,15 @@ import ipaddress
 import json
 import re
 import shlex
+from datetime import UTC, datetime
 from typing import Any
 
 from lanvex.integrations.linux.commands import STACK_UNITS
 from lanvex.integrations.linux.facts import (
     Address,
+    DhcpLease,
+    DhcpPool,
+    DhcpReservation,
     Interface,
     LldpNeighbor,
     Neighbor,
@@ -442,3 +446,67 @@ def parse_networkctl_lldp(text: str) -> list[LldpNeighbor]:
             )
         )
     return out
+
+
+# ---- DHCP (dnsmasq) ----------------------------------------------------------------------------------
+
+
+def parse_lanvex_dnsmasq(text: str) -> list[DhcpPool]:
+    """Lanvex's own dnsmasq file, in the form the helper writes it: one block per interface."""
+    pools: dict[str, DhcpPool] = {}
+    by_tag: dict[str, DhcpPool] = {}
+    current: DhcpPool | None = None
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        key, _, value = line.partition("=")
+        if key == "interface" and value:
+            current = pools.setdefault(value, DhcpPool(interface=value, start="", end=""))
+        elif key == "dhcp-range" and current is not None:
+            parts = value.split(",")
+            if parts and parts[0].startswith("set:"):
+                by_tag[parts[0][4:]] = current
+                parts = parts[1:]
+            if len(parts) >= 2:
+                current.start, current.end = parts[0], parts[1]
+                current.netmask = parts[2] if len(parts) > 2 else None
+                current.lease = parts[3] if len(parts) > 3 else None
+        elif key == "dhcp-option":
+            parts = value.split(",")
+            pool = by_tag.get(parts[0][4:]) if parts and parts[0].startswith("tag:") else current
+            if pool is not None and len(parts) >= 3:
+                if parts[1] == "option:router":
+                    pool.router = parts[2]
+                elif parts[1] == "option:dns-server":
+                    pool.dns = parts[2:]
+        elif key == "dhcp-host":
+            parts = value.split(",")
+            tag = next((p[4:] for p in parts if p.startswith("set:")), None)
+            pool = by_tag.get(tag) if tag else current
+            rest = [p for p in parts[1:] if not p.startswith("set:")]
+            if pool is not None and rest:
+                pool.reservations.append(
+                    DhcpReservation(mac=parts[0].lower(), ip=rest[0], name=rest[1] if len(rest) > 1 else None)
+                )
+    return [p for p in pools.values() if p.start]
+
+
+def parse_dnsmasq_leases(text: str) -> list[DhcpLease]:
+    """dnsmasq.leases: "<expiry epoch> <mac> <ip> <hostname or *> <client id or *>", one lease a line."""
+    out = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or ":" not in parts[1] or "." not in parts[2]:
+            continue  # IPv6 leases and the duid line have another form
+        try:
+            expiry = int(parts[0])
+        except ValueError:
+            continue
+        out.append(
+            DhcpLease(
+                ip=parts[2],
+                mac=parts[1].lower(),
+                hostname=None if parts[3] == "*" else parts[3],
+                expires_at=None if expiry == 0 else datetime.fromtimestamp(expiry, UTC),
+            )
+        )
+    return sorted(out, key=lambda x: tuple(int(o) for o in x.ip.split(".")))

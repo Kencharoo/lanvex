@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from lanvex.integrations.linux import parsers as P
 from lanvex.integrations.linux.commands import Cmd
 from lanvex.integrations.linux.facts import (
+    DhcpFacts,
     DNSInfo,
     HostFacts,
     Interface,
@@ -200,7 +201,19 @@ def assemble(results: Results) -> HostFacts:
         stack=stack,
         neighbors=neighbors,
         lldp=lldp,
+        dhcp=_dhcp(results),
         warnings=warnings,
+    )
+
+
+def _dhcp(results: Results) -> DhcpFacts | None:
+    """Lanvex's DHCP pools and dnsmasq's leases, where they were read (NetworkManager servers)."""
+    config, leases = results.get(Cmd.DHCP_CONFIG), results.get(Cmd.DHCP_LEASES)
+    if config is None or not config.ok:
+        return None
+    return DhcpFacts(
+        pools=P.parse_lanvex_dnsmasq(config.stdout),
+        leases=P.parse_dnsmasq_leases(leases.stdout) if leases is not None and leases.ok else [],
     )
 
 

@@ -124,6 +124,39 @@ class LldpNeighbor(BaseModel):
     capabilities: list[str] = Field(default_factory=list)  # enabled ones: Bridge, Router, …
 
 
+class DhcpReservation(BaseModel):
+    mac: str
+    ip: str
+    name: str | None = None
+
+
+class DhcpPool(BaseModel):
+    """A pool in Lanvex's own dnsmasq file (/etc/dnsmasq.d/lanvex.conf)."""
+
+    interface: str
+    start: str
+    end: str
+    netmask: str | None = None
+    lease: str | None = None
+    router: str | None = None
+    dns: list[str] = Field(default_factory=list)
+    reservations: list[DhcpReservation] = Field(default_factory=list)
+
+
+class DhcpLease(BaseModel):
+    """An address dnsmasq gave out (its leases file)."""
+
+    ip: str
+    mac: str
+    hostname: str | None = None
+    expires_at: datetime | None = None  # None: never (infinite lease)
+
+
+class DhcpFacts(BaseModel):
+    pools: list[DhcpPool] = Field(default_factory=list)
+    leases: list[DhcpLease] = Field(default_factory=list)
+
+
 class HostFacts(BaseModel):
     collected_at: datetime
     system: SystemInfo
@@ -134,4 +167,6 @@ class HostFacts(BaseModel):
     # Discovery. Older snapshots have neither.
     neighbors: list[Neighbor] = Field(default_factory=list)
     lldp: list[LldpNeighbor] = Field(default_factory=list)
+    # DHCP Lanvex serves on this server and its leases; None where not read (no NetworkManager, older reads).
+    dhcp: DhcpFacts | None = None
     warnings: list[str] = Field(default_factory=list)

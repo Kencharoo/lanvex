@@ -31,6 +31,7 @@ CAPABILITIES = {
     Capability.READ_NETWORK_STACK,
     Capability.READ_NEIGHBORS,
     Capability.CHANGE_INTERFACE_IPV4,
+    Capability.CHANGE_NETWORKS,
 }
 register(NAME, CAPABILITIES)
 

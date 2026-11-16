@@ -6,11 +6,11 @@ from fastapi import APIRouter, Query, Request, Response, status
 from lanvex.changes.models import ChangeStatus
 from lanvex.changes.runner import ChangeRunner
 from lanvex.changes.schemas import (
+    AnyChangeRequest,
     ApproveRequest,
     BrowserDecision,
     ChangeDetail,
     ChangeOut,
-    ChangeRequest,
     EnabledUpdate,
     HelperInstall,
     Readiness,
@@ -106,7 +106,7 @@ async def set_enabled(
 @router.post("/servers/{server_id}/changes", response_model=ChangeDetail, status_code=status.HTTP_201_CREATED)
 async def prepare_change(
     server_id: uuid.UUID,
-    body: ChangeRequest,
+    body: AnyChangeRequest,
     request: Request,
     db: DB,
     settings: SettingsDep,

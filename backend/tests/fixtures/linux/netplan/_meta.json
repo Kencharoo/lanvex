@@ -3,6 +3,14 @@
   "exit_status": 0,
   "stderr": ""
  },
+ "dhcp_config": {
+  "exit_status": 0,
+  "stderr": ""
+ },
+ "dhcp_leases": {
+  "exit_status": 0,
+  "stderr": ""
+ },
  "hostname": {
   "exit_status": 0,
   "stderr": ""
