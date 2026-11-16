@@ -1372,8 +1372,9 @@ DNSMASQ_SKIPPED = (".rpmnew", ".rpmsave", ".rpmorig", ".dpkg-dist", ".dpkg-old",
 TAKING_OVER: set = set()
 
 
-def dnsmasq_other_files() -> list:
-    """dnsmasq's configuration files other than Lanvex's: the main file and every file in its directory."""
+def dnsmasq_other_files(now: bool = False) -> list:
+    """dnsmasq's configuration files other than Lanvex's: the main file and every file in its directory.
+    Without the files a takeover replaces, unless `now` (what dnsmasq reads at this moment)."""
     files = [DNSMASQ_CONF]
     if os.path.isdir(DNSMASQ_DIR):
         files += sorted(
@@ -1381,7 +1382,7 @@ def dnsmasq_other_files() -> list:
             for f in os.listdir(DNSMASQ_DIR)
             if not f.startswith(".") and not f.endswith(DNSMASQ_SKIPPED)
         )
-    return [f for f in files if f != DNSMASQ_FILE and f not in TAKING_OVER and os.path.isfile(f)]
+    return [f for f in files if f != DNSMASQ_FILE and (now or f not in TAKING_OVER) and os.path.isfile(f)]
 
 
 def dnsmasq_lines(path: str) -> list:
@@ -1406,15 +1407,18 @@ def dnsmasq_serves_others() -> list:
     ]
 
 
-def dnsmasq_others() -> dict:
+def dnsmasq_others(now: bool = False) -> dict:
     """What other dnsmasq configuration already decides: whether it restricts the interfaces dnsmasq
-    answers on, and whether it chooses how dnsmasq binds."""
-    restricted = bind = False
-    for path in dnsmasq_other_files():
-        for key, _, _ in dnsmasq_lines(path):
-            restricted = restricted or key in ("interface", "listen-address", "except-interface")
+    answers on, and whether it chooses how dnsmasq binds. `now`: with the files a takeover replaces."""
+    listed = local_host = bind = False
+    for path in dnsmasq_other_files(now):
+        for key, value, _ in dnsmasq_lines(path):
+            listed = listed or key in ("interface", "listen-address", "except-interface")
+            # local-service=host (Fedora's and RHEL's default) answers on loopback alone and binds its
+            # addresses, until an interface= or listen-address= line anywhere ends it.
+            local_host = local_host or (key == "local-service" and value == "host")
             bind = bind or key in ("bind-interfaces", "bind-dynamic")
-    return {"restricted": restricted, "bind": bind}
+    return {"restricted": listed or local_host, "bind": bind, "loopback_only": local_host and not listed}
 
 
 def dnsmasq_mode(active: bool) -> tuple:
@@ -1423,11 +1427,17 @@ def dnsmasq_mode(active: bool) -> tuple:
     if os.path.exists(DNSMASQ_FILE):
         lines = [x.strip() for x in read_text(DNSMASQ_FILE).splitlines()]
         return any(x.startswith("interface=") for x in lines), "bind-dynamic" in lines
-    others = dnsmasq_others()
-    if active and not others["restricted"]:
+    others, now = dnsmasq_others(), dnsmasq_others(now=True)
+    if active and not now["restricted"]:
         # dnsmasq already answers on every interface for someone else: listing ours would end that.
+        # (Taking over: whether the configuration replaced restricted it decides, as dnsmasq runs now.)
         return False, False
-    return True, not others["bind"] and not active
+    # dnsmasq binds the wildcard address unless told otherwise. Where it runs and binds it already, that
+    # stays; where it does not run yet, or binds loopback alone (local-service=host, which Lanvex's
+    # interface lines end), it binds only its interfaces' addresses, so it starts next to
+    # systemd-resolved.
+    wildcard_now = active and not now["bind"] and not now["loopback_only"]
+    return True, not others["bind"] and not wildcard_now
 
 
 def ufw_wanted_rules(iface: str) -> list:
@@ -2907,22 +2917,36 @@ def networks_verify(st: dict) -> list:
         )
     d = n.get("dnsmasq")
     if d is not None and d["wanted"]:
+        pools = (change.get("dhcp") or {}).get("pools") or []
+        dns_off = any(k == "port" and v == "0" for f in dnsmasq_other_files() for k, v, _ in dnsmasq_lines(f))
 
         def serving():
             active = run(["systemctl", "is-active", "dnsmasq"], timeout=15).stdout.strip()
             if active != "active":
                 return (False, "dnsmasq is %s." % (active or "not running"))
             r = run(["ss", "-H", "-u", "-l", "-n", "sport", "=", ":67"], timeout=15)
-            listening = r.returncode == 0 and bool(r.stdout.strip())
-            return (
-                listening,
-                "dnsmasq is running"
-                + (
-                    " and answers DHCP (UDP port 67)."
-                    if listening
-                    else ", but nothing listens on UDP port 67."
-                ),
-            )
+            if not (r.returncode == 0 and r.stdout.strip()):
+                return (False, "dnsmasq is running, but nothing listens on UDP port 67.")
+            # DNS on the server's address in each network (the devices' DNS server, and the filters'
+            # upstream): absent when dnsmasq answers on loopback alone, as with local-service=host.
+            r = run(["ss", "-H", "-u", "-l", "-n", "sport", "=", ":53"], timeout=15)
+            bound = set()
+            for line in r.stdout.splitlines():
+                cols = line.split()
+                if len(cols) >= 4:
+                    bound.add(cols[3].rsplit(":", 1)[0].split("%")[0].strip("[]"))
+            deaf = [
+                "%s (%s)" % (p["interface"], p["router"])
+                for p in pools
+                if not dns_off and not bound & {"0.0.0.0", "*", p["router"]}  # noqa: S104 - read, not bound
+            ]
+            if deaf:
+                return (
+                    False,
+                    "dnsmasq answers DHCP (UDP port 67), but does not answer on %s: no DNS on UDP port 53 there."
+                    % ", ".join(deaf),
+                )
+            return (True, "dnsmasq is running and answers DHCP (UDP port 67) and DNS.")
 
         ok, detail = _wait_for(serving, 15)
         checks.append({"id": "dhcp", "label": "DHCP service (dnsmasq)", "ok": ok, "detail": detail})

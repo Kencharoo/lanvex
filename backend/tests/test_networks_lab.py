@@ -181,13 +181,28 @@ def unit(host: str, what: str) -> str:
     return sh(host, f"systemctl {what} dnsmasq || true").strip()
 
 
-def client_gets(address: str) -> None:
+def client_up(server: str, add: bool = False) -> None:
+    """The client asks for an address on VLAN 50 by DHCP. If it gets none, what `server`'s dnsmasq has."""
+    script = "nmcli --wait 60 connection up client50 >/dev/null"
+    if add:
+        script = (
+            "nmcli connection add type vlan con-name client50 ifname eth0.50 dev eth0 id 50 "
+            "ipv4.method auto ipv6.method disabled >/dev/null && " + script
+        )
+    try:
+        sh(CLIENT, script)
+    except AssertionError as e:
+        state = sh(
+            server,
+            "grep -Hv '^#' /etc/dnsmasq.conf /etc/dnsmasq.d/* | grep -v ':$'; "
+            "journalctl -u dnsmasq -n 25 --no-pager; ip -br address; true",
+        )
+        raise AssertionError(f"{e}\n--- {server}:\n{state}") from None
+
+
+def client_gets(address: str, server: str) -> None:
     """A device on VLAN 50 asks for an address by DHCP and gets `address`."""
-    sh(
-        CLIENT,
-        "nmcli connection add type vlan con-name client50 ifname eth0.50 dev eth0 id 50 "
-        "ipv4.method auto ipv6.method disabled >/dev/null && nmcli --wait 60 connection up client50 >/dev/null",
-    )
+    client_up(server, add=True)
     assert f"{address}/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
 
 
@@ -246,7 +261,7 @@ def test_a_new_vlan_with_dhcp_serves_a_real_client(host: str) -> None:
     if backend == "netplan":
         assert "192.168.50.1:53" in sh(host, "ss -H -l -n -u")  # DNS for the devices, next to resolved
 
-    client_gets("192.168.50.20")
+    client_gets("192.168.50.20", host)
     assert call(host, "confirm", {"id": cid})["state"] == "confirmed"
     assert unit(host, "is-enabled") == "enabled"
 
@@ -339,7 +354,7 @@ def test_ufw_lets_dhcp_through_and_takes_lanvexs_rules_back(host: str) -> None:
     cid, _ = apply(host, request)
     result = call(host, "verify", {"id": cid})
     assert result["passed"] and "ufw:vlan50" in {c["id"] for c in result["checks"]}, result["checks"]
-    client_gets("192.168.50.21")  # through ufw's default deny
+    client_gets("192.168.50.21", host)  # through ufw's default deny
     call(host, "confirm", {"id": cid})
 
     # Removing the network takes Lanvex's rules with it; a rollback brings them back.
@@ -399,7 +414,7 @@ def test_access_rules_let_devices_reach_exactly_what_is_allowed(host: str, ufw: 
     # netplan apply drops routes systemd-networkd did not configure), a LAN host, a device on VLAN 60.
     sh(OTHER, f"ip addr add {INTERNET}/32 dev eth0")
     sh(host, f"ip route add {INTERNET}/32 via 172.30.0.13")
-    client_gets("192.168.50.20")
+    client_gets("192.168.50.20", host)
     for net in (f"{INTERNET}/32", "172.30.0.13/32", "192.168.60.0/24"):
         sh(CLIENT, f"ip route add {net} via 192.168.50.1 dev eth0.50")  # through the server, not eth0
     sh(
@@ -477,7 +492,7 @@ def test_a_dns_filter_blocks_names_for_one_network(host: str) -> None:
 
     # The client is told to ask the filter, which blocks the domain and every name below it, and hands
     # everything else to the main dnsmasq (which knows the client's own name).
-    client_gets("192.168.50.20")
+    client_gets("192.168.50.20", host)
     assert sh(CLIENT, "nmcli -g IP4.DNS device show eth0.50").strip() == "10.99.53.1"
     sh(CLIENT, "ip route add 10.99.53.0/24 via 192.168.50.1 dev eth0.50")
     assert client_dns("10.99.53.1", "blocked.lanvex.test") == (3, 0)
@@ -578,14 +593,7 @@ def test_taking_over_netzverwaltung_and_giving_it_back(host: str) -> None:
     mac = client_mac()
     netzverwaltung(host, mac)
     try:
-        sh(
-            CLIENT,
-            "nmcli connection add type vlan con-name client50 ifname eth0.50 dev eth0 id 50 "
-            "ipv4.method auto ipv6.method disabled >/dev/null && nmcli --wait 60 connection up client50 >/dev/null",
-        )
-        assert "192.168.50.20/24" in sh(
-            CLIENT, "ip -4 -o address show dev eth0.50"
-        )  # served by Netzverwaltung
+        client_gets("192.168.50.20", host)  # served by Netzverwaltung
 
         found = call(host, "inspect", {"kind": "netzverwaltung"})
         assert found["found"] is True and [v["name"] for v in found["vlans"]] == ["gast"]
@@ -636,7 +644,7 @@ def test_taking_over_netzverwaltung_and_giving_it_back(host: str) -> None:
         assert sh(host, "ls /etc/firewalld/policies/ /etc/dnsmasq.d/").split().count("lan-to-switch.xml") == 1
         assert "switch-mgmt.conf" in sh(host, "ls /etc/dnsmasq.d/")
         # The device keeps its address, now from Lanvex.
-        sh(CLIENT, "nmcli --wait 60 connection up client50 >/dev/null")
+        client_up(host)
         assert "192.168.50.20/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
 
         # Rolled back: Netzverwaltung's network, files and service exactly as before.
@@ -645,7 +653,7 @@ def test_taking_over_netzverwaltung_and_giving_it_back(host: str) -> None:
         assert sh(host, "firewall-cmd --get-zone-of-interface=gast").strip() == "gast"
         assert sh(host, "systemctl is-active netzverwaltung").strip() == "active"
         assert "nv-vlans.conf" in sh(host, "ls /etc/dnsmasq.d/")
-        sh(CLIENT, "nmcli --wait 60 connection up client50 >/dev/null")
+        client_up(host)
         assert "192.168.50.20/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
     finally:
         reset(host)  # Netzverwaltung's stand-in goes too

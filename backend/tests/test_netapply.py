@@ -672,6 +672,29 @@ def test_dnsmasq_modes(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
     assert h.dnsmasq_mode(active=False) == (True, False)
     (d / "lan.conf").unlink()
 
+    # Fedora's and RHEL's default: loopback alone, its addresses bound. Lanvex's interface lines end
+    # that, so it lists its interfaces and binds only their addresses, running or not.
+    conf.write_text(f"local-service=host\nconf-dir={d}\n")
+    assert h.dnsmasq_others()["loopback_only"] is True
+    assert h.dnsmasq_mode(active=True) == (True, True)
+    assert h.dnsmasq_mode(active=False) == (True, True)
+    conf.write_text(f"local-service\nconf-dir={d}\n")  # local networks on every interface
+    assert h.dnsmasq_mode(active=True) == (False, False)
+
+    # Taking over: dnsmasq answers as the replaced configuration has it (only its interfaces, the
+    # wildcard address bound), not as it would without that configuration.
+    conf.write_text(f"local-service=host\nconf-dir={d}\n")
+    (d / "nv-vlans.conf").write_text("interface=gast\ndhcp-range=set:gast,192.168.50.100,192.168.50.199\n")
+    monkeypatch.setattr(h, "TAKING_OVER", {str(d / "nv-vlans.conf")})
+    assert h.dnsmasq_others() == {"restricted": True, "bind": False, "loopback_only": True}
+    assert h.dnsmasq_others(now=True) == {"restricted": True, "bind": False, "loopback_only": False}
+    assert h.dnsmasq_mode(active=True) == (True, False)
+    conf.write_text(f"conf-dir={d}\n")
+    assert h.dnsmasq_mode(active=True) == (True, False)
+    monkeypatch.setattr(h, "TAKING_OVER", set())
+    (d / "nv-vlans.conf").unlink()
+    conf.write_text(f"conf-dir={d}\n")
+
     conf_text = h.render_dnsmasq(pools, interfaces=True, bind_dynamic=True)
     assert "\nbind-dynamic\n" in conf_text and "interface=vlan50\n" in conf_text
     (d / "lanvex.conf").write_text(conf_text)
@@ -741,7 +764,7 @@ def test_other_dnsmasq_configuration_is_found_in_every_file_dnsmasq_reads(tmp_pa
     )
     (d / "old.conf.rpmsave").write_text("dhcp-range=192.168.20.50,192.168.20.99\n")  # not read by dnsmasq
     assert h.dnsmasq_serves_others() == [str(d / "nv-vlans")]  # no .conf ending needed (Fedora, Debian)
-    assert h.dnsmasq_others() == {"restricted": True, "bind": False}
+    assert h.dnsmasq_others() == {"restricted": True, "bind": False, "loopback_only": False}
     pools = h.validate_networks(networks(pools=[TEST_POOL]))["dhcp"]["pools"]
     assert h.dnsmasq_conflicts(pools) == []
     (d / "nv-vlans").write_text("dhcp-range=192.168.50.20,192.168.50.30\n")

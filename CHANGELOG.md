@@ -21,6 +21,11 @@ The version that replaces Netzverwaltung: DNS filtering, and taking over a runni
   refused. Rolled back (or undone), Netzverwaltung is back exactly as it was.
 - **Helper version 5**: the DNS filter, the takeover and reading Netzverwaltung's setup; a unit that
   fails to start reports the end of its journal in the change's error.
+- **dnsmasq that answers on loopback alone**, as Fedora and RHEL configure it (`local-service=host`):
+  where it already ran that way, Lanvex added its pools without naming its interfaces, so dnsmasq
+  served none of them. Lanvex now names them, and binds only their addresses. The check after a
+  change now also asks whether dnsmasq answers DNS on the server's address in each network, so such a
+  change is rolled back instead of reported as working. Found by the takeover test.
 - Docs: the DNS filter, the takeover and what to do before it.
 - Lab: a real client's DNS through a filter (blocked names answered "no such name", local names
   still resolved), switched off and rolled back, on Fedora, Ubuntu and Debian; a Netzverwaltung
