@@ -79,7 +79,12 @@ DNS_UNIT_NAME = "lanvex-dns@.service"
 DNS_UNIT = "/etc/systemd/system/" + DNS_UNIT_NAME
 DNS_LINK = "lxdns"
 DNS_NET = "10.99.53.0/24"
-DOMAIN_RE = re.compile(
+# Taking over from Netzverwaltung (the tool Lanvex replaces on KlassenServer): what it keeps where.
+NV_STATE = "/etc/netzverwaltung/netz.yaml"
+NV_PREFIX = "nv-"
+NV_PROFILE = "vlan-"  # its NetworkManager profiles: vlan-<name>
+NV_UNITS = ("netzverwaltung.service", "dnsmasq-filter.service")
+FILTER_DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
 )
 DNSMASQ_CONF = "/etc/dnsmasq.conf"
@@ -176,7 +181,7 @@ def _unit_log(argv: list) -> str:
         return ""
     try:
         r = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["journalctl", "-u", argv[-1], "-n", "12", "-o", "cat", "--no-pager"],
+            ["journalctl", "-u", argv[-1], "-n", "40", "-o", "cat", "--no-pager"],
             env=ENV,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -185,7 +190,21 @@ def _unit_log(argv: list) -> str:
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    lines = [x for x in r.stdout.splitlines() if x.strip()][-8:]
+    # The service's own words, not systemd's account of starting and stopping it.
+    chatter = (
+        "Starting ",
+        "Started ",
+        "Stopping ",
+        "Stopped ",
+        "Deactivated",
+        "Consumed ",
+        "Failed to start",
+        "Control process",
+        "Failed with result",
+        "Main process exited",
+        "Scheduled restart",
+    )
+    lines = [x for x in r.stdout.splitlines() if x.strip() and not any(c in x for c in chatter)][-6:]
     return (" Its log: " + " | ".join(lines))[:1200] if lines else ""
 
 
@@ -983,11 +1002,15 @@ def validate_networks(req: dict) -> dict:
             )
         dhcp = {"pools": sorted(pools, key=lambda x: x["interface"])}
     access = validate_access(req.get("access"), {v["name"]: v for v in vlans})
+    takeover = req.get("takeover")
+    if takeover not in (None, "netzverwaltung"):
+        raise Refused("invalid_request", 'takeover is null or "netzverwaltung".')
     return {
         "kind": "networks",
         "vlans": sorted(vlans, key=lambda x: x["name"]),
         "dhcp": dhcp,
         "access": access,
+        "takeover": takeover,
     }
 
 
@@ -1084,7 +1107,7 @@ def validate_access(access: object, vlans: dict) -> dict | None:
 def check_domain_name(value: object, field: str) -> str:
     """A domain for the DNS filter: it and every name below it."""
     d = value.strip().lower().lstrip("*").strip(".") if isinstance(value, str) else ""
-    if not DOMAIN_RE.match(d):
+    if not FILTER_DOMAIN_RE.match(d):
         raise Refused("invalid_request", "%s: %r is not a domain like example.com." % (field, value))
     return d
 
@@ -1345,6 +1368,10 @@ def choose_backend(change: dict) -> str:
 DNSMASQ_SKIPPED = (".rpmnew", ".rpmsave", ".rpmorig", ".dpkg-dist", ".dpkg-old", ".dpkg-new", "~")
 
 
+# Files the change being planned takes over from another tool (they go with the change): not "other".
+TAKING_OVER: set = set()
+
+
 def dnsmasq_other_files() -> list:
     """dnsmasq's configuration files other than Lanvex's: the main file and every file in its directory."""
     files = [DNSMASQ_CONF]
@@ -1354,7 +1381,7 @@ def dnsmasq_other_files() -> list:
             for f in os.listdir(DNSMASQ_DIR)
             if not f.startswith(".") and not f.endswith(DNSMASQ_SKIPPED)
         )
-    return [f for f in files if f != DNSMASQ_FILE and os.path.isfile(f)]
+    return [f for f in files if f != DNSMASQ_FILE and f not in TAKING_OVER and os.path.isfile(f)]
 
 
 def dnsmasq_lines(path: str) -> list:
@@ -1838,6 +1865,67 @@ def dns_query(address: str, name: str, timeout: float = 3.0) -> tuple:
     return (struct.unpack(">H", data[2:4])[0] & 0xF, struct.unpack(">H", data[6:8])[0])
 
 
+def nv_state() -> dict | None:
+    """Netzverwaltung's netz.yaml, or None where it is not installed."""
+    if not os.path.exists(NV_STATE):
+        return None
+    try:
+        data = _yaml().safe_load(read_text(NV_STATE)) or {}
+    except Exception as e:  # noqa: BLE001 - a broken file is reported, not raised through
+        raise Refused("unsupported", "%s cannot be read: %s" % (NV_STATE, e)) from e
+    if not isinstance(data, dict) or not isinstance(data.get("vlans") or [], list):
+        raise Refused("unsupported", "%s is not in the form Netzverwaltung writes." % NV_STATE)
+    return data
+
+
+def nv_artifacts(names: list) -> dict:
+    """What Netzverwaltung generated for these networks: {"files": [...], "profiles": [...]}. Its
+    hand-kept files (policies without nv-, dnsmasq files without nv-) are never part of it."""
+    files = []
+    for f in sorted(os.listdir(DNSMASQ_DIR)) if os.path.isdir(DNSMASQ_DIR) else []:
+        if f.startswith(NV_PREFIX):
+            files.append(os.path.join(DNSMASQ_DIR, f))
+    for name in names:
+        zone = os.path.join(ZONE_DIR, name + ".xml")
+        if os.path.exists(zone):
+            files.append(zone)
+    for f in sorted(os.listdir(POLICY_DIR)) if os.path.isdir(POLICY_DIR) else []:
+        if f.startswith(NV_PREFIX) and f.endswith(".xml"):
+            files.append(os.path.join(POLICY_DIR, f))
+    profiles = []
+    if nm_running():
+        for p in nm_profiles():
+            if p["name"].startswith(NV_PROFILE) and p["name"][len(NV_PROFILE) :] in names:
+                profiles.append(p)
+    return {"files": files, "profiles": profiles}
+
+
+def cmd_inspect(req: dict) -> dict:
+    """What another tool has set up for its networks here, for Lanvex to document and take over.
+    Changes nothing."""
+    if req.get("kind") != "netzverwaltung":
+        raise Refused("invalid_request", "Lanvex can take over from: netzverwaltung.")
+    state = nv_state()
+    if state is None:
+        return {"ok": True, "found": False}
+    vlans = [v for v in state.get("vlans") or [] if isinstance(v, dict) and isinstance(v.get("name"), str)]
+    names = [v["name"] for v in vlans]
+    art = nv_artifacts(names)
+    policies = {}
+    for path in art["files"]:
+        if path.startswith(POLICY_DIR):
+            policies[os.path.basename(path)[:-4]] = read_text(path)
+    return {
+        "ok": True,
+        "found": True,
+        "vlans": vlans,
+        "policies": policies,  # the destinations it allowed, with their ports, are in these
+        "files": art["files"],
+        "profiles": [p["name"] for p in art["profiles"]],
+        "units": {u: service_state(u) for u in NV_UNITS},
+    }
+
+
 def our_policies() -> list:
     if not os.path.isdir(POLICY_DIR):
         return []
@@ -1931,9 +2019,52 @@ def dnsmasq_conflicts(pools: list) -> list:
     return found
 
 
+def nv_takeover(wanted: dict, backend: str) -> dict:
+    """Netzverwaltung's networks, files, profiles and services this change replaces."""
+    state = nv_state()
+    if state is None:
+        raise Refused(
+            "not_found", "Netzverwaltung is not installed on this server (%s is missing)." % NV_STATE
+        )
+    names = sorted(v["name"] for v in state.get("vlans") or [] if isinstance(v, dict) and v.get("name"))
+    missing = [n for n in names if n not in wanted]
+    if missing:
+        raise Refused(
+            "invalid_request",
+            "Take over all of Netzverwaltung's networks in one change; this one lacks %s."
+            % ", ".join(missing),
+        )
+    if backend != "networkmanager":
+        raise Refused(
+            "unsupported",
+            "Netzverwaltung's networks are NetworkManager profiles; this server uses %s." % backend,
+        )
+    art = nv_artifacts(names)
+    # A hand-kept policy that names one of Netzverwaltung's zones would stop working when the zone goes.
+    for f in sorted(os.listdir(POLICY_DIR)) if os.path.isdir(POLICY_DIR) else []:
+        path = os.path.join(POLICY_DIR, f)
+        if not f.endswith(".xml") or f.startswith((NV_PREFIX, POLICY_PREFIX)):
+            continue
+        for zone in re.findall(r'<(?:ingress|egress)-zone\s+name="([^"]+)"', read_text(path)):
+            if zone in names:
+                raise Refused(
+                    "conflict",
+                    "The firewalld policy %s refers to zone %s, which Netzverwaltung made for its network %s. "
+                    "Lanvex puts %s in zone %s instead: change that policy to use %s, then take over."
+                    % (f[:-4], zone, zone, zone, zone_name(zone), zone_name(zone)),
+                )
+    units = {u: service_state(u) for u in NV_UNITS}
+    return {"names": names, "files": art["files"], "profiles": art["profiles"], "units": units}
+
+
 def networks_plan(change: dict) -> dict:
     backend = choose_backend(change)
     wanted = {v["name"]: v for v in change["vlans"]}
+    takeover = nv_takeover(wanted, backend) if change.get("takeover") == "netzverwaltung" else None
+    taken = set(takeover["names"]) if takeover else set()
+    TAKING_OVER.clear()
+    if takeover:
+        TAKING_OVER.update(takeover["files"])
     nm_ours, profiles = {}, []
     if backend == "networkmanager":
         profiles = nm_profiles()
@@ -1971,7 +2102,7 @@ def networks_plan(change: dict) -> dict:
                     % (name, v["parent"], len(found), NETPLAN_DIR),
                 )
             links[v["parent"]] = found[0][2]
-        if name in ours:
+        if name in ours or name in taken:
             continue
         if backend == "networkmanager":
             other = next(
@@ -2096,6 +2227,12 @@ def networks_plan(change: dict) -> dict:
         )
     removed = sorted(name for name in ours if name not in wanted)
     created = sorted(name for name in wanted if name not in ours)
+    if takeover:
+        # Netzverwaltung's own files for these networks go with this change (a rollback brings them back).
+        for p in takeover["profiles"]:
+            add(p["file"], "Netzverwaltung's NetworkManager profile %s (taken over)" % p["name"], None)
+        for path in takeover["files"]:
+            add(path, "Netzverwaltung's %s (taken over)" % os.path.basename(path), None)
     # Access rules: as requested, or as last applied (access is null), for every Lanvex network.
     manifest_now = read_manifest()
     if change.get("access") is None:
@@ -2340,7 +2477,14 @@ def networks_plan(change: dict) -> dict:
     elif backend == "ifupdown" and vlan_changed:
         commands = ["ifdown %s" % n for n in sorted(set(removed) | (set(touched) - set(created)))] + commands
         commands += ["ifup %s" % n for n in touched]
-    dnsmasq_file_changed = any(f["path"] == DNSMASQ_FILE for f in files)
+    dnsmasq_file_changed = any(
+        f["path"] == DNSMASQ_FILE or (f["path"].startswith(DNSMASQ_DIR + "/") and f["path"] in TAKING_OVER)
+        for f in files
+    )
+    nv_stop = [
+        u for u, st in sorted((takeover or {}).get("units", {}).items()) if st["active"] or st["enabled"]
+    ]
+    commands = ["systemctl disable --now " + u for u in nv_stop] + commands
     put_back = (dnsmasq or {}).get("put_back") or {}
     stop_dnsmasq = bool(put_back) and not put_back.get("active") and dnsmasq["active"]
     disable_dnsmasq = bool(put_back) and not put_back.get("enabled") and dnsmasq["enabled"]
@@ -2377,7 +2521,8 @@ def networks_plan(change: dict) -> dict:
         commands.append("systemctl disable dnsmasq")
     if stop_dnsmasq:
         commands.append("systemctl stop dnsmasq")
-    commands += ["systemctl disable --now lanvex-dns@%s" % n for n in dns_stop]
+    # Filters that go stop first: the main dnsmasq may go back to binding every address, theirs too.
+    commands = ["systemctl disable --now lanvex-dns@%s" % n for n in dns_stop] + commands
     for n in dns_start:
         commands += ["systemctl enable lanvex-dns@%s" % n, "systemctl restart lanvex-dns@%s" % n]
     if stop_dnsmasq or disable_dnsmasq:
@@ -2413,7 +2558,9 @@ def networks_plan(change: dict) -> dict:
             "created": created,
             "removed": removed,
             "ours_before": sorted(ours),
-            "active_before": [p["uuid"] for p in nm_ours.values() if p["device"]],
+            "active_before": [p["uuid"] for p in nm_ours.values() if p["device"]]
+            + [p["uuid"] for p in (takeover or {}).get("profiles", []) if p["device"]],
+            "nv_units": {u: (takeover or {})["units"][u] for u in nv_stop},
             "ufw": {"add": ufw_add, "delete": ufw_delete} if (ufw_add or ufw_delete) else None,
             "ufw_check": ufw_wanted if ufw is not None and ufw["active"] else {},
             "fw": fw,
@@ -2494,6 +2641,12 @@ def _delete_links(names: list) -> None:
 def networks_apply(plan: dict) -> None:
     n = plan["_networks"]
     backend = n["backend"]
+    for unit in n.get("nv_units") or {}:
+        # Netzverwaltung stops before its files go (taking over from it).
+        run(["systemctl", "disable", "--now", unit], timeout=60, check=True)
+    for name in (n.get("dns") or {}).get("stop") or []:
+        # Before its unit file goes, and before the main dnsmasq may bind every address again.
+        run(["systemctl", "disable", "--now", "lanvex-dns@" + name], timeout=60)
     if backend == "ifupdown":
         # Down with the configuration it came up with, before the file changes.
         for name in sorted(set(n["removed"]) | (set(n["up"]) - set(n["created"]))):
@@ -2542,8 +2695,6 @@ def networks_apply(plan: dict) -> None:
     if n.get("stop_dnsmasq"):
         run(["systemctl", "stop", "dnsmasq"], timeout=60, check=True)
     dns = n.get("dns") or {}
-    for name in dns.get("stop") or []:
-        run(["systemctl", "disable", "--now", "lanvex-dns@" + name], timeout=60)
     for name in dns.get("start") or []:
         run(["systemctl", "enable", "lanvex-dns@" + name], timeout=30, check=True)
         run(["systemctl", "restart", "lanvex-dns@" + name], timeout=60, check=True)
@@ -2555,6 +2706,9 @@ def networks_before_restore(state: dict) -> None:
     """Before the old files come back: take down what the change brought up, with the configuration
     it brought it up with (ifupdown needs that)."""
     n = state["networks"]
+    for name in (n.get("dns") or {}).get("start") or []:
+        # Started or changed by this change: stopped before the main dnsmasq goes back to how it was.
+        run(["systemctl", "stop", "lanvex-dns@" + name], timeout=60)
     if n["backend"] == "ifupdown":
         for name in n["up"]:
             run(["ifdown", name], timeout=60)
@@ -2612,6 +2766,12 @@ def networks_restore(state: dict) -> None:
             run(["systemctl", "restart", "lanvex-dns@" + name], timeout=60)
         else:
             run(["systemctl", "disable", "--now", "lanvex-dns@" + name], timeout=60)
+    for unit, st in sorted((n.get("nv_units") or {}).items()):
+        # Netzverwaltung as it ran before the takeover.
+        if st["enabled"]:
+            run(["systemctl", "enable", unit], timeout=30)
+        if st["active"]:
+            run(["systemctl", "start", unit], timeout=60)
     if not our_dns_filters() and os.path.exists("/sys/class/net/" + DNS_LINK):
         run(["ip", "link", "delete", DNS_LINK], timeout=15)
 
@@ -3305,6 +3465,7 @@ COMMANDS = {
     "confirm": cmd_confirm,
     "rollback": cmd_rollback,
     "status": cmd_status,
+    "inspect": cmd_inspect,
 }
 LOCKED = {"apply", "verify", "confirm", "rollback", "timer-rollback"}
 

@@ -3,7 +3,7 @@
 # own image, so it needs a container registry; build.sh builds it only with LANVEX_LAB_FEDORA=1 (CI).
 ARG FEDORA_IMAGE=docker.io/library/fedora:44
 FROM ${FEDORA_IMAGE}
-RUN dnf -y install --setopt=install_weak_deps=False systemd NetworkManager firewalld dnsmasq \
+RUN dnf -y install --setopt=install_weak_deps=False systemd NetworkManager firewalld dnsmasq python3-pyyaml \
       openssh-server sudo iproute iputils python3 procps-ng hostname \
  && dnf clean all
 # lanvex: unprivileged account Lanvex logs in with (key auth). ops: password auth test account.

@@ -487,3 +487,165 @@ def test_a_dns_filter_blocks_names_for_one_network(host: str) -> None:
     assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
     assert sh(host, "systemctl is-active lanvex-dns@vlan50 || true").strip() == "active"
     assert client_dns("10.99.53.1", "blocked.lanvex.test") == (3, 0)
+
+
+NV_YAML = """version: 1
+vlans:
+- name: gast
+  vlan_id: 50
+  address: 192.168.50.1/24
+  description: Gaeste
+  parent: eth0
+  dhcp: {{enabled: true, start: 192.168.50.100, end: 192.168.50.199, lease: 12h}}
+  reservations: [{{mac: '{mac}', ip: 192.168.50.20, name: lab-nm}}]
+  access: {{internet: true, haupt_lan: false, switch_gui: false, vlans: [], services: [dhcp, dns], ports: []}}
+  dns_filter: {{enabled: false, lists: [], block: [], allow: []}}
+"""
+NV_ZONE = """<?xml version="1.0" encoding="utf-8"?>
+<zone>
+  <short>gast</short>
+  <description>Erzeugt von der Netzverwaltung. Aenderungen hier gehen verloren.</description>
+  <service name="dhcp"/>
+  <service name="dns"/>
+</zone>
+"""
+NV_POLICY = """<?xml version="1.0" encoding="utf-8"?>
+<!-- Erzeugt von der Netzverwaltung. Aenderungen hier gehen verloren. -->
+<policy target="ACCEPT">
+  <short>gast: Internet</short>
+  <rule family="ipv4" priority="0">
+    <destination address="192.168.0.0/16"/>
+    <drop/>
+  </rule>
+  <ingress-zone name="gast"/>
+  <egress-zone name="FedoraServer"/>
+</policy>
+"""
+NV_DNSMASQ = """# Erzeugt von der Netzverwaltung. Aenderungen hier gehen verloren.
+interface=gast
+dhcp-range=set:gast,192.168.50.100,192.168.50.199,255.255.255.0,12h
+dhcp-option=tag:gast,option:router,192.168.50.1
+dhcp-option=tag:gast,option:dns-server,192.168.50.1
+dhcp-host={mac},set:gast,192.168.50.20,lab-nm
+"""
+# Kept by hand next to Netzverwaltung on KlassenServer; a takeover must leave them alone.
+HAND_POLICY = """<?xml version="1.0" encoding="utf-8"?>
+<policy target="CONTINUE">
+  <short>lan-to-switch</short>
+  <ingress-zone name="FedoraServer"/>
+  <egress-zone name="public"/>
+</policy>
+"""
+
+
+def netzverwaltung(host: str, mac: str) -> None:
+    """A network as Netzverwaltung sets it up: its profile, zone, policy, dnsmasq file and service."""
+    files = {
+        "/etc/netzverwaltung/netz.yaml": NV_YAML.format(mac=mac),
+        "/etc/firewalld/zones/gast.xml": NV_ZONE,
+        "/etc/firewalld/policies/nv-gast-egress.xml": NV_POLICY,
+        "/etc/firewalld/policies/lan-to-switch.xml": HAND_POLICY,
+        "/etc/dnsmasq.d/nv-vlans.conf": NV_DNSMASQ.format(mac=mac),
+        "/etc/dnsmasq.d/switch-mgmt.conf": "# by hand\nno-dhcp-interface=eth0\n",
+        "/etc/systemd/system/netzverwaltung.service": "[Service]\nExecStart=/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n",
+    }
+    for path, text in files.items():
+        subprocess.run(
+            ["docker", "exec", "-i", host, "sh", "-c", f"mkdir -p $(dirname {path}) && cat > {path}"],
+            input=text,
+            text=True,
+            check=True,
+        )
+    sh(
+        host,
+        "firewall-cmd --reload >/dev/null && nmcli connection add type vlan con-name vlan-gast ifname gast dev eth0 "
+        "id 50 ipv4.method manual ipv4.addresses 192.168.50.1/24 ipv6.method disabled connection.zone gast "
+        ">/dev/null && nmcli connection up vlan-gast >/dev/null && systemctl daemon-reload && "
+        "systemctl enable --now netzverwaltung dnsmasq 2>/dev/null",
+    )
+
+
+def test_taking_over_netzverwaltung_and_giving_it_back(host: str) -> None:
+    if host != "lab-fedora":
+        pytest.skip("Netzverwaltung runs on Fedora (KlassenServer); tested on lab-fedora")
+    mac = client_mac()
+    netzverwaltung(host, mac)
+    try:
+        sh(
+            CLIENT,
+            "nmcli connection add type vlan con-name client50 ifname eth0.50 dev eth0 id 50 "
+            "ipv4.method auto ipv6.method disabled >/dev/null && nmcli --wait 60 connection up client50 >/dev/null",
+        )
+        assert "192.168.50.20/24" in sh(
+            CLIENT, "ip -4 -o address show dev eth0.50"
+        )  # served by Netzverwaltung
+
+        found = call(host, "inspect", {"kind": "netzverwaltung"})
+        assert found["found"] is True and [v["name"] for v in found["vlans"]] == ["gast"]
+        assert found["profiles"] == ["vlan-gast"] and "nv-gast-egress" in found["policies"]
+        assert set(found["files"]) == {
+            "/etc/dnsmasq.d/nv-vlans.conf",
+            "/etc/firewalld/zones/gast.xml",
+            "/etc/firewalld/policies/nv-gast-egress.xml",
+        }  # its hand-kept neighbours are not
+        assert found["units"]["netzverwaltung.service"]["active"] is True
+
+        gast = {"name": "gast", "parent": "eth0", "id": 50, "addresses": ["192.168.50.1/24"]}
+        request = {
+            "kind": "networks",
+            "vlans": [gast],
+            "dhcp": {
+                "pools": [
+                    pool(
+                        interface="gast",
+                        lease="12h",
+                        reservations=[{"mac": mac, "ip": "192.168.50.20", "name": "lab-nm"}],
+                    )
+                ]
+            },
+            "access": {"rules": [{"interface": "gast", "internet": True}]},
+        }
+        refused = call(host, "plan", request, check=False)  # without taking over: another tool's network
+        assert refused["error"]["code"] == "conflict" and "'vlan-gast'" in refused["error"]["message"]
+
+        request["takeover"] = "netzverwaltung"
+        plan = call(host, "plan", request)
+        actions = {f["path"]: f["action"] for f in plan["files"]}
+        for path in (
+            "/etc/dnsmasq.d/nv-vlans.conf",
+            "/etc/firewalld/zones/gast.xml",
+            "/etc/firewalld/policies/nv-gast-egress.xml",
+        ):
+            assert actions[path] == "delete"
+        assert actions["/etc/NetworkManager/system-connections/vlan-gast.nmconnection"] == "delete"
+        assert actions["/etc/NetworkManager/system-connections/lanvex-gast.nmconnection"] == "create"
+        assert plan["commands"][0] == "systemctl disable --now netzverwaltung.service"
+
+        cid, _ = apply(host, request)
+        result = call(host, "verify", {"id": cid})
+        assert result["passed"], result["checks"]
+        assert sh(host, "firewall-cmd --get-zone-of-interface=gast").strip() == "lx-gast"
+        assert sh(host, "systemctl is-active netzverwaltung || true").strip() == "inactive"
+        assert sh(host, "ls /etc/firewalld/policies/ /etc/dnsmasq.d/").split().count("lan-to-switch.xml") == 1
+        assert "switch-mgmt.conf" in sh(host, "ls /etc/dnsmasq.d/")
+        # The device keeps its address, now from Lanvex.
+        sh(CLIENT, "nmcli --wait 60 connection up client50 >/dev/null")
+        assert "192.168.50.20/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
+
+        # Rolled back: Netzverwaltung's network, files and service exactly as before.
+        assert call(host, "rollback", {"id": cid})["state"] == "rolled_back"
+        assert sh(host, "nmcli -g GENERAL.CONNECTION device show gast").strip() == "vlan-gast"
+        assert sh(host, "firewall-cmd --get-zone-of-interface=gast").strip() == "gast"
+        assert sh(host, "systemctl is-active netzverwaltung").strip() == "active"
+        assert "nv-vlans.conf" in sh(host, "ls /etc/dnsmasq.d/")
+        sh(CLIENT, "nmcli --wait 60 connection up client50 >/dev/null")
+        assert "192.168.50.20/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
+    finally:
+        sh(
+            host,
+            "systemctl disable --now netzverwaltung 2>/dev/null; nmcli connection delete vlan-gast lanvex-gast "
+            ">/dev/null 2>&1; rm -rf /etc/netzverwaltung /etc/systemd/system/netzverwaltung.service "
+            "/etc/firewalld/zones/gast.xml /etc/firewalld/policies/nv-* /etc/firewalld/policies/lan-to-switch.xml "
+            "/etc/dnsmasq.d/nv-vlans.conf /etc/dnsmasq.d/switch-mgmt.conf; systemctl daemon-reload; "
+            "firewall-cmd --reload >/dev/null; ip link del gast 2>/dev/null; true",
+        )
