@@ -30,7 +30,7 @@ not the target: nothing in Lanvex is specific to it.
 | Devices: active leases, one click to a fixed address | Leases read from the server, shown per network and in Discovery; one click records a fixed address in Lanvex Core | 0.7 |
 | Zone per VLAN: which services on the server it may use | Per network: DHCP and DNS, and the ports allowed on the server (firewalld zone, ufw rules or Lanvex's table) | 0.7 / 0.9 |
 | Access matrix: Internet, main LAN, switch interface, VLAN to VLAN | Access rules per network: the Internet, other networks, destinations with ports, services on the server; as firewalld policies, ufw rules or Lanvex's own nftables table | 0.9 |
-| DNS filter per VLAN | Block lists per network | 1.0 |
+| DNS filter per VLAN | Blocked domains and exceptions per network, with a dnsmasq of its own | 1.0 |
 | "Take over existing setup" | Import a server's existing VLANs, DHCP and firewall setup into Lanvex Core, including Netzverwaltung's `netz.yaml` | 1.0 |
 | Diff, 120 s confirmation, rollback unit, backups | Lanvex's change pipeline; one change can now touch several files and services | 0.7 |
 
@@ -96,19 +96,24 @@ Lanvex network reaching exactly what its rules allow (a stand-in for the Interne
 LAN on one port, another Lanvex network, a service on the server) and nothing else, with rollback.
 Done: on Fedora (firewalld), Ubuntu (Lanvex's table, and ufw) and Debian, on every push.
 
-### 1.0: Replacing Netzverwaltung
+### 1.0: Replacing Netzverwaltung (released 2026-11-16)
 
-- **DNS filter** per network: block lists, your own blocked domains, exceptions. As in Netzverwaltung,
-  a second dnsmasq that only filtered networks use as their DNS server, and that hands everything it
-  does not block to the main one, so local names keep working.
-- **Taking over a running setup**: import a server's existing VLANs, DHCP, fixed addresses and access
-  rules into Lanvex Core (Netzverwaltung's `netz.yaml` first), then let Lanvex adopt the running
-  configuration without rebuilding it and without an outage. Files other tools keep by hand stay as
-  they are.
+- **DNS filter** per network: your own blocked domains and exceptions. As in Netzverwaltung, a dnsmasq
+  of its own for each filtered network, which DHCP hands to its devices and which passes everything
+  it does not block to the main one, so local names keep working.
+- **Taking over a running setup**: Netzverwaltung's VLANs, DHCP pools, fixed addresses, access rules
+  and DNS filters are imported into Lanvex Core from its `netz.yaml` and policies; then one change
+  replaces its files with Lanvex's, stops it, and gives it back exactly as it was on rollback. Files
+  other tools keep by hand stay as they are. Each VLAN is down for a moment while its new profile comes
+  up; devices keep their addresses.
 - **On KlassenServer**: a Lanvex network next to Netzverwaltung first, then the takeover.
 
 **Done when** KlassenServer runs on Lanvex instead of Netzverwaltung, with every VLAN, pool, fixed
-address, access rule and DNS filter it had.
+address, access rule and DNS filter it had. Built and verified in the lab against a stand-in of
+Netzverwaltung on Fedora; the last step is the takeover on KlassenServer itself.
+
+Not taken over: Netzverwaltung's block lists by name (its model has them, its interface does not; the
+import report names any it finds, so their domains can be added).
 
 ### After 1.0
 

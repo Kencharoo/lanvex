@@ -8,8 +8,9 @@ NetBox-based application for documenting your network that you open from Lanvex 
 sign-in, or works with a NetBox you already run. Either way it talks to them only through their REST
 API and never touches their database. Changes to networks, IP addresses and VLANs are
 **documentation in NetBox**, and the UI says so on every write. The one thing Lanvex configures for
-real is a Linux server's interface addresses, gateway and DNS, and only when an administrator has
-switched that on, previewed the change and approved it; see below.
+real is a Linux server's network (interface addresses, gateway and DNS; VLANs, DHCP, access rules and
+DNS filters), and only when an administrator has switched that on, previewed the change and approved
+it; see below.
 
 ## What works
 
@@ -21,14 +22,14 @@ switched that on, previewed the change and approved it; see below.
 | Devices | Inventory list and detail with interfaces, 802.1Q modes, addresses and VLANs; edit an interface's documented VLANs |
 | Servers | Register Ubuntu Server, Debian and Fedora Server hosts over SSH with a verified, pinned host key and a key Lanvex generates; read interfaces, addresses, routes, DNS, LLDP neighbours and which network stack (netplan/systemd-networkd, NetworkManager, ifupdown) manages what, on demand and on a schedule; a history of every state with what changed, in words; compare with the addresses NetBox documents for the linked device or VM, and close each difference either way: record it in NetBox after a preview, or change the server to match |
 | Server changes | Change one interface's IPv4 addresses (or DHCP), default gateway and DNS on netplan and NetworkManager servers. Previewed by a helper on the server, approved by an administrator (optionally a second one), applied behind a rollback timer the server arms itself, verified over a new SSH connection, and confirmed or rolled back automatically; for the server Lanvex runs on, confirmed in the administrator's browser. Off by default: see [docs/changes.md](docs/changes.md) |
-| Server networks | A server as the router for VLAN networks: VLAN interfaces, DHCP pools and fixed addresses (dnsmasq), DHCP and DNS let through firewalld or ufw, documented in Lanvex Core and brought to the server in one approved change; active leases, one click to a fixed address. On NetworkManager (Fedora, RHEL), netplan (Ubuntu Server) and ifupdown (Debian) servers. See [docs/networks.md](docs/networks.md) |
+| Server networks | A server as the router for VLAN networks: VLAN interfaces, DHCP pools and fixed addresses (dnsmasq), what each network's devices may reach (the Internet, other networks, single addresses and ports, services on the server; on firewalld, ufw or Lanvex's own nftables table), a DNS filter per network, documented in Lanvex Core and brought to the server in one approved change; active leases, one click to a fixed address. Imports and takes over a running Netzverwaltung setup. On NetworkManager (Fedora, RHEL), netplan (Ubuntu Server) and ifupdown (Debian) servers. See [docs/networks.md](docs/networks.md) |
 | Lanvex Core | NetBox 4.7.5 with Lanvex's look, installed and set up by the installer: sites, racks, devices, cables, circuits, virtualization and the rest of NetBox's model, at `/core/` with Lanvex's sign-in. Administrators edit, read-only users look. See [docs/core.md](docs/core.md) |
 | Topology | Interactive map of devices, sites, provider circuits and the cables between them, as documented: role-ranked layout (core above access above servers), servers stacked under their switch, search, a details panel with every cable, devices read by Lanvex marked, and a cable list. Stays fast with hundreds of devices |
 | Discovery | Hosts in the servers' neighbour tables and DHCP leases, and the devices on the other end of each server interface as they announce themselves over LLDP, compared with NetBox: missing addresses and cables can be recorded after a preview |
 | Overview | Inventory counts, most-utilized networks, addresses by status, recent changes (NetBox change log, falling back to the Lanvex audit log) |
 | Platform | Local users with admin / read-only roles, server-side sessions, CSRF, rate limiting, append-only audit log, light and dark themes, NetBox connection checks |
 
-**Automation** lists every server change with its status. Lanvex does not configure switches or dedicated routers; on Linux servers it manages VLAN interfaces and DHCP, and access rules follow (see [docs/roadmap.md](docs/roadmap.md)).
+**Automation** lists every server change with its status. Lanvex does not configure switches or dedicated routers; on Linux servers it manages VLAN interfaces, DHCP, access rules and DNS filters, and takes over from Netzverwaltung (see [docs/networks.md](docs/networks.md)).
 
 ## Installation
 
@@ -36,7 +37,7 @@ You need a Linux server with Docker and Docker Compose v2, or with Podman and po
 (Fedora Server's default; rootless works too, see [docs/operations.md](docs/operations.md#podman)).
 
 ```bash
-unzip lanvex-0.9.0.zip && cd lanvex-0.9.0
+unzip lanvex-1.0.0.zip && cd lanvex-1.0.0
 sudo ./install.sh
 ```
 

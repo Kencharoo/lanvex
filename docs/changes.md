@@ -227,8 +227,13 @@ applied finishes, including its verification and rollback.
   For networks also `ifup`/`ifdown`, `ip link add`/`delete` for its own VLAN interfaces,
   `dnsmasq --test`, `firewall-cmd --check-config` and `--reload`, `ufw` (its own marked rules),
   `nft -c`/`-f` for its own table and `nft delete table inet lanvex`, `nft -j list chains` (read
-  only), `ip route` (read only), `sysctl -w net.ipv4.ip_forward`, and `systemctl` for dnsmasq and
-  `lanvex-firewall.service`.
+  only), `ip route` (read only), `sysctl -w net.ipv4.ip_forward`, `ip link add lxdns type dummy`
+  and the DNS filter's address on it, and `systemctl` for dnsmasq, `lanvex-firewall.service` and the
+  DNS filters `lanvex-dns@<network>.service`. When taking over from Netzverwaltung, also `systemctl`
+  for `netzverwaltung.service` and `dnsmasq-filter.service` (stop, disable, and back on rollback),
+  and `nmcli connection delete` for its profiles `vlan-<name>`.
+- Reads Netzverwaltung's `/etc/netzverwaltung/netz.yaml`, its `nv-…` files and policies for the import
+  (*inspect*; read only).
 - Writes only the files shown in the preview, owned by root (0600 for netplan and NetworkManager
   files, which refuse anything else).
 - Keeps a backup and a state file per change in `/var/lib/lanvex/changes/<id>/` (the last 20

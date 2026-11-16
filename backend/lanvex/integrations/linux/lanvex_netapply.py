@@ -49,7 +49,7 @@ import sys
 import tempfile
 import time
 
-HELPER_VERSION = 4
+HELPER_VERSION = 5
 STATE_DIR = "/var/lib/lanvex/changes"
 LOCK_FILE = "/run/lanvex-netapply.lock"
 NETPLAN_DIR = "/etc/netplan"

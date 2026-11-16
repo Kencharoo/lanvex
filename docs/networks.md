@@ -7,7 +7,8 @@ up from the network documentation, with the same safety as every other server ch
 New in Lanvex 0.7 on servers whose network NetworkManager manages (Fedora, RHEL); since 0.8 also on
 Ubuntu Server (netplan with systemd-networkd) and Debian (ifupdown); since 0.9 with
 [access rules](#what-devices-may-reach): the Internet, other networks, destinations with ports and
-services on the server, per network.
+services on the server, per network; since 1.0 with a [DNS filter](#dns-filter) per network and
+[taking over from Netzverwaltung](#taking-over-from-netzverwaltung).
 
 ## How it works
 
@@ -87,7 +88,7 @@ servers; on ifupdown servers Lanvex manages networks only.
   Ubuntu, installing dnsmasq next to systemd-resolved leaves it failed until Lanvex's first pool; that
   is expected.
 - dnsmasq reads `/etc/dnsmasq.d` (the default on Fedora, RHEL, Debian and Ubuntu).
-- The change helper in version 4 (Lanvex 0.9), with Python 3. After updating Lanvex, every
+- The change helper in version 5 (Lanvex 1.0), with Python 3. After updating Lanvex, every
   server's helper shows as outdated: copy the new file to the server from the server page
   (*Configuration changes*) and run the commands shown there as an administrator of the server, as
   the first time ([changes.md](changes.md#2-on-each-server-install-the-helper)).
@@ -129,7 +130,8 @@ On the server, by the firewall it runs:
 | Neither | Lanvex's own nftables table `inet lanvex` (`/etc/lanvex/firewall.nft`, loaded at boot by `lanvex-firewall.service`): input and forwarding for Lanvex's networks only, masquerading. Other traffic is not touched |
 
 IP forwarding is switched on in `/etc/sysctl.d/60-lanvex.conf` while a network may reach beyond the
-server, and goes back to how it was once none does.
+server, and goes back to how it was once none does. On ufw, ufw's own defaults also let ping (ICMP
+echo) through between networks; Lanvex does not change ufw's files.
 
 ## DNS filter
 
@@ -147,8 +149,40 @@ alone (and, where it would otherwise bind every address, to bind each interface'
 - A DNS filter needs Lanvex's DHCP pool on the network: that is how devices learn to use it.
 - `10.99.53.0/24` must be free on the server; Lanvex refuses the filter otherwise and says what uses it.
 - Devices notice a new block once their own DNS cache expires. Devices with a DNS server set by hand,
-  or using DNS over HTTPS, are not filtered. On ufw, ufw's own defaults also let ping
-(ICMP echo) through between networks; Lanvex does not change ufw's files.
+  or using DNS over HTTPS, are not filtered.
+
+## Taking over from Netzverwaltung
+
+Lanvex replaces Netzverwaltung (KlassenServer's tool for VLANs, DHCP, access and DNS filtering) without
+rebuilding the networks by hand, in two steps:
+
+1. **Import** (server page, *Networks*, *Import from Netzverwaltung*). The change helper reads
+   `/etc/netzverwaltung/netz.yaml` and Netzverwaltung's firewalld policies, and Lanvex documents each
+   of its networks in Lanvex Core: VLAN, the server's address, DHCP pool and lease time, fixed
+   addresses, and access rules (the Internet, the main LAN and the switch's web interface as
+   destinations, other VLANs, services on the server as ports, the DNS filter). The report says what
+   did not carry over: block lists by name, services Lanvex does not know by name. Nothing on the
+   server changes, and networks already documented stay as they are.
+2. **Take over** (*Prepare takeover from Netzverwaltung*). One change replaces all of Netzverwaltung's
+   networks at once: its NetworkManager profiles `vlan-<name>`, its zones `<name>`, its `nv-…`
+   policies and `nv-…` dnsmasq files are deleted (and backed up), `netzverwaltung.service` and
+   `dnsmasq-filter.service` are stopped and disabled, and Lanvex's own profiles, zones, policies,
+   dnsmasq file and filters take their place. Approve it like any change; with *My browser confirms
+   changes*, keep it from a browser on the LAN. If anything fails, or you undo it, the server puts
+   Netzverwaltung back exactly as it was.
+
+Before the takeover:
+
+- Remove Netzverwaltung's network names from the server's protected interfaces (`bw gast iot uebung`
+  on KlassenServer): protected names are never changed.
+- Files Netzverwaltung leaves to you stay as they are (policies without `nv-`, such as `lan-to-switch`,
+  and dnsmasq files without `nv-`, such as `switch-mgmt.conf`). A policy of yours that names one of
+  Netzverwaltung's zones would stop working when the zone goes, so Lanvex refuses the takeover and
+  says which policy to change to Lanvex's zone (`lx-<name>`).
+- Each VLAN is down for a moment while its new profile comes up; devices keep their addresses (the
+  leases stay where dnsmasq keeps them).
+
+Netzverwaltung itself stays installed but stopped. Once you are sure, uninstall it.
 
 ## Lanvex on the server it changes
 

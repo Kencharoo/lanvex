@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.0 — 2026-11-16
+
+The version that replaces Netzverwaltung: DNS filtering, and taking over a running setup
+([docs/networks.md](docs/networks.md)).
+
+- **DNS filter per network.** Blocked domains (each with every name below it) and exceptions, in the
+  same editor as the access rules and shown in the matrix. As in Netzverwaltung, each filtered network
+  gets its own dnsmasq (`lanvex-dns@<network>.service`) on Lanvex's dummy link `lxdns`
+  (`10.99.53.x`); DHCP hands it to the network's devices, and it passes every name it does not block
+  to the main dnsmasq, so local names keep working. Needs Lanvex's DHCP pool on the network.
+- **Import from Netzverwaltung.** On the server page, *Networks*: its VLANs, the server's addresses,
+  DHCP pools and lease times, fixed addresses and access rules (Internet, main LAN, the switch's web
+  interface, other VLANs, services, ports, DNS filter) are documented in Lanvex Core, read from
+  `netz.yaml` and its firewalld policies. The report lists what did not carry over. Nothing on the
+  server changes.
+- **Take over from Netzverwaltung** in one change: its profiles, zones, `nv-…` policies and dnsmasq
+  files are replaced by Lanvex's, `netzverwaltung.service` and `dnsmasq-filter.service` are stopped and
+  disabled. Files it leaves to you stay; a policy of yours naming one of its zones is pointed out and
+  refused. Rolled back (or undone), Netzverwaltung is back exactly as it was.
+- **Helper version 5**: the DNS filter, the takeover and reading Netzverwaltung's setup; a unit that
+  fails to start reports the end of its journal in the change's error.
+- Docs: the DNS filter, the takeover and what to do before it.
+- Lab: a real client's DNS through a filter (blocked names answered "no such name", local names
+  still resolved), switched off and rolled back, on Fedora, Ubuntu and Debian; a Netzverwaltung
+  stand-in on Fedora taken over with the client keeping its fixed address, and given back on rollback.
+
+**Updating:** reinstall the helper on every server (version 5). Lanvex Core
+1.0.0 has no new fields. Before the takeover on a server, remove Netzverwaltung's network names from
+its protected interfaces.
+
 ## 0.9.0 — 2026-11-16
 
 Access rules: what devices on each Lanvex network may reach ([docs/networks.md](docs/networks.md#what-devices-may-reach)).

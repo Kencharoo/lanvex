@@ -1,10 +1,20 @@
-# Status of Lanvex 0.9.0
+# Status of Lanvex 1.0.0
 
 Last updated 2026-11-16. "Verified" means it was run, not just written.
 
 ## Verified
 
-### Access rules (new in 0.9)
+### DNS filter and taking over from Netzverwaltung (new in 1.0)
+
+On every push, in the CI lab:
+
+| What | How |
+|---|---|
+| DNS filter | A real client on VLAN 50 gets the filter (`10.99.53.1`) as its DNS server by DHCP. Asked over UDP from the client: the blocked domain and a name below it answer "no such name", the client's own name (known only to the main dnsmasq) resolves. Switched off: the filter's dnsmasq and `lxdns` are gone; that rolled back: the filter answers again. The helper's check asks the filter itself. On Fedora 44 (firewalld), Ubuntu 24.04 (Lanvex's table, and ufw) and Debian 12 |
+| Takeover | On Fedora 44, a stand-in of Netzverwaltung as on KlassenServer (its `netz.yaml`, NetworkManager profile `vlan-gast`, zone, `nv-` policy and dnsmasq file, a running `netzverwaltung.service`, and hand-kept neighbours `lan-to-switch.xml` and `switch-mgmt.conf`) serves a real client its fixed address. The helper reads it (*inspect*); a networks change for the same VLAN is refused without the takeover and planned with it (its files deleted, Lanvex's created, its service stopped first). Applied and verified: the client gets the same address from Lanvex, the neighbours are untouched. Rolled back: Netzverwaltung's profile, zone, files and service are back and serve the client again |
+| Import | API tests: `netz.yaml` and policies into Lanvex Core (VLANs, addresses, pools, lease times, fixed addresses, access rules incl. main LAN and switch interface from the policies, DNS filters); networks already documented are kept; the report lists what did not carry over; the takeover change carries every Netzverwaltung network. Helper unit tests: a takeover lacking one of its networks, on a server without NetworkManager, or with a hand-kept policy naming one of its zones is refused; its hand-kept files are never part of it |
+
+### Access rules (0.9)
 
 On every push, in the CI lab, a real client (`lab-nm`) on VLAN 50 tries to reach things through the
 server, on four setups: Fedora 44 with firewalld (policies), Ubuntu 24.04 with Lanvex's own nftables
@@ -212,6 +222,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Changes on real hardware and real routers | The lab is containers on one bridge | Try on a non-critical server first, with console access at hand |
 | A networks change through Lanvex against a live Lanvex Core, end to end | The CI lab has no Lanvex Core; the pieces were verified separately (helper on Fedora in CI, Lanvex Core locally, the flow with stand-ins) | A network on KlassenServer or a test server, from Add network to a device with a lease |
 | Netzverwaltung and Lanvex side by side on KlassenServer | Lanvex leaves `nv-` files, Netzverwaltung's profiles and zones alone (tested with stand-ins on Fedora), but not with Netzverwaltung itself | Add a Lanvex network on a free VLAN there, then run netzverwaltung-apply and check both still serve DHCP |
+| The takeover on KlassenServer | Tested with a stand-in of Netzverwaltung (its files, profile, zone, policy and a service), not with Netzverwaltung itself, its real `dnsmasq-filter.service` or several VLANs at once | Import, review the networks and rules in Lanvex Core, then the takeover from a browser on the LAN with console access at hand |
+| DNS filter on real devices | The lab's client asks with raw DNS packets; phones and laptops cache names and may use DNS over HTTPS | Filter a test network and try a few devices |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
 | IPv6 and bond interfaces on servers | The lab kernel has no IPv6 or bonding (CI loads 8021q for VLANs) | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
 | Updating an existing installation (0.4.0 → 0.4.2) | Every automatic run installs from scratch | Update the test server as in docs/core.md (*Updating*), then `scripts/check-install.sh "" admin` |
@@ -223,8 +235,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 ## Not built yet
 
-- **DNS filtering** per network and **taking over a running setup** such as Netzverwaltung's
-  ([roadmap.md](roadmap.md): 1.0).
+- **Kea** as an alternative DHCP server; block lists by name for the DNS filter.
 - **More kinds of server change.** Bonds and bridges; IPv6; static routes; interface settings on
   ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
 - Discovery from the network side (SNMP, switch MAC tables) and of devices Lanvex does not read; a
@@ -244,7 +255,6 @@ with the helper installed through sudo exactly as documented. Only lab container
 - Under rootless Podman, a container cannot reach its own host's LAN address. Lanvex reads the server
   it runs on through `host.containers.internal`; to change it, turn on browser confirmation
   (docs/changes.md): it proves the network your browser is on, not every network the change touched.
-- Devices on a Lanvex network reach only the server's DHCP and DNS until access rules exist (0.9).
 - Moving a server to another address in the UI means removing and re-adding it (the API supports a
   move with a re-verified host key). Removing a server also removes its change history from the
   Automation list; the audit log keeps every change.

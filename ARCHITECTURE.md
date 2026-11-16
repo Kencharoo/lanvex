@@ -93,6 +93,14 @@ token over the plan) or *change* (documented → actual: a server change prepare
   netplan (networkd or NetworkManager renderer) and NetworkManager keyfiles. netplan files are edited
   key by key, so unrelated lines stay byte-identical; NetworkManager keyfiles are edited directly
   rather than through `nmcli modify`, which on netplan-integrated systems migrates profiles.
+- **Networks changes** use the same pipeline with a different request: the server's whole set of
+  Lanvex networks (VLAN interfaces, DHCP pools, access rules, DNS filters) as documented in Lanvex
+  Core. The helper writes only its own files (NetworkManager profiles `lanvex-…`, netplan
+  `60-lanvex.yaml`, ifupdown `interfaces.d/lanvex`, `dnsmasq.d/lanvex.conf`, firewalld zones `lx-…` and
+  policies `lxf-…`, ufw rules marked `lanvex:`, the nftables table `inet lanvex`, one dnsmasq per DNS
+  filter) and lists them in `/etc/lanvex/networks.json`, which Lanvex reads back to tell its own
+  configuration from other tools'. Taking over from Netzverwaltung is such a change that also deletes
+  that tool's files and stops its services, with all of it in the backup. See docs/networks.md.
 - **The rollback lives on the server.** Before writing anything the helper arms a transient systemd
   timer (`lanvex-rollback-<id>`) that restores the backup unless confirmed. Losing Lanvex, the network
   or the SSH session therefore cannot leave a half-applied change: the server undoes it alone.

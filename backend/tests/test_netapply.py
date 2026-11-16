@@ -932,3 +932,51 @@ def test_dns_filter_rules_and_files():
     assert "\nexcept-interface=lxdns\n" in main  # the main dnsmasq leaves the filters' addresses alone
     assert "dhcp-option=tag:lx-vlan50,option:dns-server,10.99.53.1\n" in main  # devices ask the filter
     assert "except-interface" not in h.render_dnsmasq(pools, True, True)
+
+
+def test_taking_over_netzverwaltung_needs_all_its_networks_and_no_policy_naming_its_zones(
+    tmp_path, monkeypatch
+):  # type: ignore[no-untyped-def]
+    nv, dnsmasq, zones, policies = (tmp_path / p for p in ("netz.yaml", "dnsmasq.d", "zones", "policies"))
+    for d in (dnsmasq, zones, policies):
+        d.mkdir()
+    monkeypatch.setattr(h, "NV_STATE", str(nv))
+    monkeypatch.setattr(h, "DNSMASQ_DIR", str(dnsmasq))
+    monkeypatch.setattr(h, "ZONE_DIR", str(zones))
+    monkeypatch.setattr(h, "POLICY_DIR", str(policies))
+    monkeypatch.setattr(h, "nm_running", lambda: False)
+    monkeypatch.setattr(h, "service_state", lambda unit: {"active": True, "enabled": True})
+    wanted = {"gast": {}, "bw": {}}
+
+    with pytest.raises(h.Refused, match="not installed"):
+        h.nv_takeover(wanted, "networkmanager")
+    nv.write_text("vlans:\n  - {name: gast, vlan_id: 50}\n  - {name: bw, vlan_id: 60}\n")
+    (dnsmasq / "nv-vlans.conf").write_text("interface=gast\n")
+    (dnsmasq / "switch-mgmt.conf").write_text("dhcp-host=aa:bb:cc:00:00:09,192.168.178.3\n")  # hand-kept
+    (zones / "gast.xml").write_text("<zone/>")
+    (zones / "public.xml").write_text("<zone/>")
+    (policies / "nv-gast-egress.xml").write_text('<policy><ingress-zone name="gast"/></policy>')
+
+    with pytest.raises(h.Refused, match="lacks bw"):
+        h.nv_takeover({"gast": {}}, "networkmanager")
+    with pytest.raises(h.Refused, match="NetworkManager profiles; this server uses netplan"):
+        h.nv_takeover(wanted, "netplan")
+    found = h.nv_takeover(wanted, "networkmanager")
+    assert found["names"] == ["bw", "gast"]
+    assert found["files"] == [
+        str(dnsmasq / "nv-vlans.conf"),
+        str(zones / "gast.xml"),
+        str(policies / "nv-gast-egress.xml"),
+    ]  # its hand-kept neighbours stay
+    assert found["units"] == {u: {"active": True, "enabled": True} for u in h.NV_UNITS}
+
+    # A policy kept by hand that names one of its zones would stop working once the zone is gone.
+    (policies / "lan-to-switch.xml").write_text(
+        '<policy><ingress-zone name="public"/><egress-zone name="internal"/></policy>'
+    )
+    assert h.nv_takeover(wanted, "networkmanager")["names"] == ["bw", "gast"]
+    (policies / "gast-to-printer.xml").write_text(
+        '<policy><ingress-zone name="gast"/><egress-zone name="public"/></policy>'
+    )
+    with pytest.raises(h.Refused, match="gast-to-printer refers to zone gast.*use lx-gast"):
+        h.nv_takeover(wanted, "networkmanager")
