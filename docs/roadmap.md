@@ -28,7 +28,7 @@ not the target: nothing in Lanvex is specific to it.
 | VLAN interfaces on the trunk, with the server's address | VLAN interfaces documented in Lanvex Core (a virtual interface with a parent and a VLAN, its address tagged `lanvex-gateway`), created, changed and removed on the server | 0.7 |
 | DHCP per VLAN: pool, lease time, router and DNS options, reservations | Pool = an IP range tagged `lanvex-dhcp`; reservation = an IP address with a MAC address; router and DNS = the server's address in that network | 0.7 |
 | Devices: active leases, one click to a fixed address | Leases read from the server, shown per network and in Discovery; one click records a fixed address in Lanvex Core | 0.7 |
-| Zone per VLAN: which services on the server it may use | A firewalld zone per network; in 0.7 only what DHCP and DNS need, the rest in 0.9 | 0.7 / 0.9 |
+| Zone per VLAN: which services on the server it may use | Per network: DHCP and DNS, and the ports allowed on the server (firewalld zone, ufw rules or Lanvex's table) | 0.7 / 0.9 |
 | Access matrix: Internet, main LAN, switch interface, VLAN to VLAN | Access rules per network: the Internet, other networks, destinations with ports, services on the server; as firewalld policies, ufw rules or Lanvex's own nftables table | 0.9 |
 | DNS filter per VLAN | Block lists per network | 1.0 |
 | "Take over existing setup" | Import a server's existing VLANs, DHCP and firewall setup into Lanvex Core, including Netzverwaltung's `netz.yaml` | 1.0 |
@@ -68,7 +68,7 @@ ran once the last pool is removed; ufw rules for DHCP and DNS, marked `lanvex:<i
 0.7 test (a real DHCP client on a new VLAN, removal, rollback, the server's own timer, another tool's
 configuration refused) runs on Fedora 44, Ubuntu 24.04 and Debian 12, and through an active ufw.
 
-### 0.9: Access rules
+### 0.9: Access rules (released 2026-11-16)
 
 What devices on each Lanvex network may reach, documented in Lanvex Core with the network and brought
 to the server in the same approved change as its VLAN and DHCP:
@@ -94,6 +94,7 @@ IP forwarding is switched on in Lanvex's own sysctl file. A network that carries
 keeps SSH to the server. **Done when** the lab shows, on Fedora, Ubuntu and Debian, a real client on a
 Lanvex network reaching exactly what its rules allow (a stand-in for the Internet, a host on the main
 LAN on one port, another Lanvex network, a service on the server) and nothing else, with rollback.
+Done: on Fedora (firewalld), Ubuntu (Lanvex's table, and ufw) and Debian, on every push.
 
 ### 1.0: Replacing Netzverwaltung
 

@@ -1,8 +1,26 @@
-# Status of Lanvex 0.8.1
+# Status of Lanvex 0.9.0
 
 Last updated 2026-11-16. "Verified" means it was run, not just written.
 
 ## Verified
+
+### Access rules (new in 0.9)
+
+On every push, in the CI lab, a real client (`lab-nm`) on VLAN 50 tries to reach things through the
+server, on four setups: Fedora 44 with firewalld (policies), Ubuntu 24.04 with Lanvex's own nftables
+table, Ubuntu 24.04 with ufw active, and Debian 12 with Lanvex's own table.
+
+| Rules | What the client reaches (TCP connections, every target listening) |
+|---|---|
+| The Internet only | An Internet stand-in (198.51.100.10, behind the uplink): yes, masqueraded. A host on the main LAN, SSH on the server, a device on VLAN 60: no. VLAN 60 to VLAN 50: no |
+| Plus one LAN host on port 22, all of VLAN 60, SSH on the server | All of these, and the Internet. VLAN 60 to VLAN 50 still no |
+| That change rolled back | As with the Internet only; the record of applied rules is back too |
+
+The helper's checks pass on each (policies loaded, ufw rules present, the table loaded, forwarding on;
+1 lab test, 4 runs). The networks tests of 0.8 now run with Lanvex's own table on Ubuntu and Debian.
+Unit tests: validating rules, firewalld policies, ufw rules in their order, the nftables table (also
+checked and loaded by the real `nft` on the Ubuntu lab host); API tests: documenting rules in Lanvex
+Core, comparing with the server, unreadable rules, keeping Lanvex's SSH connection.
 
 ### Update on a real server (0.6.0 → 0.7.0)
 
@@ -188,6 +206,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | Why | How to close it |
 |---|---|---|
+| Access rules with real users | The lab's client is a container; a phone or laptop on a real VLAN was not used | Allow a network the Internet on a test server and try it |
 | Reading and interface changes on Debian | The Debian 12 lab host (0.8) runs the networks tests through the helper; Lanvex's SSH reads and interface changes run on the Ubuntu hosts | Read a Debian server with Lanvex before relying on it |
 | Interface changes on Fedora; networks on other versions | Networks are tested on Fedora 44, Ubuntu 24.04 and Debian 12; interface changes on the Ubuntu hosts. Older netplan (Ubuntu 20.04/22.04), ifupdown and NetworkManager versions, RHEL, and Ubuntu with NetworkManager for networks are untested | Run a change on a test server of each kind before relying on it |
 | Changes on real hardware and real routers | The lab is containers on one bridge | Try on a non-critical server first, with console access at hand |
@@ -204,8 +223,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 ## Not built yet
 
-- **Access rules** for networks (firewalld policies, nftables, ufw), DNS filtering, and importing an
-  existing setup such as Netzverwaltung's ([roadmap.md](roadmap.md)).
+- **DNS filtering** per network and **taking over a running setup** such as Netzverwaltung's
+  ([roadmap.md](roadmap.md): 1.0).
 - **More kinds of server change.** Bonds and bridges; IPv6; static routes; interface settings on
   ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
 - Discovery from the network side (SNMP, switch MAC tables) and of devices Lanvex does not read; a
