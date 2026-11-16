@@ -24,6 +24,10 @@ FROM docker.io/library/python:3.13-slim
 LABEL org.opencontainers.image.title="Lanvex" \
       org.opencontainers.image.description="Network Infrastructure, Simplified."
 RUN groupadd --system lanvex && useradd --system --gid lanvex --home /app --shell /usr/sbin/nologin lanvex
+# Mount point for Lanvex Core's static files (shared volume, written by Lanvex Core's user, uid 1000).
+# Podman gives a new volume the owner of this folder when this container mounts it first; without
+# the folder here, Lanvex Core could not write its static files under Podman.
+RUN mkdir -p /srv/core-static && chown 1000:1000 /srv/core-static
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     LANVEX_ENV=production LANVEX_LOG_JSON=true
 WORKDIR /app

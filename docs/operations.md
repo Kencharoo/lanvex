@@ -59,6 +59,10 @@ sudo. Notes:
   refuses and logs `sign_in_refused_without_https` with the `peer` it came from
   (`podman-compose logs lanvex | grep sign_in_refused`). Put that address into
   `LANVEX_TRUSTED_PROXIES`.
+- **Lanvex Core restarts again and again**, with `PermissionError` on `netbox/static` in
+  `podman-compose logs core`: the volume for its static files belongs to the wrong user (installations
+  of 0.6.0 under Podman 4). Lanvex Core rebuilds these files at every start, so the volume can go:
+  `podman-compose down`, `podman volume rm lanvex_core-static`, `podman-compose up -d`.
 - **Changing the server Lanvex runs on.** A rootless container cannot reach its own host's LAN
   address. Lanvex can read that host through `host.containers.internal`, but not change it
   ([changes.md](changes.md#when-lanvex-reaches-the-server-indirectly)).

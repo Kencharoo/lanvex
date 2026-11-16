@@ -218,6 +218,8 @@ jobs:
           persist-credentials: false
           path: core
       - name: Install with install.sh
+        # bash with pipefail: a failing installer must fail this step, not just tee.
+        shell: bash
         run: ./install.sh --core --plain-http --port 8080 --admin ci-admin --time-zone Europe/Berlin --yes | tee install.log
       - name: Check the installation
         run: |
@@ -256,6 +258,8 @@ jobs:
           sudo systemctl stop docker.socket docker.service
           sudo mv "$(command -v docker)" /usr/local/sbin/docker.hidden
       - name: Install with install.sh (rootless)
+        # bash with pipefail: a failing installer must fail this step, not just tee.
+        shell: bash
         run: ./install.sh --core --plain-http --port 8080 --admin ci-admin --time-zone Europe/Berlin --yes < /dev/null | tee install.log
       - name: Check the installation
         run: |

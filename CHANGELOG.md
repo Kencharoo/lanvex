@@ -17,7 +17,9 @@ Fixes from the first installation on Fedora Server with rootless Podman (Klassen
   by their Compose labels, health checks are in docker-compose.yml (Podman's OCI images carry none)
   and run by the installer where no systemd timer does, every image name is fully qualified (Fedora's
   short-name policy), and a systemd unit starts Lanvex at boot. `scripts/check-install.sh` works with
-  both. CI now installs Lanvex under rootless Podman configured like Fedora.
+  both. CI now installs Lanvex under rootless Podman configured like Fedora; that found one more
+  problem, fixed here: with Podman 4, Lanvex Core could not write its static files, because the
+  shared volume took the owner of the `lanvex` container, which mounted it first.
 - **Failed sign-ins.** Scheduled reads pause after two failed sign-ins in a row, so OpenSSH's
   PerSourcePenalties (or fail2ban) does not block Lanvex's address, and behind NAT everyone else's.
   OpenSSH's "Not allowed at this time" is recognised and shown as *Refused for now*. A successful read
