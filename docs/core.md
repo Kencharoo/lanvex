@@ -174,7 +174,16 @@ cd lanvex-0.6.1 && docker compose up -d --build   # Podman: podman-compose up -d
 ```
 
 The Compose project is always called `lanvex`, so the new directory uses the same containers,
-networks and volumes; the old directory can be deleted once everything runs. Lanvex Core applies its
+networks and volumes; the old directory can be deleted once everything runs. Under Podman, the
+systemd unit that starts Lanvex at boot names the directory; point it at the new one first:
+
+```bash
+sed -i "s|^WorkingDirectory=.*|WorkingDirectory=$PWD|" ~/.config/systemd/user/lanvex.service
+systemctl --user daemon-reload   # as root: /etc/systemd/system/lanvex.service and systemctl daemon-reload
+```
+
+An installation from before 0.6.1 has no such unit; [operations.md](operations.md#podman) shows how to
+add it. Lanvex Core applies its
 database migrations when it starts; that can take a few minutes after a NetBox feature release.
 
 ### Switching between Lanvex Core and your own NetBox

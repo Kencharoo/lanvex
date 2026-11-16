@@ -50,7 +50,34 @@ sudo. Notes:
 - **Start at boot.** Podman has no daemon that restarts containers after a reboot. The installer
   writes a systemd unit, `lanvex.service`: a system unit when run as root, otherwise a user unit and
   `loginctl enable-linger`, so it starts without anyone signing in. If lingering could not be enabled,
-  the installer says so; run `sudo loginctl enable-linger <user>` once.
+  the installer says so; run `sudo loginctl enable-linger <user>` once. To add the unit by hand (an
+  installation from before 0.6.1, or after the installer could not), as the user who owns the
+  containers, in the installation directory:
+
+  ```bash
+  mkdir -p ~/.config/systemd/user
+  cat > ~/.config/systemd/user/lanvex.service <<EOF
+  [Unit]
+  Description=Lanvex
+  Wants=network-online.target
+  After=network-online.target
+
+  [Service]
+  Type=oneshot
+  RemainAfterExit=yes
+  WorkingDirectory=$PWD
+  ExecStart=$(command -v podman-compose) up -d
+  ExecStop=$(command -v podman-compose) stop
+  TimeoutStartSec=0
+
+  [Install]
+  WantedBy=default.target
+  EOF
+  systemctl --user daemon-reload && systemctl --user enable lanvex.service
+  sudo loginctl enable-linger "$USER"
+  ```
+
+  A unit you wrote yourself before can stay; it should not run next to this one.
 - **Commands.** Where these docs say `docker compose`, use `podman-compose` (or `podman compose`).
 - **Health checks** run from systemd timers. Without a systemd session (some containers and CI
   machines) `podman healthcheck run <container>` runs one by hand; the installer does this itself.
