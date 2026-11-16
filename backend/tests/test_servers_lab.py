@@ -206,9 +206,14 @@ async def test_unchanged_reads_confirm_changed_reads_are_kept(api: httpx.AsyncCl
 async def test_discovery_from_real_hosts(api: httpx.AsyncClient) -> None:
     """Neighbour tables and LLDP as the lab hosts report them: systemd-networkd on lab-netplan, lldpd
     on lab-ifup, and lldpd on lab-nm, which lanvex may not ask (deploy/lab/README.md)."""
-    for _ in range(40):  # lldpd announces every 30 seconds; after the lab starts, wait for the first round
-        if "lab-nm" in sh("lab-ifup", "lldpcli show neighbors 2>/dev/null; true") and "lab-ifup" in sh(
-            "lab-netplan", "networkctl lldp --no-pager 2>/dev/null; true"
+    # lldpd announces every 30 seconds; after the lab starts, wait until every neighbour this test
+    # expects has been heard (a fast lab build reaches here before lab-nm's first announcement).
+    for _ in range(40):
+        seen_by_netplan = sh("lab-netplan", "networkctl lldp --no-pager 2>/dev/null; true")
+        if (
+            "lab-nm" in sh("lab-ifup", "lldpcli show neighbors 2>/dev/null; true")
+            and "lab-ifup" in seen_by_netplan
+            and "lab-nm" in seen_by_netplan
         ):
             break
         await asyncio.sleep(3)
