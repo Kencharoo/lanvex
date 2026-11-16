@@ -17,6 +17,7 @@ RUN chown root:root /etc/NetworkManager/system-connections/eth0.nmconnection \
  && printf '[main]\nplugins=keyfile\n' > /etc/NetworkManager/conf.d/90-lab.conf \
  && firewall-offline-cmd --set-default-zone=FedoraServer \
  && systemctl enable NetworkManager firewalld sshd \
+ && systemctl mask getty@tty1.service console-getty.service serial-getty@console.service \
  && systemctl disable dnsmasq 2>/dev/null; true
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

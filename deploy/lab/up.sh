@@ -43,7 +43,8 @@ fi
 # Wait for systemd to finish booting.
 for c in $hosts; do
   i=0
-  until state=$(docker exec "$c" systemctl is-system-running 2>/dev/null) && { [ "$state" = running ] || [ "$state" = degraded ]; }; do
+  # is-system-running exits non-zero when degraded; that state still counts as booted.
+  until state=$(docker exec "$c" systemctl is-system-running 2>/dev/null || true) && { [ "$state" = running ] || [ "$state" = degraded ]; }; do
     i=$((i + 1))
     if [ $i -gt 90 ] || [ "$(docker inspect -f '{{.State.Running}}' "$c")" != true ]; then
       echo "$c did not boot: ${state:-container stopped}"; docker logs --tail 40 "$c" 2>&1; exit 1
