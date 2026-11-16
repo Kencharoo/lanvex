@@ -720,3 +720,25 @@ def test_backend_follows_the_parent_interface(tmp_path, monkeypatch):  # type: i
     # Once Lanvex has VLANs on the server, it stays with the way it created them.
     (tmp_path / "networks.json").write_text(h.render_manifest("ifupdown", ["vlan50"]))
     assert h.choose_backend(change) == "ifupdown"
+
+
+def test_other_dnsmasq_configuration_is_found_in_every_file_dnsmasq_reads(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    conf, d = tmp_path / "dnsmasq.conf", tmp_path / "dnsmasq.d"
+    d.mkdir()
+    monkeypatch.setattr(h, "DNSMASQ_CONF", str(conf))
+    monkeypatch.setattr(h, "DNSMASQ_DIR", str(d))
+    monkeypatch.setattr(h, "DNSMASQ_FILE", str(d / "lanvex.conf"))
+    conf.write_text(f"conf-dir={d},.rpmnew,.rpmsave,.rpmorig\n")
+    (d / "lanvex.conf").write_text(
+        "dhcp-range=192.168.50.100,192.168.50.199\n"
+    )  # Lanvex's own: never "other"
+    (d / "nv-vlans").write_text(
+        "# Netzverwaltung\ninterface=vlan10\ndhcp-range=192.168.10.50,192.168.10.99\n"
+    )
+    (d / "old.conf.rpmsave").write_text("dhcp-range=192.168.20.50,192.168.20.99\n")  # not read by dnsmasq
+    assert h.dnsmasq_serves_others() == [str(d / "nv-vlans")]  # no .conf ending needed (Fedora, Debian)
+    assert h.dnsmasq_others() == {"restricted": True, "bind": False}
+    pools = h.validate_networks(networks(pools=[TEST_POOL]))["dhcp"]["pools"]
+    assert h.dnsmasq_conflicts(pools) == []
+    (d / "nv-vlans").write_text("dhcp-range=192.168.50.20,192.168.50.30\n")
+    assert h.dnsmasq_conflicts(pools) == [(str(d / "nv-vlans"), "dhcp-range=192.168.50.20,192.168.50.30")]

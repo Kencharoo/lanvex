@@ -90,6 +90,13 @@ sudo. Notes:
   `podman-compose logs core`: the volume for its static files belongs to the wrong user (installations
   of 0.6.0 under Podman 4). Lanvex Core rebuilds these files at every start, so the volume can go:
   `podman-compose down`, `podman volume rm lanvex_core-static`, `podman-compose up -d`.
+- **Addresses in the audit log.** With rootless Podman, every request reaches Lanvex from one internal
+  address (the container network's, such as `10.89.5.4`), not the browser's, so the audit log shows
+  that address for everyone. Browser confirmation of changes is not affected (it uses the address the
+  browser opened). To record real addresses, publish Lanvex only on `127.0.0.1`
+  (`LANVEX_HTTP_PORT=127.0.0.1:8100`), put a reverse proxy on the host in front of it that sets
+  `X-Forwarded-For`, and trust that internal address in `LANVEX_TRUSTED_PROXIES`. Never trust it while
+  Lanvex's port is open to the network: anyone could then claim any address.
 - **Changing the server Lanvex runs on.** A rootless container cannot reach its own host's LAN
   address. Lanvex can read that host through `host.containers.internal`, but not change it
   ([changes.md](changes.md#when-lanvex-reaches-the-server-indirectly)).
@@ -186,8 +193,13 @@ docker compose run --rm lanvex create-user alice --role admin     # prompts for 
 docker compose run --rm lanvex check-netbox                        # connection diagnostics
 ```
 
-Administrators can also add, demote and deactivate users under Settings. Lanvex keeps at least one
-active administrator.
+Administrators can also add, demote, deactivate and (once deactivated) delete users under Settings.
+Lanvex keeps at least one active administrator, and nobody can deactivate or delete their own account
+there. For a temporary account, finish on the command line (the audit log keeps its name):
+
+```bash
+docker compose run --rm lanvex deactivate-user claude-tmp   # or: delete-user claude-tmp
+```
 
 ## Health
 

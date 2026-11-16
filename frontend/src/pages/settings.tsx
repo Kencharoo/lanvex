@@ -166,6 +166,14 @@ function UsersSection() {
     },
     onError: (e) => toast.error(errorMessage(e)),
   });
+  const remove = useMutation({
+    mutationFn: (u: User) => api<void>(`/users/${u.id}`, { method: "DELETE" }),
+    onSuccess: (_, u) => {
+      toast.success(`Deleted ${u.username}`, { description: "The audit log keeps its name." });
+      void qc.invalidateQueries({ queryKey: ["users"] });
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
   const columns: Column<User>[] = [
     {
       key: "name",
@@ -201,9 +209,17 @@ function UsersSection() {
       header: <span className="sr-only">Actions</span>,
       cell: (u) =>
         u.id !== me.id && (
-          <Button size="sm" variant={u.is_active ? "danger-outline" : "secondary"} onClick={() => update.mutate({ id: u.id, is_active: !u.is_active })} disabled={update.isPending}>
-            {u.is_active ? "Deactivate" : "Reactivate"}
-          </Button>
+          <span className="flex justify-end gap-2">
+            <Button size="sm" variant={u.is_active ? "danger-outline" : "secondary"} onClick={() => update.mutate({ id: u.id, is_active: !u.is_active })} disabled={update.isPending}>
+              {u.is_active ? "Deactivate" : "Reactivate"}
+            </Button>
+            {/* Deactivate first, then delete: two steps, so no one is deleted by a slip. */}
+            {!u.is_active && (
+              <Button size="sm" variant="danger-outline" aria-label={`Delete ${u.username}`} onClick={() => remove.mutate(u)} disabled={remove.isPending}>
+                Delete
+              </Button>
+            )}
+          </span>
         ),
     },
   ];

@@ -38,7 +38,7 @@ COPY deploy/entrypoint.sh /usr/local/bin/lanvex-entrypoint
 RUN chmod 0755 /usr/local/bin/lanvex-entrypoint && chown -R lanvex:lanvex /app
 USER lanvex
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=4).status == 200 else 1)"
+# The health check is in docker-compose.yml: Podman builds OCI images, which cannot carry one (and
+# warns about a HEALTHCHECK here on every build).
 ENTRYPOINT ["lanvex-entrypoint"]
 CMD ["serve"]

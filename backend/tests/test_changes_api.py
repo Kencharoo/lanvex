@@ -883,6 +883,41 @@ async def test_keeping_from_another_address_needs_an_acknowledgement(
     )
 
 
+async def test_a_vpn_address_does_not_prove_the_servers_network(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner, clock: FakeClock
+) -> None:
+    # Like KlassenServer with Tailscale: Lanvex opened through the server's VPN address.
+    eth0 = next(i for i in fake.facts.interfaces if i.name == "eth0")
+    vpn = eth0.model_copy(
+        update={
+            "name": "tailscale0",
+            "kind": "tun",
+            "addresses": [a.model_copy(update={"address": "100.87.154.30/32"}) for a in eth0.addresses[:1]],
+        }
+    )
+    fake.facts = fake.facts.model_copy(update={"interfaces": [*fake.facts.interfaces, vpn]})
+    sid = await browser_server(admin)
+    change = await prepare(admin, sid)
+    tailscale = {"Host": "100.87.154.30:8100"}
+    seen: list[dict[str, Any]] = []
+    answers = decide_when_asked(admin, clock, change["id"], {"decision": "keep"}, tailscale)
+    first = clock.on_sleep
+
+    async def act() -> None:
+        assert first is not None
+        if not seen:
+            detail = (await admin.get(f"/api/v1/changes/{change['id']}", headers=tailscale)).json()
+            if detail["can_decide"]:
+                seen.append(detail["your_address"])
+        await first()
+
+    clock.on_sleep = act
+    done = await approve_and_run(admin, runner, change)
+    assert seen[0] == {"host": "100.87.154.30", "on_server": False, "interface": "tailscale0", "vpn": True}
+    assert answers[0].status_code == 409 and answers[0].json()["error"]["code"] == "indirect_browser"
+    assert done["status"] == "rolled_back"  # never kept: the server restored its configuration
+
+
 async def test_undone_in_the_browser(
     admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner, clock: FakeClock
 ) -> None:

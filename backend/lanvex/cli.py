@@ -1,4 +1,5 @@
-"""Operator commands: `lanvex migrate`, `lanvex create-user`, `lanvex check-netbox`."""
+"""Operator commands: `lanvex migrate`, `lanvex create-user`, `lanvex deactivate-user`, `lanvex delete-user`,
+`lanvex check-netbox`."""
 
 import argparse
 import asyncio
@@ -31,6 +32,30 @@ async def _create_user(username: str, role: Role, password: str) -> None:
     try:
         async with db.sessionmaker() as session:
             await create_user(session, username, password, role)
+            await session.commit()
+    finally:
+        await db.dispose()
+
+
+async def _retire_user(username: str, delete_it: bool) -> None:
+    from lanvex.audit.models import AuditEvent
+    from lanvex.auth.service import retire_user
+
+    db = Database(get_settings().database_url.get_secret_value())
+    try:
+        async with db.sessionmaker() as session:
+            user = await retire_user(session, username, delete_it=delete_it)
+            session.add(
+                AuditEvent(
+                    actor_username="lanvex (command line)",
+                    action="user.delete" if delete_it else "user.update",
+                    target_type="user",
+                    target_id=str(user.id),
+                    target_repr=user.username,
+                    outcome="success",
+                    detail=None if delete_it else {"is_active": "False"},
+                )
+            )
             await session.commit()
     finally:
         await db.dispose()
@@ -88,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     cu.add_argument("username")
     cu.add_argument("--role", choices=[r.value for r in Role], default=Role.READONLY.value)
     cu.add_argument("--password-stdin", action="store_true", help="Read the password from stdin")
+    for name, what in (
+        ("deactivate-user", "Deactivate a user and end its sessions"),
+        ("delete-user", "Delete a user"),
+    ):
+        sub.add_parser(name, help=what + " (the audit log keeps its name)").add_argument("username")
     sub.add_parser("check-netbox", help="Test the NetBox connection")
     sub.add_parser("generate-secret-key", help="Print a new value for LANVEX_SECRET_KEY")
     sub.add_parser(
@@ -110,6 +140,15 @@ def main(argv: list[str] | None = None) -> int:
         except LanvexError as e:
             print(f"Error: {e.message}", file=sys.stderr)
             return 1
+    if args.cmd in ("deactivate-user", "delete-user"):
+        delete_it = args.cmd == "delete-user"
+        try:
+            asyncio.run(_retire_user(args.username, delete_it))
+        except LanvexError as e:
+            print(f"Error: {e.message}", file=sys.stderr)
+            return 1
+        print(f"{'Deleted' if delete_it else 'Deactivated'} user '{args.username}'; its sessions are ended.")
+        return 0
     if args.cmd == "create-user":
         if args.password_stdin:
             password = sys.stdin.readline().rstrip("\n")

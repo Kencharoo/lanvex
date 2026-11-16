@@ -86,8 +86,13 @@ servers; on ifupdown servers Lanvex manages networks only.
   is expected.
 - dnsmasq reads `/etc/dnsmasq.d` (the default on Fedora, RHEL, Debian and Ubuntu).
 - The change helper in version 3 (Lanvex 0.8), with Python 3. After updating Lanvex, every
-  server's helper shows as outdated: install it again from the server page (*Configuration changes*),
-  as the first time.
+  server's helper shows as outdated: copy the new file to the server from the server page
+  (*Configuration changes*) and run the commands shown there as an administrator of the server, as
+  the first time ([changes.md](changes.md#2-on-each-server-install-the-helper)).
+- The switch carries the VLAN to the server: the server's port is a trunk with that VLAN tagged.
+  Lanvex does not configure switches.
+- If dnsmasq already serves other networks on the server (Netzverwaltung's, for example), Lanvex's
+  first pool restarts it: their DHCP and DNS pause for a moment, and the preview says so.
 - Firewall: with firewalld, Lanvex puts each network in its own zone; with ufw, it adds its rules.
   A hand-written nftables firewall that drops incoming traffic is pointed out in the preview: allow
   DHCP (UDP 67) and DNS (port 53) on the new interfaces yourself until Lanvex 0.9.

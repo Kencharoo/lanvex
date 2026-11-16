@@ -331,8 +331,12 @@ function BrowserDecision({ change: c, onDecided }: { change: ChangeDetail; onDec
             You use Lanvex at <span className="addr">{where.host}</span>, one of {c.server_name}'s own addresses, so this page still answering shows that address still works.
           </p>
         ) : (
-          <Notice tone="warn" title={`${where.host} is not one of ${c.server_name}'s addresses`}>
-            <p>Reaching Lanvex from here does not show that {c.server_name}'s network still works. Open Lanvex through one of the server's own addresses, or check it yourself.</p>
+          <Notice tone="warn" title={where.vpn ? `${where.host} is ${c.server_name}'s VPN address (${where.interface})` : `${where.host} is not one of ${c.server_name}'s addresses`}>
+            <p>
+              {where.vpn
+                ? `Reaching Lanvex through the VPN shows only that the VPN still works, not ${c.server_name}'s LAN and VLANs. Open Lanvex through the server's LAN address, or check those yourself.`
+                : `Reaching Lanvex from here does not show that ${c.server_name}'s network still works. Open Lanvex through one of the server's own addresses, or check it yourself.`}
+            </p>
             <div className="pt-2">
               <Checkbox id="ack-indirect" label="I checked that the server's network still works" checked={ack} onChange={(e) => setAck(e.target.checked)} />
             </div>

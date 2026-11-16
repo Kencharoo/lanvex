@@ -126,7 +126,9 @@ and *Undo it now*, and the seconds left. Only *Keep* makes Lanvex confirm the ch
 Use Lanvex through one of that server's own addresses (`http://192.168.178.2:8100`, not
 `localhost`): your Keep reaching Lanvex is then the proof that the server's network still works. The
 page says which address your browser uses; when it is not one of the server's, Keep needs an extra
-tick that you checked the network yourself. If the change cut your browser off, nobody can choose
+tick that you checked the network yourself. The same goes for the server's VPN addresses (Tailscale,
+WireGuard and other tunnels): reaching Lanvex through `tailscale0` shows only that the VPN works, not
+the server's LAN and VLANs. If the change cut your browser off, nobody can choose
 Keep, Lanvex does not confirm, and the server's timer restores the previous configuration. Every page
 shows a change waiting for your decision, and *Keep* and *Undo* are in the audit log with the address
 used.
@@ -194,6 +196,11 @@ On the server page, under **Configuration changes**, choose **Install the helper
    *Installed* when it works, or what is missing: *Not installed*, *Not allowed through sudo*,
    *Python 3 missing*, *Outdated version* (after a Lanvex upgrade: install the new file the same way).
 
+**After a Lanvex update** that ships a new helper, every server's helper shows as *Outdated version*.
+Lanvex cannot replace it by itself: its account may run the helper through sudo, nothing else. Repeat
+steps 1–3: **Copy to the server**, then an administrator runs the commands shown (the sudoers line is
+already there and may stay).
+
 ### 3. For the server
 
 Under **Configuration changes**, choose **Turn on**. Administrators can now prepare changes for
@@ -243,7 +250,7 @@ sudo rm -rf /var/lib/lanvex      # backups and state of past changes
 |---|---|
 | *Not allowed through sudo* | The sudoers rule is missing, names another path or user, or `sudo` asks for a password. Re-run the install commands |
 | *Python 3 missing* | Install `python3` (and `python3-yaml` on netplan servers) |
-| *Outdated version* | Lanvex was upgraded, or the file on the server is not exactly the one Lanvex ships (the helper reports its own SHA-256). Install it again from the server page |
+| *Outdated version* | Lanvex was upgraded, or the file on the server is not exactly the one Lanvex ships (the helper reports its own SHA-256). Copy the new file to the server from the server page and have an administrator run the commands shown ([installing the helper](#2-on-each-server-install-the-helper)) |
 | "The configuration file changed since the preview" | Someone edited the file after the change was prepared. Cancel it and prepare a new one |
 | "Another change is in progress on this server" | A change is still running or awaiting its timer. Wait, or check `/var/lib/lanvex/changes/` |
 | Rolled back, "Gateway … answers" failed | Nothing on that interface's link answered ping or ARP for the gateway address: a typo, the wrong subnet, or the gateway is down |

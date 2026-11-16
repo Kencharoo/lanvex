@@ -611,7 +611,7 @@ interface ChangeDetailBase extends ChangeOut {
   } | null;
   can_decide: boolean;
   /** How this browser reaches Lanvex, and whether that is one of the changed server's own addresses. */
-  your_address: { host: string; on_server: boolean } | null;
+  your_address: { host: string; on_server: boolean; interface: string | null; vpn: boolean } | null;
 }
 
 export type HelperState = "unknown" | "ok" | "outdated" | "missing" | "no_sudo" | "no_python" | "timeout" | "error";

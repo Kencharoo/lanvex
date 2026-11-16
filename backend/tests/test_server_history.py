@@ -139,9 +139,14 @@ async def test_reads_of_an_unchanged_server_confirm_instead_of_piling_up(
 ) -> None:
     sid = await _server(admin)
     first = (await admin.post(f"/api/v1/servers/{sid}/collect")).json()
+    fake.facts.neighbors = fake.facts.neighbors[:1]  # comes and goes without being a new state
     again = (await admin.post(f"/api/v1/servers/{sid}/collect")).json()
     assert again["id"] == first["id"] and again["reads"] == 2 and again["confirmed_at"]
     assert len((await admin.get(f"/api/v1/servers/{sid}/snapshots")).json()) == 1
+    # Pages built on the latest read (leases, neighbours, "read at") show that read, not the first one.
+    latest = (await admin.get(f"/api/v1/servers/{sid}/snapshots/latest")).json()
+    assert latest["facts"]["collected_at"] > first["facts"]["collected_at"]
+    assert len(latest["facts"]["neighbors"]) == len(fake.facts.neighbors)
 
     eth = next(i for i in fake.facts.interfaces if i.addresses and i.name != "lo")
     eth.addresses.append(Address(address="172.30.0.77/24", family=4))

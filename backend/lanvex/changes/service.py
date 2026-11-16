@@ -148,6 +148,15 @@ def summarize(r: ChangeRequest) -> str:
     return f"{r.interface}: " + " · ".join(parts)
 
 
+VPN_KINDS = {"wireguard", "tun", "tap", "gre", "gretap", "ipip", "sit", "vxlan", "geneve", "ip6tnl"}
+VPN_PREFIXES = ("tailscale", "wg", "tun", "tap", "zt", "nebula", "ppp", "ipsec", "vti")
+
+
+def is_vpn(iface: Any) -> bool:
+    """A VPN or tunnel interface (Tailscale, WireGuard, ZeroTier, OpenVPN, GRE…)."""
+    return (iface.kind or "") in VPN_KINDS or iface.name.startswith(VPN_PREFIXES)
+
+
 def lanvex_vlans(facts: HostFacts) -> list[dict[str, Any]]:
     """The VLAN interfaces Lanvex manages on the server, as last read."""
     return sorted(
@@ -644,7 +653,7 @@ class ChangeService:
         only then does reaching Lanvex show that the server's network still works."""
         _, facts = await self.servers.latest_facts(c.server_id)
         own = {
-            str(ipaddress.ip_interface(a.address).ip)
+            str(ipaddress.ip_interface(a.address).ip): i
             for i in (facts.interfaces if facts else [])
             for a in i.addresses
             if not ipaddress.ip_interface(a.address).ip.is_loopback
@@ -657,7 +666,11 @@ class ChangeService:
                 addresses = await transport.resolve(name)
             except transport.SSHError:
                 addresses = []
-        return BrowserAddress(host=name, on_server=bool(own & set(addresses)))
+        iface = next((own[a] for a in addresses if a in own), None)
+        if iface is None:
+            return BrowserAddress(host=name, on_server=False)
+        vpn = is_vpn(iface)
+        return BrowserAddress(host=name, on_server=not vpn, interface=iface.name, vpn=vpn)
 
     async def decide(
         self,

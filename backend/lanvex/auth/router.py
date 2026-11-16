@@ -14,6 +14,7 @@ from lanvex.auth.service import (
     create_session,
     create_user,
     hash_password,
+    retire_user,
     revoke_session,
     revoke_user_sessions,
     verify_password,
@@ -179,6 +180,22 @@ async def add_user(body: UserCreate, db: DB, _: AdminUser, audit: Audit) -> User
         await db.commit()
         t.target_id = user.id
     return user
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_user(user_id: uuid.UUID, db: DB, admin: AdminUser, audit: Audit) -> Response:
+    """Delete a user. The audit log keeps its name; changes it prepared or approved keep theirs."""
+    user = await db.get(User, user_id)
+    if user is None:
+        raise NotFound("User not found.")
+    async with audit.track("user.delete", "user", target_id=user.id, target_repr=user.username):
+        if user.id == admin.id:
+            raise Conflict(
+                "You cannot delete your own account. Another administrator can, or `lanvex delete-user`."
+            )
+        await retire_user(db, user.username, delete_it=True)
+        await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)

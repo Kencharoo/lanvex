@@ -1160,22 +1160,51 @@ def choose_backend(change: dict) -> str:
     )
 
 
+# What package managers leave next to a configuration file; dnsmasq's conf-dir skips these (Fedora and
+# Debian name them in conf-dir / CONFIG_DIR), and so does Lanvex when it looks at other configuration.
+DNSMASQ_SKIPPED = (".rpmnew", ".rpmsave", ".rpmorig", ".dpkg-dist", ".dpkg-old", ".dpkg-new", "~")
+
+
+def dnsmasq_other_files() -> list:
+    """dnsmasq's configuration files other than Lanvex's: the main file and every file in its directory."""
+    files = [DNSMASQ_CONF]
+    if os.path.isdir(DNSMASQ_DIR):
+        files += sorted(
+            os.path.join(DNSMASQ_DIR, f)
+            for f in os.listdir(DNSMASQ_DIR)
+            if not f.startswith(".") and not f.endswith(DNSMASQ_SKIPPED)
+        )
+    return [f for f in files if f != DNSMASQ_FILE and os.path.isfile(f)]
+
+
+def dnsmasq_lines(path: str) -> list:
+    """(key, value, line) of each setting in a dnsmasq file, without comments."""
+    try:
+        text = read_text(path)
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            key, _, value = line.partition("=")
+            out.append((key.strip(), value.strip(), line))
+    return out
+
+
+def dnsmasq_serves_others() -> list:
+    """Other configuration files that have dnsmasq serve DHCP (a restart interrupts that too)."""
+    return [
+        path for path in dnsmasq_other_files() if any(k == "dhcp-range" for k, _, _ in dnsmasq_lines(path))
+    ]
+
+
 def dnsmasq_others() -> dict:
     """What other dnsmasq configuration already decides: whether it restricts the interfaces dnsmasq
     answers on, and whether it chooses how dnsmasq binds."""
     restricted = bind = False
-    files = [DNSMASQ_CONF]
-    if os.path.isdir(DNSMASQ_DIR):
-        files += sorted(os.path.join(DNSMASQ_DIR, f) for f in os.listdir(DNSMASQ_DIR) if f.endswith(".conf"))
-    for path in files:
-        if path == DNSMASQ_FILE:
-            continue
-        try:
-            text = read_text(path)
-        except OSError:
-            continue
-        for line in text.splitlines():
-            key = line.split("#", 1)[0].strip().split("=", 1)[0].strip()
+    for path in dnsmasq_other_files():
+        for key, _, _ in dnsmasq_lines(path):
             restricted = restricted or key in ("interface", "listen-address", "except-interface")
             bind = bind or key in ("bind-interfaces", "bind-dynamic")
     return {"restricted": restricted, "bind": bind}
@@ -1308,26 +1337,11 @@ def dnsmasq_reads_dir() -> bool:
 def dnsmasq_conflicts(pools: list) -> list:
     """Other dnsmasq configuration serving the same interface or network: (file, line)."""
     found = []
-    files = [DNSMASQ_CONF]
-    if os.path.isdir(DNSMASQ_DIR):
-        files += sorted(
-            os.path.join(DNSMASQ_DIR, f)
-            for f in os.listdir(DNSMASQ_DIR)
-            if not f.startswith(".") and f.endswith(".conf")
-        )
     ifaces = {p["interface"] for p in pools}
     nets = [ipaddress.ip_network(p["network"]) for p in pools]
-    for path in files:
-        if path == DNSMASQ_FILE:
-            continue
-        try:
-            text = read_text(path)
-        except OSError:
-            continue
-        for line in text.splitlines():
-            line = line.split("#", 1)[0].strip()
-            key, _, value = line.partition("=")
-            if key == "interface" and value.strip() in ifaces:
+    for path in dnsmasq_other_files():
+        for key, value, line in dnsmasq_lines(path):
+            if key == "interface" and value in ifaces:
                 found.append((path, line))
             elif key == "dhcp-range":
                 for item in value.split(","):
@@ -1615,6 +1629,12 @@ def networks_plan(change: dict) -> dict:
         warnings.append("dnsmasq is not enabled on this server yet; Lanvex enables and starts it.")
     if restart_dnsmasq or (dnsmasq and dnsmasq["wanted"] and not dnsmasq["active"]):
         commands.append("systemctl restart dnsmasq")
+        others = dnsmasq_serves_others() if dnsmasq["active"] else []
+        if others:
+            warnings.append(
+                "dnsmasq also serves DHCP for other configuration here (%s). Restarting it interrupts DHCP and "
+                "DNS for those networks too, for a moment; devices keep their addresses." % ", ".join(others)
+            )
     if disable_dnsmasq:
         commands.append("systemctl disable dnsmasq")
     if stop_dnsmasq:

@@ -409,6 +409,10 @@ class ServerService:
         ):
             latest.confirmed_at = datetime.now(UTC)
             latest.reads += 1
+            if snap.facts is not None:
+                # The same state, read again: keep what changes without being a new state (leases,
+                # neighbours, when it was read), so pages built on the latest read show the latest read.
+                latest.facts, latest.raw, latest.duration_ms = snap.facts, snap.raw, snap.duration_ms
             await self.db.flush()
             self._maybe_pause(s, latest, scheduled)
             return latest

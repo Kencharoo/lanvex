@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.1 — 2026-11-16
+
+Fixes from updating KlassenServer to 0.7.0 (Fedora Server, rootless Podman).
+
+- **Leases and "read at" were stale** on the server page when a read found the same state as before:
+  Lanvex kept the earlier snapshot, including its leases. An unchanged state now keeps the latest read
+  (leases, neighbours, when it was read); only the history stays one entry.
+- **A VPN address does not count as the server's network** for browser confirmation. Keep through
+  Tailscale, WireGuard or another tunnel on the server now needs the same extra tick as an address that
+  is not the server's, and the page says why: it shows only that the VPN works, not the LAN and VLANs.
+- **Removing users.** `lanvex deactivate-user` and `lanvex delete-user` on the command line (for a
+  temporary administrator that cannot remove itself), and *Delete* for deactivated users in Settings.
+  The audit log keeps the name.
+- When dnsmasq also serves other networks (Netzverwaltung's on KlassenServer), the preview says that
+  restarting it interrupts their DHCP and DNS for a moment. Other dnsmasq configuration is now found in
+  every file dnsmasq reads, not only `*.conf`.
+- Docs: after an update the helper is reinstalled by an administrator running the commands the server
+  page shows (Lanvex's account cannot do it); audit addresses under rootless Podman and how to record
+  real ones; the switch must carry a new VLAN. `.env.example` shows the real snapshot retention (200).
+- The Lanvex image no longer declares a health check (Compose does), so Podman stops warning about it.
+
 ## 0.8.0 — 2026-11-16
 
 Networks on the other common server systems, not only NetworkManager ([docs/networks.md](docs/networks.md)).
@@ -24,8 +45,9 @@ Networks on the other common server systems, not only NetworkManager ([docs/netw
   limited to netplan and NetworkManager.
 - Lab: a Debian 12 host (CI); the Ubuntu host has dnsmasq and ufw installed as Ubuntu leaves them.
 
-**Updating:** every server's change helper shows as outdated (version 3); install it again from the
-server page.
+**Updating:** every server's change helper shows as outdated (version 3). On the server page, copy the
+new file to the server and have an administrator run the commands shown there; Lanvex's account may
+only run the helper, so it cannot replace it itself.
 
 ## 0.7.0 — 2026-11-16
 

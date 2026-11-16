@@ -1,8 +1,21 @@
-# Status of Lanvex 0.8.0
+# Status of Lanvex 0.8.1
 
 Last updated 2026-11-16. "Verified" means it was run, not just written.
 
 ## Verified
+
+### Update on a real server (0.6.0 → 0.7.0)
+
+KlassenServer (Fedora Server, rootless Podman with podman-compose), updated by following docs/core.md:
+same `.env`, migrations and Lanvex Core's service account and custom fields updated by themselves,
+all seven containers healthy after about a minute, helper version 2 installed by hand and verified by
+its checksum. With *My browser confirms changes* and its protected interfaces set, the server was
+ready for changes; Netzverwaltung's VLANs showed as protected and its leases were left out. Nothing on
+the server's network was changed. Six problems found, fixed in 0.8.1 ([CHANGELOG.md](../CHANGELOG.md)):
+stale leases on the server page, wording about reinstalling the helper, no way to remove a temporary
+administrator, audit addresses under rootless Podman, a documentation default, a Podman build warning;
+and two observations acted on (VPN addresses in browser confirmation, dnsmasq restarts touching
+Netzverwaltung's networks).
 
 ### Second installation on a real server (0.6.0)
 

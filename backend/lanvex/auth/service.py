@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lanvex.auth.models import Role, Session, User
 from lanvex.core.config import Settings
 from lanvex.core.db import utcnow
-from lanvex.core.errors import Conflict, ValidationFailed
+from lanvex.core.errors import Conflict, NotFound, ValidationFailed
 
 _hasher = PasswordHasher()
 # Verified against when the username does not exist, so response time does not reveal valid usernames.
@@ -117,6 +117,23 @@ async def create_user(
         username=username, password_hash=hash_password(password), role=role, display_name=display_name
     )
     db.add(user)
+    await db.flush()
+    return user
+
+
+async def retire_user(db: AsyncSession, username: str, *, delete_it: bool) -> User:
+    """Deactivate a user (sessions ended) or delete it. Lanvex always keeps one active administrator.
+    The audit log keeps the user's name either way."""
+    user = await db.scalar(select(User).where(func.lower(User.username) == username.lower()))
+    if user is None:
+        raise NotFound(f"There is no user '{username}'.")
+    if user.role == Role.ADMIN and user.is_active and await count_active_admins(db) <= 1:
+        raise Conflict("Lanvex needs at least one active administrator.")
+    await revoke_user_sessions(db, user.id)
+    if delete_it:
+        await db.delete(user)
+    else:
+        user.is_active = False
     await db.flush()
     return user
 

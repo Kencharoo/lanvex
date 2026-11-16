@@ -36,7 +36,7 @@ You need a Linux server with Docker and Docker Compose v2, or with Podman and po
 (Fedora Server's default; rootless works too, see [docs/operations.md](docs/operations.md#podman)).
 
 ```bash
-unzip lanvex-0.8.0.zip && cd lanvex-0.8.0
+unzip lanvex-0.8.1.zip && cd lanvex-0.8.1
 sudo ./install.sh
 ```
 

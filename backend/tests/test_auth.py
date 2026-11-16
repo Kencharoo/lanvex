@@ -1,11 +1,13 @@
 from datetime import timedelta
 
 import httpx
+import pytest
 from sqlalchemy import select, update
 
 from lanvex.audit.models import AuditEvent
 from lanvex.auth.models import Session
 from lanvex.core.db import Database
+from lanvex.core.errors import Conflict
 
 from .conftest import ADMIN_PW, login
 
@@ -130,3 +132,49 @@ async def test_secure_cookie_mode_refuses_plain_http_with_guidance(
     ) as c:
         r = await c.post("/api/v1/auth/login", json={"username": "admin", "password": ADMIN_PW})
         assert r.status_code == 200 and "secure" in r.headers["set-cookie"].lower()
+
+
+async def test_users_can_be_deleted_but_not_by_themselves(admin: httpx.AsyncClient, database) -> None:  # type: ignore[no-untyped-def]
+    from lanvex.auth.service import retire_user
+
+    r = await admin.post(
+        "/api/v1/users", json={"username": "claude-tmp", "password": "long-enough-password", "role": "admin"}
+    )
+    tmp = r.json()
+    me = next(u for u in (await admin.get("/api/v1/users")).json() if u["username"] == "admin")
+    r = await admin.delete(f"/api/v1/users/{me['id']}")
+    assert r.status_code == 409 and "lanvex delete-user" in r.text
+    assert (await admin.delete(f"/api/v1/users/{tmp['id']}")).status_code == 204
+    assert "claude-tmp" not in {u["username"] for u in (await admin.get("/api/v1/users")).json()}
+    event = (await admin.get("/api/v1/audit-events", params={"action": "user.delete"})).json()["results"][0]
+    assert event["target_repr"] == "claude-tmp" and event["actor_username"] == "admin"
+
+    # What `lanvex deactivate-user` / `delete-user` run: never the last active administrator.
+    async with database.sessionmaker() as s:
+        with pytest.raises(Conflict):
+            await retire_user(s, "ADMIN", delete_it=False)
+        reader = await retire_user(s, "reader", delete_it=False)
+        assert reader.is_active is False
+        await s.commit()
+    r = await admin.post(
+        "/api/v1/users", json={"username": "ops2", "password": "long-enough-password", "role": "admin"}
+    )
+    async with database.sessionmaker() as s:
+        await retire_user(s, "admin", delete_it=False)  # another active admin exists now
+        await s.commit()
+    assert (await admin.get("/api/v1/users")).status_code == 401  # its sessions ended
+
+
+def test_cli_retires_users(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    from lanvex import cli
+
+    calls: list[tuple[str, bool]] = []
+
+    async def fake(username: str, delete_it: bool) -> None:
+        calls.append((username, delete_it))
+
+    monkeypatch.setattr(cli, "_retire_user", fake)
+    assert cli.main(["deactivate-user", "claude-tmp"]) == 0
+    assert cli.main(["delete-user", "claude-tmp"]) == 0
+    assert calls == [("claude-tmp", False), ("claude-tmp", True)]
+    assert "Deleted user 'claude-tmp'" in capsys.readouterr().out

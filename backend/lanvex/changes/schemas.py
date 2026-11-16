@@ -311,6 +311,10 @@ class BrowserAddress(ApiModel):
 
     host: str
     on_server: bool
+    # The server's interface with that address, and whether it is a VPN (Tailscale, WireGuard, a tunnel):
+    # reaching Lanvex through a VPN shows only that the VPN works, not the server's LAN and VLANs.
+    interface: str | None = None
+    vpn: bool = False
 
 
 class HelperStatus(ApiModel):
