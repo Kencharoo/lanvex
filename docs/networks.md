@@ -77,6 +77,12 @@ servers; on ifupdown servers Lanvex manages networks only.
   run next to systemd-resolved on Ubuntu, which holds port 53 on 127.0.0.53.
 - If dnsmasq already answers on every interface for another configuration (Debian's default once the
   package is installed), Lanvex adds its pools without restricting that, and says so in the preview.
+- If dnsmasq answers on loopback alone (`local-service=host`, Fedora's and RHEL's default), Lanvex's
+  interface lines end that: dnsmasq then answers on loopback and Lanvex's interfaces, bound to their
+  addresses. After every change, Lanvex checks that dnsmasq answers DHCP, and DNS on the server's
+  address in each of its networks.
+- Taking over from Netzverwaltung, dnsmasq keeps answering where Netzverwaltung had it answer (its
+  networks' interfaces, now listed in Lanvex's file).
 - The choice is kept as long as Lanvex's file exists, so later changes do not flip it.
 
 ## What the server needs
