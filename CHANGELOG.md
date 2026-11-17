@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-11-17
 
 Switches: which device is plugged into which port.
 
@@ -20,6 +20,11 @@ Switches: which device is plugged into which port.
   release, once CI has passed on that commit.
 
 New dependency: pysnmp (BSD), for SNMP's protocol and SNMPv3's security.
+
+**Updating:** `lanvexctl update` (downloads 1.2.0 from GitHub), or
+`lanvexctl update --file lanvex-1.2.0.zip`. The database gets its new tables on start. New settings are
+optional (`LANVEX_SWITCH_READ_INTERVAL_MINUTES`, `LANVEX_SNMP_*`). The helper (version 5) and Lanvex Core
+(1.0.0) are unchanged. Not yet tried against real switches: see [docs/status.md](docs/status.md).
 
 ## 1.1.0 — 2026-11-17
 

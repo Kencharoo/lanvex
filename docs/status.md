@@ -1,10 +1,10 @@
-# Status of Lanvex 1.1.0
+# Status of Lanvex 1.2.0
 
 Last updated 2026-11-17. "Verified" means it was run, not just written.
 
 ## Verified
 
-### Switches (new, not released yet)
+### Switches (new in 1.2)
 
 Against SNMP agents in the test process, built on pysnmp's own command responder, so requests and
 answers go over UDP as with a switch: SNMPv2c, SNMPv3 with SHA and AES, a wrong password, an unknown
@@ -252,8 +252,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 374 tests: 326 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 40 SSH lab (6 reading, discovery and recording; 7 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
-| Frontend | Type check, 30 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core) |
+| Backend | 403 tests: 355 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 40 SSH lab (6 reading, discovery and recording; 7 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Frontend | Type check, 30 unit tests, production build; 12 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core; 1 against two SNMP switches in software) |
 | Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 

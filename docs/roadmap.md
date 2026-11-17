@@ -121,7 +121,7 @@ Alerts for unreachable servers, refused reads, drift from the documentation, ful
 unknown devices and failed changes, by email and webhooks ([monitoring.md](monitoring.md)); lanvexctl to
 install, update, back up and restore.
 
-### 1.2: Switches (in progress)
+### 1.2: Switches (released 2026-11-17)
 
 Built: switches read over SNMP (v3 or v2c, read-only), with their ports, VLANs, link aggregations,
 MAC address table and LLDP neighbours; which device is on which port, compared with the documented

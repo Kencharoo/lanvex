@@ -174,7 +174,7 @@ Lanvex and Lanvex Core are released together: each Lanvex release names the Lanv
 was tested with in `core.lock` and contains it in `./core`.
 
 ```bash
-lanvexctl update            # the latest release; or: lanvexctl update 1.1.0, lanvexctl update --file lanvex-1.1.0.zip
+lanvexctl update            # the latest release; or: lanvexctl update 1.2.0, lanvexctl update --file lanvex-1.2.0.zip
 ```
 
 lanvexctl backs up, unpacks the release next to the running one (`releases/<version>`), runs its
