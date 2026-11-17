@@ -95,6 +95,18 @@ LANVEX_E2E_CORE_URL=http://127.0.0.1:8000 LANVEX_E2E_CORE_PASSWORD=… npx playw
 into `./core` for `docker compose`; `scripts/release.sh` builds the release archive (Lanvex at HEAD
 plus `./core`). Steps for a new Lanvex Core version are in [core.md](core.md#for-developers).
 
+## Releases
+
+1. Set the version in `backend/lanvex/__init__.py`, `backend/pyproject.toml` (then `uv lock`) and
+   `frontend/package.json`, add the entry to `CHANGELOG.md`, push, and let CI pass.
+2. On GitHub, *Releases, Draft a new release*: tag `vX.Y.Z` on `main`, title `vX.Y.Z`, the changelog
+   entry as notes, *Publish*.
+3. The workflow *Release files* (`.github/workflows/release.yml`) checks that the tag names the
+   version in the code, waits for CI on that commit to pass, builds `lanvex-X.Y.Z.zip` with
+   `scripts/release.sh` (Lanvex Core from `core.lock`) and attaches it with its `.sha256`. From then on
+   `lanvexctl install` and `lanvexctl update` find it. If CI failed, fix it and run the workflow by
+   hand (*Run workflow*, with the tag).
+
 ## Continuous integration
 
 Both repositories check every push and pull request on GitHub Actions.
@@ -102,6 +114,7 @@ Both repositories check every push and pull request on GitHub Actions.
 | Repository | Workflow | What it does |
 |---|---|---|
 | lanvex | `.github/workflows/ci.yml` | Backend (ruff, pytest with PostgreSQL), frontend (type check, unit tests, build), browser tests against the NetBox stand-in, shellcheck and an installer run in both modes, the image build, and a **full installation**: `install.sh --core` on a fresh runner with the Lanvex Core version from `core.lock`, then `scripts/check-install.sh` |
+| lanvex | `.github/workflows/release.yml` | On a published release: checks the tag against the version, waits for CI on the commit, builds the release archive and attaches it with its `.sha256` |
 | lanvex-core | `.github/workflows/lanvex-core.yml` | Lint, fork check, no migrations of our own, Lanvex Core's tests, NetBox's complete suite on `lanvex-core-*` tags (or on request: *Run workflow*), and the image built and started with `lanvex/scripts/smoke-image.sh` |
 
 The full installation fetches lanvex-core at the commit in `core.lock`. Both repositories are public,

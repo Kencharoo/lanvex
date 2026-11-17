@@ -1,0 +1,92 @@
+# Attaches the release files to a GitHub release: lanvex-X.Y.Z.zip (Lanvex and the Lanvex Core source
+# from core.lock) and its .sha256, which lanvexctl downloads and checks. Publish a release with the tag
+# vX.Y.Z on the commit whose backend/lanvex/__init__.py says X.Y.Z; this workflow waits for CI on that
+# commit to pass, builds the archive and attaches both files. docs/development.md, Releases.
+name: Release files
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)build the files for, e.g. v1.2.0"
+        required: true
+      dry_run:
+        description: "Only build: keep the files as a workflow artifact, attach nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write  # attach files to the release
+  actions: read  # see CI's result for the commit
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  files:
+    name: Build and attach
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          path: lanvex
+          fetch-depth: 0
+      - name: The tag names the version in the code
+        id: version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' lanvex/backend/lanvex/__init__.py)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag is $TAG, but backend/lanvex/__init__.py says $version. Tag v$version instead."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git -C lanvex rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(sed -n 's/^commit=//p' lanvex/core.lock)" >> "$GITHUB_OUTPUT"
+      - name: CI passed on this commit
+        # A release ships what CI tested: wait for CI on the commit (it may still be running), and stop
+        # unless it succeeded.
+        env:
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          deadline=$(( $(date +%s) + 100 * 60 ))
+          while :; do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=20" \
+              --jq '[.workflow_runs[] | {status, conclusion}]')
+            if echo "$runs" | jq -e 'any(.[]; .conclusion == "success")' >/dev/null; then
+              echo "CI passed on $SHA."; break
+            fi
+            if [ "$(echo "$runs" | jq 'length')" -gt 0 ] && echo "$runs" | jq -e 'all(.[]; .status == "completed")' >/dev/null; then
+              echo "::error::CI did not pass on $SHA: $(echo "$runs" | jq -c 'map(.conclusion)'). Fix it, then run this workflow again (Run workflow, tag $TAG)."
+              exit 1
+            fi
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::CI on $SHA did not finish in time."; exit 1; }
+            echo "Waiting for CI on $SHA…"; sleep 60
+          done
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/lanvex-core
+          ref: ${{ steps.version.outputs.commit }}
+          ssh-key: ${{ secrets.LANVEX_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: lanvex-core
+      - name: Build the archive
+        run: |
+          lanvex/scripts/release.sh ../lanvex-core ../dist
+          cd dist && sha256sum -c "lanvex-${{ steps.version.outputs.version }}.zip.sha256" && ls -l
+      - name: Attach to the release
+        if: ${{ !inputs.dry_run }}
+        run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Keep as an artifact (dry run)
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/
+          retention-days: 3
