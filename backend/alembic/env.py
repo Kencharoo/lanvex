@@ -9,6 +9,7 @@ from lanvex.auth.models import Session, User  # noqa: F401
 from lanvex.changes.models import ServerChange  # noqa: F401
 from lanvex.core.config import get_settings
 from lanvex.core.db import Base
+from lanvex.monitoring.models import Alert  # noqa: F401
 from lanvex.servers.models import Server, ServerSnapshot  # noqa: F401
 
 config = context.config

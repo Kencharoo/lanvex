@@ -68,7 +68,10 @@ async def database() -> AsyncIterator[Database]:
 async def clean_tables(database: Database) -> None:
     async with database.engine.begin() as conn:
         await conn.execute(
-            text("TRUNCATE audit_events, sessions, users, servers, server_snapshots, server_changes CASCADE")
+            text(
+                "TRUNCATE audit_events, sessions, users, servers, server_snapshots, server_changes, alerts, "
+                "alert_notifications, alert_webhooks, server_probes, monitoring_config CASCADE"
+            )
         )
     clear_cache()
 

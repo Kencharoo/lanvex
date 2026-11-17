@@ -8,6 +8,7 @@ from lanvex.changes.models import IN_PROGRESS, ServerChange
 from lanvex.core.config import get_settings
 from lanvex.core.errors import Conflict, NotFound
 from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
+from lanvex.monitoring.service import check_after_read
 from lanvex.netbox.client import NetBoxClient
 from lanvex.schemas import ApiModel
 from lanvex.servers.models import AuthMethod, ServerSnapshot
@@ -230,6 +231,7 @@ async def collect(
     svc = _svc(request, db, settings)
     s = await svc.get(server_id)
     snap = await svc.collect(s, user)
+    await check_after_read(db, settings, request.app.state.netbox, s, snap)
     await db.commit()
     await audit.record(
         "server.collect",

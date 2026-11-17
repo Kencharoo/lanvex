@@ -40,6 +40,7 @@ from lanvex.core.logging import get_logger
 from lanvex.core.secrets import VaultError
 from lanvex.integrations.linux import helper, transport
 from lanvex.integrations.linux.commands import Cmd
+from lanvex.monitoring.service import MonitoringService
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.models import Server
 from lanvex.servers.service import ServerService
@@ -257,6 +258,21 @@ class _Execution:
                 detail={"status": status.value, "outcome": outcome[:500], "summary": c.summary},
             )
         )
+        if status in (ChangeStatus.ROLLED_BACK, ChangeStatus.FAILED, ChangeStatus.NEEDS_ATTENTION) and (
+            self.settings.monitor_enabled
+        ):
+            label = {
+                ChangeStatus.ROLLED_BACK: "rolled back",
+                ChangeStatus.FAILED: "failed",
+                ChangeStatus.NEEDS_ATTENTION: "needs attention",
+            }[status]
+            try:
+                async with self.db.begin_nested():
+                    await MonitoringService(self.db, self.settings).change_failed(
+                        self.s, c.id, f"Change #{c.number} on {c.server_name} {label}", [outcome[:500]]
+                    )
+            except Exception:
+                log.exception("change_alert_failed", change=str(c.id))
         await self.db.commit()
         log.info("change_finished", change=str(c.id), number=c.number, status=status.value)
 

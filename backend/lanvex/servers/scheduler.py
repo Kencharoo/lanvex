@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select
 from lanvex.core.config import Settings
 from lanvex.core.db import Database
 from lanvex.core.logging import get_logger
+from lanvex.monitoring.service import check_after_read
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.models import Server
 from lanvex.servers.service import ServerService, read_interval
@@ -83,6 +84,7 @@ class ReadScheduler:
             try:
                 s = await svc.get(server_id)
                 snap = await svc.collect(s, None, scheduled=True)
+                await check_after_read(session, self.settings, self.netbox(), s, snap)
                 await session.commit()
                 log.info("scheduled_read", server=s.name, status=snap.status.value)
             except Exception:

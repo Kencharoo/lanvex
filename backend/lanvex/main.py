@@ -27,6 +27,8 @@ from lanvex.devices.router import router as devices_router
 from lanvex.discovery.router import router as discovery_router
 from lanvex.ipam.router import router as ipam_router
 from lanvex.lookups.router import router as lookups_router
+from lanvex.monitoring.notify import Monitor
+from lanvex.monitoring.router import router as monitoring_router
 from lanvex.netbox.client import NetBoxClient
 from lanvex.networks.router import router as networks_router
 from lanvex.servers.router import router as servers_router
@@ -101,6 +103,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.read_scheduler_enabled:
             app.state.read_scheduler = ReadScheduler(app.state.db, settings, lambda: app.state.netbox)
             app.state.read_scheduler.start()
+        app.state.monitor = None
+        if settings.monitor_enabled and settings.read_scheduler_enabled:
+            app.state.monitor = Monitor(app.state.db, settings, lambda: app.state.netbox)
+            app.state.monitor.start()
         log.info(
             "lanvex_started",
             version=__version__,
@@ -114,6 +120,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.change_runner.stop()
         if app.state.read_scheduler is not None:
             await app.state.read_scheduler.stop()
+        if app.state.monitor is not None:
+            await app.state.monitor.stop()
         await core_proxy.aclose(app)
         if app.state.netbox is not None:
             await app.state.netbox.aclose()
@@ -149,6 +157,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         topology_router,
         discovery_router,
         networks_router,
+        monitoring_router,
     ):
         api.include_router(r)
     app.include_router(api)

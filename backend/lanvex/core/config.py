@@ -68,6 +68,21 @@ class Settings(BaseSettings):
     # Hosts seen in servers' neighbour tables are kept this long after they were last seen.
     discovery_retention_days: int = Field(default=30, ge=1, le=3650)
 
+    # Monitoring: servers' SSH ports are probed this often (a TCP connection, no sign-in), and checks
+    # run after every read. The monitor (probes, sending alerts) runs in one process at a time.
+    monitor_enabled: bool = True
+    monitor_probe_seconds: int = Field(default=120, ge=30, le=3600)
+    # Where Lanvex is reached in a browser, for links in alert messages (https://lanvex.example.net).
+    public_url: str | None = None
+    # Email for alerts. The recipients are set in Lanvex (Settings, Monitoring).
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_security: Literal["starttls", "tls", "none"] = "starttls"
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str | None = None
+    smtp_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+
     # Changing server configuration. Off unless explicitly enabled; each server must also be opted in.
     automation_enabled: bool = False
     change_rollback_seconds: int = Field(default=120, ge=30, le=900)
@@ -108,10 +123,26 @@ class Settings(BaseSettings):
 
         return [str(ipaddress.ip_network(n, strict=False)) for n in v]
 
-    @field_validator("netbox_token", "bootstrap_admin_password", "secret_key", mode="before")
+    @field_validator("netbox_token", "bootstrap_admin_password", "secret_key", "smtp_password", mode="before")
     @classmethod
     def _empty_secret_is_none(cls, v: object) -> object:
         return None if v == "" else v
+
+    @field_validator("smtp_host", "smtp_username", "smtp_from", "public_url", mode="before")
+    @classmethod
+    def _empty_is_none(cls, v: object) -> object:
+        return None if isinstance(v, str) and not v.strip() else v
+
+    @field_validator("public_url")
+    @classmethod
+    def _http_url(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith(("http://", "https://")):
+            raise ValueError("LANVEX_PUBLIC_URL must start with http:// or https://")
+        return v.rstrip("/") if v else v
+
+    @property
+    def smtp_configured(self) -> bool:
+        return self.smtp_host is not None and self.smtp_from is not None
 
     @property
     def secure_cookies(self) -> bool:
