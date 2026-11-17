@@ -2,7 +2,8 @@
 
 Devices and circuits are nodes; cables are links. Everything here is documented state from NetBox:
 a cable in the map is a cable someone recorded, not one Lanvex has seen. Lanvex servers linked to a
-device are marked, so the map shows which devices Lanvex can also read.
+device are marked, so the map shows which devices Lanvex can also read. Connections switches see on their
+ports that no cable records are listed apart (`seen`), never mixed with the documented cables.
 """
 
 import asyncio
@@ -12,12 +13,18 @@ from typing import Any, Literal
 from fastapi import APIRouter
 from sqlalchemy import select
 
-from lanvex.core.config import get_settings
-from lanvex.deps import DB, CurrentUser, NetBox
+from lanvex.core.config import Settings, get_settings
+from lanvex.core.errors import LanvexError
+from lanvex.core.logging import get_logger
+from lanvex.deps import DB, CurrentUser, NetBox, SettingsDep
+from lanvex.netbox.client import NetBoxClient
 from lanvex.schemas import ApiModel, Choice, Ref, choice, ref
 from lanvex.servers.models import Server
+from lanvex.switches.models import Switch
+from lanvex.switches.ports import PortLocator
 
 router = APIRouter(tags=["topology"])
+log = get_logger("lanvex.topology")
 
 # Beyond this many devices or cables in one view, Lanvex asks for a narrower view (one site).
 DEVICE_CAP = 2000
@@ -42,6 +49,7 @@ class TopologyNode(ApiModel):
     # True when the node is outside the requested view (another site) but a cable leads to it.
     external: bool = False
     server_id: uuid.UUID | None = None
+    switch_id: uuid.UUID | None = None
     netbox_url: str | None = None
 
 
@@ -60,9 +68,21 @@ class TopologyLink(ApiModel):
     netbox_url: str | None
 
 
+class SeenLink(ApiModel):
+    """A connection a switch sees on one of its ports that the cables do not show (switches/ports.py)."""
+
+    id: str
+    a: str  # the switch's node
+    b: str
+    a_port: str
+    b_port: str | None
+    status: Literal["undocumented", "different"]
+
+
 class Topology(ApiModel):
     nodes: list[TopologyNode]
     links: list[TopologyLink]
+    seen: list[SeenLink] = []
     sites: list[Ref]
     site_id: int | None
     truncated: bool
@@ -196,8 +216,30 @@ def build(
     return sorted(nodes.values(), key=lambda n: (n.kind, n.name.lower())), links, skipped
 
 
+async def _seen(db: DB, settings: Settings, nb: NetBoxClient, nodes: list[TopologyNode]) -> list[SeenLink]:
+    """Connections switches see that are not cabled as seen; only between devices on the map."""
+    ids = {n.id for n in nodes}
+    try:
+        found, _ = await PortLocator(db, settings, nb).findings()
+    except LanvexError as e:
+        log.warning("topology_seen_skipped", error=e.message)
+        return []
+    out = []
+    for p in found.ports:
+        if p.status not in ("undocumented", "different") or not p.device_id or not p.peer_device_id:
+            continue
+        a, b = f"device:{p.device_id}", f"device:{p.peer_device_id}"
+        if a in ids and b in ids and a != b:
+            out.append(
+                SeenLink(id=f"seen-{p.key}", a=a, b=b, a_port=p.port, b_port=p.peer_port, status=p.status)
+            )  # type: ignore[arg-type]
+    return out
+
+
 @router.get("/topology", response_model=Topology)
-async def get_topology(nb: NetBox, db: DB, _: CurrentUser, site_id: int | None = None) -> Topology:
+async def get_topology(
+    nb: NetBox, db: DB, settings: SettingsDep, _: CurrentUser, site_id: int | None = None
+) -> Topology:
     scope = {"site_id": site_id} if site_id else {}
     devices, cables, roles, sites = await asyncio.gather(
         nb.list_all(
@@ -213,9 +255,20 @@ async def get_topology(nb: NetBox, db: DB, _: CurrentUser, site_id: int | None =
     )
     servers = {object_id: server_id for object_id, server_id in rows.all() if object_id is not None}
     nodes, links, skipped = build(devices[:DEVICE_CAP], cables[:CABLE_CAP], roles, servers)
+    switches = dict(
+        (
+            await db.execute(
+                select(Switch.netbox_device_id, Switch.id).where(Switch.netbox_device_id.is_not(None))
+            )
+        ).all()
+    )
+    for node in nodes:
+        if node.kind == "device":
+            node.switch_id = switches.get(node.object_id)
     return Topology(
         nodes=nodes,
         links=links,
+        seen=await _seen(db, settings, nb, nodes) if switches else [],
         sites=[r for r in (ref(s) for s in sites) if r],
         site_id=site_id,
         truncated=truncated,

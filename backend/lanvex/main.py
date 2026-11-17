@@ -33,6 +33,8 @@ from lanvex.netbox.client import NetBoxClient
 from lanvex.networks.router import router as networks_router
 from lanvex.servers.router import router as servers_router
 from lanvex.servers.scheduler import ReadScheduler
+from lanvex.switches.router import router as switches_router
+from lanvex.switches.scheduler import SwitchReadScheduler
 from lanvex.system.router import router as system_router
 from lanvex.topology.router import router as topology_router
 from lanvex.vlans.router import router as vlans_router
@@ -103,6 +105,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.read_scheduler_enabled:
             app.state.read_scheduler = ReadScheduler(app.state.db, settings, lambda: app.state.netbox)
             app.state.read_scheduler.start()
+        app.state.switch_scheduler = None
+        if settings.read_scheduler_enabled:
+            app.state.switch_scheduler = SwitchReadScheduler(app.state.db, settings, lambda: app.state.netbox)
+            app.state.switch_scheduler.start()
         app.state.monitor = None
         if settings.monitor_enabled and settings.read_scheduler_enabled:
             app.state.monitor = Monitor(app.state.db, settings, lambda: app.state.netbox)
@@ -120,6 +126,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.change_runner.stop()
         if app.state.read_scheduler is not None:
             await app.state.read_scheduler.stop()
+        if app.state.switch_scheduler is not None:
+            await app.state.switch_scheduler.stop()
         if app.state.monitor is not None:
             await app.state.monitor.stop()
         await core_proxy.aclose(app)
@@ -153,6 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dashboard_router,
         audit_router,
         servers_router,
+        switches_router,
         changes_router,
         topology_router,
         discovery_router,

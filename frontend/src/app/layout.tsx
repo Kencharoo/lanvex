@@ -6,6 +6,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Cpu,
+  EthernetPort,
   LayoutGrid,
   LogOut,
   Moon,
@@ -53,6 +54,7 @@ const NAV: NavItem[][] = [
     { to: "/vlans", label: "VLANs", icon: Tags },
     { to: "/devices", label: "Devices", icon: Cpu },
     { to: "/servers", label: "Servers", icon: Server },
+    { to: "/switches", label: "Switches", icon: EthernetPort },
     { to: "/core/", label: "Lanvex Core", icon: Boxes, page: true, core: true },
   ],
   [

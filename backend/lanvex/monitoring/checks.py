@@ -77,6 +77,42 @@ def unreachable(server: str, failures: int, after: int, error: str | None) -> li
     ]
 
 
+SWITCH_READ_FAILED = {
+    "auth_failed": "SNMP sign-in rejected",
+    "not_allowed": "address not allowed",
+    "error": "read failed",
+}
+
+
+def switch_read_failed(switch: str, status: str | None, message: str | None) -> list[Finding]:
+    # A switch that does not answer at all is the probe's alert (unreachable).
+    if status in (None, "ok", "unreachable"):
+        return []
+    return [
+        Finding(
+            "read_failed",
+            "",
+            Severity.WARNING,
+            f"{switch}: {SWITCH_READ_FAILED.get(status, 'read failed')}",
+            [message] if message else [],
+        )
+    ]
+
+
+def switch_unreachable(switch: str, failures: int, after: int, error: str | None) -> list[Finding]:
+    if failures < after:
+        return []
+    return [
+        Finding(
+            "unreachable",
+            "",
+            Severity.CRITICAL,
+            f"{switch} is not reachable",
+            [f"SNMP not answering ({failures} checks in a row)."] + ([error] if error else []),
+        )
+    ]
+
+
 def _ignored(iface: str | None, patterns: list[str]) -> bool:
     return bool(iface) and any(fnmatch.fnmatchcase(iface or "", p) for p in patterns)
 

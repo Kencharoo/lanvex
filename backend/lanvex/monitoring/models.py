@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lanvex.core.db import Base, TimestampMixin, utcnow
+from lanvex.switches import models as _switches  # noqa: F401  (alerts.switch_id refers to switches)
 
 
 class AlertState(enum.StrEnum):
@@ -24,8 +25,9 @@ class Severity(enum.StrEnum):
 
 
 class Alert(Base):
-    """A condition found on a server. One open alert per (kind, server, key); it is resolved when the
-    condition is gone, or, for events (a failed change, an unknown device), when acknowledged."""
+    """A condition found on a server or a switch. One open alert per (kind, server or switch, key); it is
+    resolved when the condition is gone, or, for events (a failed change, an unknown device), when
+    acknowledged."""
 
     __tablename__ = "alerts"
     __table_args__ = (
@@ -37,8 +39,17 @@ class Alert(Base):
             unique=True,
             postgresql_where=text("state = 'open'"),
         ),
+        Index(
+            "uq_alerts_open_switch",
+            "kind",
+            "switch_id",
+            "key",
+            unique=True,
+            postgresql_where=text("state = 'open' AND switch_id IS NOT NULL"),
+        ),
         Index("ix_alerts_opened_at", "opened_at"),
         Index("ix_alerts_server_kind_key", "server_id", "kind", "key"),
+        Index("ix_alerts_switch_kind_key", "switch_id", "kind", "key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -46,6 +57,10 @@ class Alert(Base):
     server_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("servers.id", ondelete="CASCADE")
     )
+    switch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("switches.id", ondelete="CASCADE")
+    )
+    # The server's or switch's name when the alert was opened.
     server_name: Mapped[str] = mapped_column(String(100), default="", nullable=False)
     key: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False)

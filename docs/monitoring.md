@@ -2,7 +2,9 @@
 
 Lanvex watches every server it reads, of any kind, and opens an alert when something needs attention.
 The checks rest only on what Lanvex reads from the server and what the documentation (Lanvex Core or
-NetBox) says, so they work on any server Lanvex can read over SSH.
+NetBox) says, so they work on any server Lanvex can read over SSH. Switches get the *Unreachable* and
+*Read failed* alerts too: Lanvex asks each one for its uptime over SNMP every two minutes
+([switches.md](switches.md)).
 
 ## Checks
 

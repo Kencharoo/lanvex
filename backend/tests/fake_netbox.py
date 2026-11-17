@@ -551,6 +551,10 @@ def matches(kind: str, o: dict[str, Any], qp: Any) -> bool:
     elif kind == "interfaces":
         if (dev := qp.get("device_id")) and o["device"] != int(dev):
             return False
+        if (macs := qp.getlist("mac_address")) and (o.get("mac_address") or "").upper() not in {
+            m.upper() for m in macs
+        }:
+            return False
     elif kind == "cables":
         if site := qp.get("site_id"):
             sites = {

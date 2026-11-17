@@ -27,17 +27,19 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 | `backend/lanvex/ipam`, `vlans`, `devices`, `dashboard` | Domain services: validation, overlap checks, utilization, mapping NetBox payloads to Lanvex models | Raw HTTP |
 | `backend/lanvex/auth` | Local users, Argon2 hashing, server-side sessions, roles, CSRF | — |
 | `backend/lanvex/audit` | Append-only audit trail of every write Lanvex performs | — |
-| `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; others plug in the same way | Run arbitrary commands |
+| `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; `snmp` reads switches (GET and GETBULK, v2c and v3); others plug in the same way | Run arbitrary commands; send SNMP SET requests |
 | `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state and their history, scheduled reads, comparison with NetBox, recording differences in NetBox | Write to servers |
 | `backend/lanvex/core_proxy.py` | Serves Lanvex Core at `/core/` to signed-in users: checks the Lanvex session, sends who they are and their role with the shared proxy secret, strips anything the browser sent under those names, serves Lanvex Core's static files | Let anyone without a Lanvex session through; forward `Authorization` or Lanvex's session cookie |
-| `backend/lanvex/discovery` | What servers see around them (neighbour tables, LLDP) compared with NetBox; recording hosts and cables through a previewed plan | Write to NetBox without an administrator's confirmed plan |
+| `backend/lanvex/switches` | Switch registry, encrypted SNMP credentials, the latest read and MAC addresses seen per port, scheduled reads; which port each device is on, compared with the documented cables | Write to switches |
+| `backend/lanvex/discovery` | What servers and switches see around them (neighbour tables, LLDP, switch ports) compared with NetBox; recording hosts and cables through a previewed plan | Write to NetBox without an administrator's confirmed plan |
 | `backend/lanvex/topology` | The topology map's data: devices and circuits as nodes, documented cables as links, one site or all, Lanvex servers marked | Claim a cable exists because it is drawn: links are documented state |
 | `backend/lanvex/changes` | Server changes: preparation and safety rules, approval, the runner that applies, verifies, confirms or rolls back | Change anything without an approved, previewed change |
 
 ## Three states, kept separate
 
 1. **Documented (desired)** — objects in NetBox. Every IPAM, VLAN and device write lands here only.
-2. **Actual (running)** — what servers really run: snapshots read over SSH (`server_snapshots`).
+2. **Actual (running)** — what servers really run: snapshots read over SSH (`server_snapshots`); what
+   switches report over SNMP (`switch_facts`, `switch_macs`).
 3. **Pending** — server changes awaiting approval or being applied (`server_changes`).
 
 The UI labels NetBox writes as "Recorded in NetBox", never "deployed". A server change is shown as

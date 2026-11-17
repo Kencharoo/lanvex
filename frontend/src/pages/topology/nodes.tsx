@@ -1,5 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { Globe, Server } from "lucide-react";
+import { EthernetPort, Globe, Server } from "lucide-react";
 import type { TopologyNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { SIZE } from "./layout";
@@ -58,6 +58,11 @@ export function DeviceNode({ data, selected }: NodeProps<DeviceFlowNode>) {
       {n.server_id && (
         <span className="grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent" title="Lanvex reads this server">
           <Server className="size-3.5" aria-label="Lanvex server" />
+        </span>
+      )}
+      {n.switch_id && (
+        <span className="grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent" title="Lanvex reads this switch">
+          <EthernetPort className="size-3.5" aria-label="Lanvex switch" />
         </span>
       )}
     </div>

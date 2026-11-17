@@ -1,10 +1,11 @@
-"""Discovery: what servers see around them, compared with what NetBox documents.
+"""Discovery: what servers and switches see around them, compared with what NetBox documents.
 
-Two sources, both read over SSH as part of every server read (no extra access):
+From servers, read over SSH as part of every server read (no extra access):
 - the neighbour table (ARP / IPv6 neighbour discovery): hosts each server talked to recently. Kept in
   `discovered_addresses` with first and last time seen, so hosts stay listed between reads.
 - LLDP: what the device on the other end of each interface announces about itself. Taken from each
   server's latest successful read, and compared with the cable NetBox documents on that interface.
+From switches, read over SNMP: what is connected to each port (switches/ports.py).
 
 Nothing here writes to NetBox by itself. An administrator picks what to record, sees a preview of the
 exact NetBox writes, and only that plan is applied (the same token check as servers/record.py).
@@ -25,10 +26,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lanvex.core.config import Settings
 from lanvex.core.errors import Conflict, LanvexError, ValidationFailed
 from lanvex.integrations.linux.facts import HostFacts, LldpNeighbor
+from lanvex.netbox.cables import cableable as _cableable
+from lanvex.netbox.cables import describe_ends
+from lanvex.netbox.cables import not_cableable as _not_cableable
 from lanvex.netbox.client import NetBoxClient
 from lanvex.schemas import ApiModel
 from lanvex.servers.models import ConnectionStatus, DiscoveredAddress, Server, ServerSnapshot
 from lanvex.servers.record import RecordAction
+from lanvex.switches.ports import PortLocator, PortMap, port_map
+from lanvex.switches.schemas import PortFindings
 
 CHUNK = 100  # addresses per NetBox lookup
 
@@ -51,6 +57,17 @@ class NetBoxIP(ApiModel):
     url: str | None
 
 
+class SwitchPortRef(ApiModel):
+    """The switch port a host's MAC address was learned on."""
+
+    switch_id: uuid.UUID
+    switch_name: str
+    port: str
+    vlan: int | None = None
+    last_seen: datetime
+    current: bool
+
+
 class DiscoveredHost(ApiModel):
     address: str
     family: int
@@ -63,6 +80,7 @@ class DiscoveredHost(ApiModel):
     server_id: uuid.UUID | None = None
     netbox: NetBoxIP | None
     record_as: str | None  # the address with the prefix length it would be recorded with
+    switch_port: SwitchPortRef | None = None
 
 
 class DiscoveredHosts(ApiModel):
@@ -174,6 +192,7 @@ class DiscoveryService:
         servers = list((await self.db.scalars(select(Server))).all())
         own = {str(s.address): s for s in servers}
         facts = {s.id: f for s, _, f in await self._latest_facts()}
+        ports = await port_map(self.db)
 
         recorded: dict[str, NetBoxIP] = {}
         checked = False
@@ -222,6 +241,7 @@ class DiscoveryService:
                     server_id=own[address].id if address in own else None,
                     netbox=recorded.get(address),
                     record_as=_record_as(address, [(facts.get(d.server_id), d.interface) for d, _ in seen]),
+                    switch_port=_switch_port(ports, newest.mac),
                 )
             )
         hosts.sort(key=lambda h: (h.netbox is not None, h.family, ipaddress.ip_address(h.address)))
@@ -366,10 +386,7 @@ class DiscoveryService:
                 mine = local_ifaces.get(s.netbox_object_id, {}).get(n.interface)
                 if mine is not None and mine.get("cable"):
                     ends = mine.get("connected_endpoints") or mine.get("link_peers") or []
-                    link.documented = (
-                        ", ".join(f"{(e.get('device') or {}).get('name')} / {e.get('name')}" for e in ends)
-                        or f"cable #{mine['cable'].get('id')}"
-                    )
+                    link.documented = describe_ends(mine)
                     match = any(
                         _short((e.get("device") or {}).get("name")) == _short(n.system_name)
                         and _port_matches(e, n)
@@ -448,6 +465,45 @@ class DiscoveryService:
             writes.append(write if not problem and write else {})
         return DiscoveryPlan(actions=actions, token=_token(actions, writes)), writes
 
+    # ---- switch ports -------------------------------------------------------------------------------
+
+    async def ports(self) -> PortFindings:
+        return (await PortLocator(self.db, self.settings, self.nb).findings())[0]
+
+    async def plan_ports(self, keys: list[str]) -> tuple[DiscoveryPlan, list[dict[str, Any]]]:
+        nb = self.netbox_client()
+        found, cables = await PortLocator(self.db, self.settings, nb).findings()
+        by_key = {p.key: p for p in found.ports}
+        actions: list[RecordAction] = []
+        writes: list[dict[str, Any]] = []
+        for k in keys:
+            p = by_key.get(k)
+            if p is None:
+                actions.append(
+                    RecordAction(
+                        address=None, kind="create", text="Record a cable", problem="No longer seen."
+                    )
+                )
+                writes.append({})
+                continue
+            text = f"Record a cable {p.switch_name} / {p.port} ↔ {p.peer or 'unknown'}"
+            write = cables.get(k)
+            problem = p.problem
+            if p.status == "documented":
+                problem = f"Already documented in {nb.name}."
+            elif p.status == "different":
+                problem = (
+                    problem
+                    or f"{nb.name} documents a cable to {p.documented}. Change it there if that is wrong."
+                )
+            elif p.status == "not_linked":
+                problem = f"Link {p.switch_name} to its device in {nb.name} first."
+            elif write is None:
+                problem = problem or "What is connected is not documented well enough to record a cable."
+            actions.append(RecordAction(address=None, kind="create", text=text, problem=problem))
+            writes.append(write if not problem and write else {})
+        return DiscoveryPlan(actions=actions, token=_token(actions, writes)), writes
+
     # ---- applying ----------------------------------------------------------------------------------
 
     async def apply(self, plan: DiscoveryPlan, writes: list[dict[str, Any]], path: str) -> DiscoveryPlan:
@@ -470,34 +526,23 @@ class DiscoveryService:
         return self.nb
 
 
-# NetBox refuses cables on these interface types (dcim.constants.VIRTUAL_IFACE_TYPES, and wireless).
-_NO_CABLE = {"virtual", "bridge", "lag"}
-
-
-def _type(iface: dict[str, Any]) -> tuple[str, str]:
-    t = iface.get("type") or {}
-    return (
-        (t.get("value") or "", t.get("label") or t.get("value") or "")
-        if isinstance(t, dict)
-        else (str(t), str(t))
-    )
-
-
-def _cableable(iface: dict[str, Any]) -> bool:
-    value, _ = _type(iface)
-    return value not in _NO_CABLE and not value.startswith("ieee802.11")
-
-
-def _not_cableable(where: str, iface: dict[str, Any], netbox_name: str) -> str:
-    return (
-        f"{where} has the type {_type(iface)[1]} in {netbox_name}, which cannot have a cable. "
-        "If it is a physical port, change its type there."
-    )
-
-
 def _port_matches(iface: dict[str, Any], n: LldpNeighbor) -> bool:
     names = {(iface.get("name") or "").lower(), (iface.get("label") or "").lower()} - {""}
     return bool(names & {(n.port_id or "").lower(), (n.port_description or "").lower()} - {""})
+
+
+def _switch_port(ports: PortMap, mac: str | None) -> SwitchPortRef | None:
+    m = ports.placed.get((mac or "").lower())
+    if m is None or m.switch_id not in ports.switches:
+        return None
+    return SwitchPortRef(
+        switch_id=m.switch_id,
+        switch_name=ports.switches[m.switch_id].name,
+        port=m.port,
+        vlan=m.vlan or None,
+        last_seen=m.last_seen,
+        current=ports.current(m),
+    )
 
 
 def _record_as(address: str, seen: list[tuple[HostFacts | None, str]]) -> str:

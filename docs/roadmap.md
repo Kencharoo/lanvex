@@ -1,6 +1,6 @@
 # Roadmap: Lanvex as the router's console
 
-Last updated 2026-11-16.
+Last updated 2026-11-17.
 
 **Goal:** any Linux server Lanvex manages can be the router for its networks: VLANs, DHCP, who may
 reach what, DNS filtering. On the server systems people actually run (Ubuntu Server, Debian, Fedora,
@@ -121,10 +121,19 @@ Alerts for unreachable servers, refused reads, drift from the documentation, ful
 unknown devices and failed changes, by email and webhooks ([monitoring.md](monitoring.md)); lanvexctl to
 install, update, back up and restore.
 
+### 1.2: Switches (in progress)
+
+Built: switches read over SNMP (v3 or v2c, read-only), with their ports, VLANs, link aggregations,
+MAC address table and LLDP neighbours; which device is on which port, compared with the documented
+cables in Discovery, on the switch page and in the topology; cables recorded after a preview;
+unreachable and failed-read alerts ([switches.md](switches.md)). Release files are built and attached
+to each GitHub release by CI.
+
 ### Next
 
-- **The manual** (German and English), from the docs as they are now.
+- **Port VLANs**: setting a switch port's VLANs as an approved change, with the same preview,
+  verification and rollback as server changes.
 - **More server changes**: static routes, bridges and bonds, then IPv6, each with a lab test.
+- **Sign-in with LDAP, Active Directory or OpenID Connect.**
+- **The manual** (German and English), from the docs as they are now.
 - **Kea** as an alternative DHCP server, for servers that already run it.
-- **The switch side**: reading switches' MAC tables (which port a device is on), later setting
-  port VLANs.

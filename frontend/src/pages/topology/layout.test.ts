@@ -16,6 +16,7 @@ const node = (id: string, role: string | null, kind: TopologyNode["kind"] = "dev
   provider: null,
   external: false,
   server_id: null,
+  switch_id: null,
   netbox_url: null,
 });
 const link = (a: string, b: string): TopologyLink => ({

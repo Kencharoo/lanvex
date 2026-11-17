@@ -22,6 +22,8 @@ import { NetworksPage } from "@/pages/networks";
 import { AutomationPage } from "@/pages/changes";
 import { ChangeDetailPage } from "@/pages/changes/detail";
 import { ServersPage } from "@/pages/servers";
+import { SwitchesPage } from "@/pages/switches";
+import { SwitchDetailPage } from "@/pages/switches/detail";
 import { ServerDetailPage } from "@/pages/servers/detail";
 import { SettingsPage } from "@/pages/settings";
 import { VLANsPage } from "@/pages/vlans";
@@ -59,6 +61,8 @@ const router = createBrowserRouter([
       { path: "devices", element: <DevicesPage /> },
       { path: "devices/:id", element: <DeviceDetailPage /> },
       { path: "servers", element: <ServersPage /> },
+      { path: "switches", element: <SwitchesPage /> },
+      { path: "switches/:id", element: <SwitchDetailPage /> },
       { path: "servers/:id", element: <ServerDetailPage /> },
       { path: "alerts", element: <AlertsPage /> },
       { path: "discovery", element: <DiscoveryPage /> },

@@ -11,6 +11,7 @@ from lanvex.core.config import get_settings
 from lanvex.core.db import Base
 from lanvex.monitoring.models import Alert  # noqa: F401
 from lanvex.servers.models import Server, ServerSnapshot  # noqa: F401
+from lanvex.switches.models import Switch  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

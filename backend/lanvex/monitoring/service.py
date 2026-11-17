@@ -27,6 +27,7 @@ from lanvex.monitoring.models import (
 from lanvex.monitoring.schemas import AlertCount, MonitoringSettings, WebhookIn
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.models import ConnectionStatus, Server, ServerSnapshot
+from lanvex.switches.models import Switch
 
 log = get_logger("lanvex.monitoring")
 
@@ -106,15 +107,16 @@ class MonitoringService:
         await self.db.flush()
         return a
 
-    async def reconcile(self, s: Server, kinds: set[str], findings: list[Finding]) -> list[Alert]:
-        """Bring the server's alerts of `kinds` in line with what the checks found. Returns alerts opened."""
+    async def reconcile(self, s: Server | Switch, kinds: set[str], findings: list[Finding]) -> list[Alert]:
+        """Bring the server's or switch's alerts of `kinds` in line with what the checks found. Returns
+        alerts opened."""
         cfg = await self.config()
         now = datetime.now(UTC)
+        owner = Alert.switch_id if isinstance(s, Switch) else Alert.server_id
+        ids = {"switch_id": s.id} if isinstance(s, Switch) else {"server_id": s.id}
         current: dict[tuple[str, str], Alert] = {}
         for a in await self.db.scalars(
-            select(Alert).where(
-                Alert.server_id == s.id, Alert.state == AlertState.OPEN, Alert.kind.in_(kinds)
-            )
+            select(Alert).where(owner == s.id, Alert.state == AlertState.OPEN, Alert.kind.in_(kinds))
         ):
             if getattr(cfg, a.kind, False):
                 current[(a.kind, a.key)] = a
@@ -136,15 +138,13 @@ class MonitoringService:
                 continue
             if f.kind in EVENT_KINDS:
                 seen = await self.db.scalar(
-                    select(Alert.id)
-                    .where(Alert.server_id == s.id, Alert.kind == f.kind, Alert.key == f.key)
-                    .limit(1)
+                    select(Alert.id).where(owner == s.id, Alert.kind == f.kind, Alert.key == f.key).limit(1)
                 )
                 if seen is not None:
                     continue
             a = Alert(
                 kind=f.kind,
-                server_id=s.id,
+                **ids,
                 server_name=s.name,
                 key=f.key,
                 severity=f.severity,
@@ -241,6 +241,18 @@ class MonitoringService:
         findings = checks.unreachable(s.name, probe.failures, cfg.unreachable_after, probe.last_error)
         return await self.reconcile(s, {"unreachable"}, findings)
 
+    async def after_switch_read(self, sw: Switch) -> list[Alert]:
+        """A failed read of a switch (other than no answer, which the probe reports)."""
+        findings = checks.switch_read_failed(sw.name, sw.last_status, sw.last_status_message)
+        return await self.reconcile(sw, {"read_failed"}, findings)
+
+    async def after_switch_probe(self, sw: Switch) -> list[Alert]:
+        cfg = await self.config()
+        findings = checks.switch_unreachable(
+            sw.name, sw.probe_failures, cfg.unreachable_after, sw.last_probe_error
+        )
+        return await self.reconcile(sw, {"unreachable"}, findings)
+
     async def change_failed(self, s: Server, change_id: uuid.UUID, title: str, detail: list[str]) -> None:
         f = Finding("change_failed", str(change_id), Severity.WARNING, title, detail)
         cfg = await self.config()
@@ -325,3 +337,16 @@ async def check_after_read(
             await MonitoringService(db, settings, nb).after_read(s, snap)
     except Exception:
         log.exception("monitor_checks_failed", server=s.name)
+
+
+async def check_after_switch_read(
+    db: AsyncSession, settings: Settings, nb: NetBoxClient | None, sw: Switch
+) -> None:
+    """Monitoring after a switch read, in the read's transaction; a failing check never fails the read."""
+    if not settings.monitor_enabled:
+        return
+    try:
+        async with db.begin_nested():
+            await MonitoringService(db, settings, nb).after_switch_read(sw)
+    except Exception:
+        log.exception("monitor_checks_failed", switch=sw.name)

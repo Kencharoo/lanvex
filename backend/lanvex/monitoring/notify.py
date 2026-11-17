@@ -26,6 +26,7 @@ from lanvex.monitoring.models import Alert, AlertNotification, ServerProbe, Seve
 from lanvex.monitoring.service import MonitoringService
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.models import Server
+from lanvex.switches.models import Switch
 
 log = get_logger("lanvex.monitoring.notify")
 
@@ -116,7 +117,8 @@ def payload(fmt: str, items: list[tuple[str, Alert]], settings: Settings) -> tup
                 "kind": a.kind,
                 "severity": a.severity,
                 "state": a.state,
-                "server": a.server_name,
+                "server": None if a.switch_id else a.server_name,
+                "switch": a.server_name if a.switch_id else None,
                 "title": a.title,
                 "detail": a.detail,
                 "opened_at": a.opened_at.isoformat(),
@@ -290,6 +292,39 @@ class Monitor:
                     p.failures, p.last_error = p.failures + 1, error
                 await session.flush()
                 await svc.after_probe(s, p)
+            await session.commit()
+        await self.probe_switches()
+
+    async def probe_switches(self) -> None:
+        """A GET of each switch's uptime over SNMP: whether it answers."""
+        from lanvex.switches.service import SwitchService
+
+        async with self.db.sessionmaker() as session:
+            switches = list((await session.scalars(select(Switch))).all())
+            if not switches:
+                return
+            reader = SwitchService(session, self.settings)
+            limit = asyncio.Semaphore(self.CONCURRENCY)
+
+            async def one(sw: Switch) -> tuple[uuid.UUID, str | None]:
+                async with limit:
+                    return sw.id, await reader.probe(sw)
+
+            results = await asyncio.gather(*(one(sw) for sw in switches))
+        now = datetime.now(UTC)
+        async with self.db.sessionmaker() as session:
+            svc = MonitoringService(session, self.settings, self.netbox())
+            for switch_id, error in results:
+                sw = await session.get(Switch, switch_id)
+                if sw is None:
+                    continue
+                sw.last_probe_at = now
+                if error is None:
+                    sw.probe_failures, sw.last_probe_error = 0, None
+                else:
+                    sw.probe_failures, sw.last_probe_error = sw.probe_failures + 1, error
+                await session.flush()
+                await svc.after_switch_probe(sw)
             await session.commit()
 
     # ---- delivery -----------------------------------------------------------------------------------

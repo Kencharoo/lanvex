@@ -12,7 +12,7 @@ import {
   type Edge,
   type Node,
 } from "@xyflow/react";
-import { Cable, ExternalLink, Globe, Map as MapIcon, Rows3, Server, Share2, X } from "lucide-react";
+import { Cable, EthernetPort, ExternalLink, Globe, Map as MapIcon, Rows3, Server, Share2, X } from "lucide-react";
 import * as React from "react";
 import { Link } from "react-router";
 import { DataTable, SearchInput, Toolbar, type Column } from "@/components/data-table";
@@ -91,7 +91,7 @@ export function TopologyPage() {
 
   const { nodes, links, unconnected, byId } = React.useMemo(() => {
     const all = topo?.nodes ?? [];
-    const cabled = new Set((topo?.links ?? []).flatMap((l) => [l.a, l.b]));
+    const cabled = new Set([...(topo?.links ?? []), ...(topo?.seen ?? [])].flatMap((l) => [l.a, l.b]));
     const shown = showAll ? all : all.filter((n) => cabled.has(n.id));
     return {
       nodes: shown,
@@ -192,8 +192,32 @@ export function TopologyPage() {
           ariaLabel: `Cable ${l.label || `#${l.cable_id}`}`,
         };
       })
-      .filter((e): e is Edge => e !== null);
-  }, [laidOut, nodes, links, q, foundSet, selectedLink]);
+      .filter((e): e is Edge => e !== null)
+      .concat(
+        (topo?.seen ?? [])
+          .filter((l) => laidOut.nodes.has(l.a) && laidOut.nodes.has(l.b))
+          .map((l): Edge => {
+            const [source, target] = x(l.a) <= x(l.b) ? [l.a, l.b] : [l.b, l.a];
+            const dim = !!q && !foundSet.has(l.a) && !foundSet.has(l.b);
+            return {
+              id: l.id,
+              source,
+              target,
+              sourceHandle: "r",
+              targetHandle: "l",
+              selectable: false,
+              focusable: false,
+              style: {
+                stroke: l.status === "different" ? "var(--danger)" : "var(--warn)",
+                strokeWidth: 1.5,
+                strokeDasharray: "2 5",
+                opacity: dim ? 0.2 : 1,
+              },
+              ariaLabel: `Seen by a switch: ${l.a_port} to ${l.b_port ?? "?"}`,
+            };
+          }),
+      );
+  }, [laidOut, nodes, links, q, foundSet, selectedLink, topo]);
 
   const selectedNode = values.node ? byId.get(values.node) : undefined;
   const link = selectedLink ? links.find((l) => l.id === selectedLink) : undefined;
@@ -339,13 +363,13 @@ export function TopologyPage() {
         </div>
       )}
       {topo && (
-        <Legend skipped={topo.skipped_cables} />
+        <Legend skipped={topo.skipped_cables} seen={topo.seen.length > 0} />
       )}
     </>
   );
 }
 
-function Legend({ skipped }: { skipped: number }) {
+function Legend({ skipped, seen }: { skipped: number; seen: boolean }) {
   const line = (style: React.CSSProperties) => (
     <svg width="28" height="8" aria-hidden className="shrink-0">
       <line x1="0" y1="4" x2="28" y2="4" style={{ strokeWidth: 1.5, ...style }} />
@@ -357,6 +381,12 @@ function Legend({ skipped }: { skipped: number }) {
       <span className="flex items-center gap-1.5">{line({ stroke: "var(--faint)" })} Through a patch panel</span>
       <span className="flex items-center gap-1.5">{line({ stroke: "var(--info)", strokeDasharray: "6 4" })} Provider circuit</span>
       <span className="flex items-center gap-1.5">{line({ stroke: "var(--muted)", strokeDasharray: "5 5", opacity: 0.75 })} Planned or not connected</span>
+      {seen && (
+        <>
+          <span className="flex items-center gap-1.5">{line({ stroke: "var(--warn)", strokeDasharray: "2 5" })} Seen by a switch, no cable recorded</span>
+          <span className="flex items-center gap-1.5">{line({ stroke: "var(--danger)", strokeDasharray: "2 5" })} Seen by a switch, recorded differently</span>
+        </>
+      )}
       <span className="flex items-center gap-1.5">
         <span className="grid size-5 place-items-center rounded bg-accent-soft text-accent">
           <Server className="size-3" />
@@ -445,6 +475,13 @@ function NodePanel({
           <Button size="sm" asChild>
             <Link to={`/servers/${node.server_id}`}>
               <Server /> Open server
+            </Link>
+          </Button>
+        )}
+        {node.switch_id && (
+          <Button size="sm" asChild>
+            <Link to={`/switches/${node.switch_id}`}>
+              <EthernetPort /> Open switch
             </Link>
           </Button>
         )}

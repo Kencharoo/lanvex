@@ -70,7 +70,7 @@ async def clean_tables(database: Database) -> None:
         await conn.execute(
             text(
                 "TRUNCATE audit_events, sessions, users, servers, server_snapshots, server_changes, alerts, "
-                "alert_notifications, alert_webhooks, server_probes, monitoring_config CASCADE"
+                "alert_notifications, alert_webhooks, server_probes, monitoring_config, switches CASCADE"
             )
         )
     clear_cache()

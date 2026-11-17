@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+Switches: which device is plugged into which port.
+
+- **Switches** read over SNMP, v3 (authentication and privacy) or v2c, read-only: name, model,
+  uptime, ports with their state, speed, VLANs and link aggregations, VLANs, the MAC address table,
+  LLDP neighbours and ARP. Standard MIBs, so most managed switches work; Cisco IOS through its VTP MIB
+  and per-VLAN tables. Credentials are stored encrypted and never shown again; *Test connection*
+  before adding. Read every 15 minutes and on demand ([docs/switches.md](docs/switches.md)).
+- **Which port a device is on**: each MAC address placed on the one port that is not an uplink to
+  another switch Lanvex reads, named from the servers Lanvex reads and the documentation, with the
+  addresses it was seen with. On the switch page, and for hosts in Discovery.
+- **Compared with the documented cables**, port by port, LLDP first: documented, different, missing
+  (recordable after a preview), unknown device, several devices on one port. *Discovery, Switch ports*
+  lists the differences; the topology draws connections no cable records apart from the cables.
+- **Monitoring**: unreachable switches (an SNMP request every two minutes) and failed reads.
+- **Releases**: GitHub builds `lanvex-X.Y.Z.zip` and its `.sha256` and attaches them to a published
+  release, once CI has passed on that commit.
+
+New dependency: pysnmp (BSD), for SNMP's protocol and SNMPv3's security.
+
 ## 1.1.0 — 2026-11-17
 
 Monitoring and alerts, a command-line installer, and a quieter interface.

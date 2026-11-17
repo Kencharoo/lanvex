@@ -424,6 +424,7 @@ export interface DiscoveredHost {
   server_id: string | null;
   netbox: { id: number; address: string; assigned_to: string | null; url: string | null } | null;
   record_as: string | null;
+  switch_port: { switch_id: string; switch_name: string; port: string; vlan: number | null; last_seen: string; current: boolean } | null;
 }
 
 export interface DiscoveredHosts {
@@ -680,7 +681,17 @@ export interface TopologyNode {
   provider: string | null;
   external: boolean;
   server_id: string | null;
+  switch_id: string | null;
   netbox_url: string | null;
+}
+/** A connection a switch sees on a port that the documented cables do not show. */
+export interface SeenLink {
+  id: string;
+  a: string;
+  b: string;
+  a_port: string;
+  b_port: string | null;
+  status: "undocumented" | "different";
 }
 export interface TopologyLink {
   id: string;
@@ -699,6 +710,7 @@ export interface TopologyLink {
 export interface Topology {
   nodes: TopologyNode[];
   links: TopologyLink[];
+  seen: SeenLink[];
   sites: Ref[];
   site_id: number | null;
   truncated: boolean;
@@ -770,6 +782,8 @@ export interface Alert {
   id: string;
   kind: AlertKind;
   server_id: string | null;
+  switch_id: string | null;
+  /** The server's or the switch's name. */
   server_name: string;
   key: string;
   severity: Severity;
@@ -836,4 +850,140 @@ export interface DeliveryResult {
   channel: string;
   ok: boolean;
   error: string | null;
+}
+
+// ---- switches (read over SNMP) ---------------------------------------------------------------------------
+
+export type SnmpAuthProtocol = "none" | "md5" | "sha" | "sha224" | "sha256" | "sha384" | "sha512";
+export type SnmpPrivProtocol = "none" | "des" | "aes" | "aes192" | "aes256" | "aes192c" | "aes256c";
+export interface SnmpCredentials {
+  version: "2c" | "3";
+  community?: string;
+  username?: string;
+  auth_protocol?: SnmpAuthProtocol;
+  auth_password?: string;
+  priv_protocol?: SnmpPrivProtocol;
+  priv_password?: string;
+}
+export interface SnmpSummary {
+  version: "2c" | "3";
+  username: string | null;
+  auth_protocol: SnmpAuthProtocol | null;
+  priv_protocol: SnmpPrivProtocol | null;
+}
+export type SwitchStatus = "ok" | "unreachable" | "auth_failed" | "not_allowed" | "error";
+export interface Switch {
+  id: string;
+  name: string;
+  description: string;
+  address: string;
+  port: number;
+  snmp: SnmpSummary;
+  netbox: { id: number; name: string | null; url: string | null } | null;
+  read_interval_minutes: number | null;
+  read_interval: number;
+  next_read_at: string | null;
+  last_status: SwitchStatus | null;
+  last_status_message: string | null;
+  last_checked_at: string | null;
+  last_read_at: string | null;
+  sys_name: string | null;
+  sys_description: string | null;
+  ports_total: number | null;
+  ports_up: number | null;
+  mac_count: number | null;
+  created_at: string;
+}
+export interface SwitchSystem {
+  name: string | null;
+  description: string | null;
+  object_id: string | null;
+  uptime_seconds: number | null;
+  location: string | null;
+  bridge_mac: string | null;
+  lldp_chassis_id: string | null;
+  lldp_system_name: string | null;
+}
+export interface SwitchPort {
+  index: number;
+  name: string;
+  description: string | null;
+  alias: string | null;
+  type: number | null;
+  kind: "ethernet" | "lag" | "vlan" | "loopback" | "wireless" | "other";
+  mac: string | null;
+  admin_up: boolean | null;
+  oper_up: boolean | null;
+  speed_mbps: number | null;
+  bridge_port: number | null;
+  lag: number | null;
+  pvid: number | null;
+  untagged: number[];
+  tagged: number[];
+  trunk: boolean | null;
+}
+export interface SwitchNeighbor {
+  port: number | null;
+  port_name: string | null;
+  chassis_id: string | null;
+  port_id: string | null;
+  port_description: string | null;
+  system_name: string | null;
+  system_description: string | null;
+  capabilities: string[];
+  management_addresses: string[];
+}
+export interface SwitchFacts {
+  collected_at: string;
+  system: SwitchSystem;
+  ports: SwitchPort[];
+  vlans: { id: number; name: string | null }[];
+  fdb: { mac: string; vlan: number | null; port: number }[];
+  neighbors: SwitchNeighbor[];
+  arp: { address: string; mac: string; interface: number | null }[];
+  notes: string[];
+}
+export interface PortEndpoint {
+  via: "lldp" | "mac";
+  kind: "server" | "device" | "vm" | "switch" | "unknown";
+  name: string | null;
+  interface: string | null;
+  mac: string | null;
+  vlan: number | null;
+  addresses: string[];
+  server_id: string | null;
+  switch_id: string | null;
+  netbox_url: string | null;
+  last_seen: string;
+  current: boolean;
+}
+export type PortStatus = "documented" | "different" | "undocumented" | "unidentified" | "shared" | "virtual" | "not_linked" | "no_port" | "not_checked";
+export interface PortFinding {
+  key: string;
+  switch_id: string;
+  switch_name: string;
+  if_index: number;
+  port: string;
+  alias: string | null;
+  uplink: boolean;
+  endpoints: PortEndpoint[];
+  status: PortStatus;
+  documented: string | null;
+  peer: string | null;
+  problem: string | null;
+}
+export interface PortFindings {
+  ports: PortFinding[];
+  switches_read: number;
+  netbox_checked: boolean;
+}
+export interface SwitchDetail extends Switch {
+  facts: SwitchFacts | null;
+  findings: PortFinding[];
+  findings_error: string | null;
+}
+export interface SwitchTestResult {
+  status: SwitchStatus;
+  message: string;
+  system: SwitchSystem | null;
 }

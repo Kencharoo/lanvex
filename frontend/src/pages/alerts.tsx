@@ -88,11 +88,15 @@ export function AlertsPage() {
     },
     {
       key: "server",
-      header: "Server",
+      header: "Source",
       className: "whitespace-nowrap",
       cell: (a) =>
-        a.server_id ? (
-          <Link to={`/servers/${a.server_id}`} className="hover:text-accent" onClick={(e) => e.stopPropagation()}>
+        a.server_id || a.switch_id ? (
+          <Link
+            to={a.switch_id ? `/switches/${a.switch_id}` : `/servers/${a.server_id}`}
+            className="hover:text-accent"
+            onClick={(e) => e.stopPropagation()}
+          >
             {a.server_name}
           </Link>
         ) : (

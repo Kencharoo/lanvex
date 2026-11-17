@@ -70,14 +70,17 @@ Core; to use one, add it to the `core` service's `environment` in `docker-compos
 
 | Variable | Default | Notes |
 |---|---|---|
-| `LANVEX_SECRET_KEY` | — | Required to add servers. Encrypts stored SSH keys and passwords (32+ characters; `lanvex generate-secret-key`) |
+| `LANVEX_SECRET_KEY` | — | Required to add servers and switches. Encrypts stored SSH keys, passwords and SNMP credentials (32+ characters; `lanvex generate-secret-key`) |
 | `LANVEX_SECRET_KEY_FALLBACKS` | `[]` | Previous keys, as a JSON list, while rotating. Run `lanvex rotate-credentials`, then remove them |
-| `LANVEX_SERVER_ALLOWED_NETWORKS` | `[]` | JSON list of CIDRs. When set, Lanvex refuses to scan or connect to addresses outside them (names are resolved first) |
+| `LANVEX_SERVER_ALLOWED_NETWORKS` | `[]` | JSON list of CIDRs. When set, Lanvex refuses to scan or connect to servers and switches outside them (names are resolved first) |
 | `LANVEX_SSH_CONNECT_TIMEOUT_SECONDS` | `10` | Connection and login |
 | `LANVEX_SSH_COMMAND_TIMEOUT_SECONDS` | `15` | Per command |
 | `LANVEX_SERVER_READ_INTERVAL_MINUTES` | `60` | How often servers are read automatically; `0` turns scheduled reads off. Each server can override it on its page (15 minutes to daily, or off) |
 | `LANVEX_READ_SCHEDULER_ENABLED` | `true` | Run the scheduler in this process. Safe with several processes: each due server is read once |
-| `LANVEX_DISCOVERY_RETENTION_DAYS` | `30` | How long a host seen in a server's neighbour table stays listed under Discovery after it was last seen |
+| `LANVEX_DISCOVERY_RETENTION_DAYS` | `30` | How long a host seen in a server's neighbour table, or a MAC address on a switch port, stays listed after it was last seen |
+| `LANVEX_SWITCH_READ_INTERVAL_MINUTES` | `15` | How often switches are read over SNMP; `0` turns scheduled switch reads off. Each switch can override it ([switches.md](switches.md)) |
+| `LANVEX_SNMP_TIMEOUT_SECONDS` | `2` | Per SNMP request |
+| `LANVEX_SNMP_RETRIES` | `1` | Per SNMP request |
 | `LANVEX_SERVER_SNAPSHOT_RETENTION` | `200` | Different states kept per server (its history). Reads that find nothing new do not add one |
 
 Back up `LANVEX_SECRET_KEY` with the database. Without it, stored credentials cannot be decrypted

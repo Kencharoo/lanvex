@@ -41,6 +41,11 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
+      command: `cd ${backend} && uv run python -m tests.snmp_lab --ready 18002`,
+      url: "http://127.0.0.1:18002/",
+      reuseExistingServer: false,
+    },
+    {
       command: `cd ${backend} && uv run lanvex migrate && uv run uvicorn lanvex.main:app --host 127.0.0.1 --port 18000 --log-level warning`,
       url: "http://127.0.0.1:18000/api/v1/health/live",
       env: api,

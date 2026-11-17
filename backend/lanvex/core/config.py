@@ -65,8 +65,15 @@ class Settings(BaseSettings):
     # schedule off for every server.
     server_read_interval_minutes: int = Field(default=60, ge=0, le=10080)
     read_scheduler_enabled: bool = True  # run scheduled reads in this process; tests drive them directly
-    # Hosts seen in servers' neighbour tables are kept this long after they were last seen.
+    # Hosts seen in servers' neighbour tables, and MAC addresses seen on switch ports, are kept this
+    # long after they were last seen.
     discovery_retention_days: int = Field(default=30, ge=1, le=3650)
+
+    # Switches (read-only SNMP). Read on this schedule unless a switch sets its own; 0 = never.
+    # LANVEX_SERVER_ALLOWED_NETWORKS limits switch addresses too.
+    switch_read_interval_minutes: int = Field(default=15, ge=0, le=10080)
+    snmp_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    snmp_retries: int = Field(default=1, ge=0, le=5)
 
     # Monitoring: servers' SSH ports are probed this often (a TCP connection, no sign-in), and checks
     # run after every read. The monitor (probes, sending alerts) runs in one process at a time.

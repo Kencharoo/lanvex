@@ -100,7 +100,8 @@ class AlertOut(ApiModel):
     id: uuid.UUID
     kind: Kind
     server_id: uuid.UUID | None
-    server_name: str
+    switch_id: uuid.UUID | None = None
+    server_name: str  # the server's or the switch's name
     key: str
     severity: SeverityName
     title: str

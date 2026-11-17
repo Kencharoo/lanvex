@@ -12,9 +12,10 @@ import { Badge, EmptyState, Notice, Skeleton, type Tone } from "@/components/ui/
 import { useSession } from "@/app/session";
 import { api, errorMessage } from "@/lib/api";
 import { useNetBoxLabel } from "@/lib/system";
-import type { DiscoveredHost, DiscoveredHosts, DiscoveredLink, DiscoveredLinks, WritePlan } from "@/lib/types";
+import type { DiscoveredHost, DiscoveredHosts, DiscoveredLink, DiscoveredLinks, PortFinding, PortFindings, WritePlan } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
 import { ActionLine } from "./servers/record";
+import { EndpointLine, PortStatusBadge } from "./switches/shared";
 
 export function DiscoveryPage() {
   return (
@@ -24,6 +25,7 @@ export function DiscoveryPage() {
       />
       <div className="grid gap-8">
         <HostsSection />
+        <SwitchPortsSection />
         <LinksSection />
       </div>
     </>
@@ -107,6 +109,26 @@ function HostsSection() {
           {h.seen_by.length > 2 && <span className="text-xs text-muted">and {h.seen_by.length - 2} more</span>}
         </span>
       ),
+    },
+    {
+      key: "port",
+      header: "Switch port",
+      cell: (h) =>
+        h.switch_port ? (
+          <span className="grid text-[13px]">
+            <span>
+              <Link to={`/switches/${h.switch_port.switch_id}`} className="hover:underline">
+                {h.switch_port.switch_name}
+              </Link>
+              <span className="text-muted"> / {h.switch_port.port}</span>
+            </span>
+            <span className="text-xs text-muted">
+              {[h.switch_port.vlan != null ? `VLAN ${h.switch_port.vlan}` : null, h.switch_port.current ? null : `seen ${relativeTime(h.switch_port.last_seen)}`].filter(Boolean).join(" · ")}
+            </span>
+          </span>
+        ) : (
+          <span className="text-faint">—</span>
+        ),
     },
     {
       key: "when",
@@ -193,6 +215,113 @@ function HostsSection() {
         items={picked}
         title={`Record hosts in ${nbName}`}
         description="Added as unassigned IP addresses."
+      />
+    </Section>
+  );
+}
+
+function SwitchPortsSection() {
+  const nbName = useNetBoxLabel();
+  const { isAdmin } = useSession();
+  const [onlyOpen, setOnlyOpen] = React.useState(true);
+  const [recordKey, setRecordKey] = React.useState<string | null>(null);
+  const q = useQuery({ queryKey: ["discovery", "ports"], queryFn: () => api<PortFindings>("/discovery/ports") });
+  const d = q.data;
+  if (d && d.switches_read === 0) return null;
+  const rows = (d?.ports ?? []).filter((p) => !onlyOpen || !["documented", "not_linked", "not_checked"].includes(p.status));
+  const unlinked = [...new Set((d?.ports ?? []).filter((p) => p.status === "not_linked").map((p) => p.switch_name))];
+  const compared = (d?.ports ?? []).some((p) => !["not_linked", "not_checked"].includes(p.status));
+  const columns: Column<PortFinding>[] = [
+    {
+      key: "port",
+      header: "Switch port",
+      cell: (p) => (
+        <span className="grid text-[13px]">
+          <span>
+            <Link to={`/switches/${p.switch_id}`} className="font-medium hover:underline">
+              {p.switch_name}
+            </Link>
+            <span className="text-muted"> / {p.port}</span>
+          </span>
+          {(p.alias || p.uplink) && <span className="text-xs text-muted">{[p.alias, p.uplink ? "uplink" : null].filter(Boolean).join(" · ")}</span>}
+        </span>
+      ),
+    },
+    {
+      key: "seen",
+      header: "Connected",
+      cell: (p) => (
+        <span className="grid gap-1">
+          {p.endpoints.slice(0, 3).map((e, i) => (
+            <EndpointLine key={`${e.via}-${e.mac ?? e.name}-${i}`} e={e} />
+          ))}
+          {p.endpoints.length > 3 && <span className="text-xs text-muted">and {p.endpoints.length - 3} more</span>}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      header: "Result",
+      cell: (p) => (
+        <span className="grid max-w-md gap-1">
+          <span>
+            <PortStatusBadge status={p.status} />
+          </span>
+          {p.documented && p.status !== "documented" && <span className="text-xs text-muted">{nbName}: {p.documented}</span>}
+          {p.problem && <span className="text-xs text-muted">{p.problem}</span>}
+        </span>
+      ),
+    },
+    {
+      key: "action",
+      header: <span className="sr-only">Actions</span>,
+      cell: (p) =>
+        isAdmin && p.status === "undocumented" && !p.problem ? (
+          <Button size="sm" variant="secondary" onClick={() => setRecordKey(p.key)}>
+            <Cable /> Record cable…
+          </Button>
+        ) : null,
+    },
+  ];
+  return (
+    <Section
+      title="Switch ports"
+      description={`MAC address tables and LLDP of your switches, compared with the cables in ${nbName}`}
+      actions={<Checkbox id="disc-ports-open" label={`Only those that differ from ${nbName}`} checked={onlyOpen} onChange={(e) => setOnlyOpen(e.target.checked)} />}
+    >
+      {q.error ? (
+        <Notice tone="danger">{errorMessage(q.error)}</Notice>
+      ) : (
+        <>
+          {unlinked.length > 0 && (
+            <p className="text-[13px] text-muted">
+              Not compared: {unlinked.join(", ")} {unlinked.length === 1 ? "is" : "are"} not linked to {unlinked.length === 1 ? "its device" : "their devices"} in {nbName}.
+            </p>
+          )}
+          <DataTable
+            dense
+            loading={q.isPending}
+            columns={columns}
+            rows={rows}
+            rowKey={(p) => p.key}
+            empty={
+              <EmptyState
+                icon={Cable}
+                title={!d?.ports.length ? "Nothing seen on switch ports yet" : compared ? `Every port compared matches ${nbName}` : "No port compared yet"}
+              >
+                {d && d.ports.length ? "Untick the filter to list them all." : "Add switches, or wait for their next read."}
+              </EmptyState>
+            }
+          />
+        </>
+      )}
+      <PlanDialog
+        open={recordKey !== null}
+        onClose={() => setRecordKey(null)}
+        endpoint="/discovery/ports/record"
+        items={recordKey ? [recordKey] : []}
+        title={`Record a cable in ${nbName}`}
+        description="Added as a connected cable."
       />
     </Section>
   );
@@ -308,7 +437,7 @@ function LinksSection() {
 }
 
 /** Preview the NetBox writes for `items`, then make exactly those. */
-function PlanDialog({
+export function PlanDialog({
   open,
   onClose,
   onDone,
@@ -316,6 +445,7 @@ function PlanDialog({
   items,
   title,
   description,
+  refresh,
 }: {
   open: boolean;
   onClose: () => void;
@@ -324,6 +454,8 @@ function PlanDialog({
   items: string[];
   title: string;
   description: string;
+  /** Another query to refresh once recorded. */
+  refresh?: unknown[];
 }) {
   const nbName = useNetBoxLabel();
   const qc = useQueryClient();
@@ -339,6 +471,7 @@ function PlanDialog({
     onSuccess: (r) => {
       void qc.invalidateQueries({ queryKey: ["discovery"], predicate: (q) => q.queryKey[1] !== "plan" });
       void qc.invalidateQueries({ queryKey: ["topology"] });
+      if (refresh) void qc.invalidateQueries({ queryKey: refresh });
       if (!r.failed) {
         toast.success(`Recorded in ${nbName}`, { description: `${r.done.length} update${r.done.length === 1 ? "" : "s"}.` });
         onDone?.();

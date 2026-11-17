@@ -49,8 +49,12 @@ uv run ruff check . && uv run ruff format --check .
 cd ../frontend
 npm run typecheck && npm test
 npx playwright install chromium    # once; or LANVEX_E2E_CHROME=/path/to/chrome
-npx playwright test                # starts the stand-in, API and UI itself
+npx playwright test                # starts the stand-in, two SNMP switches, API and UI itself
 ```
+
+Switches in tests are SNMP agents in software (`backend/tests/snmp_agent.py`, tables in
+`tests/switch_tables.py`); `uv run python -m tests.snmp_lab` runs two of them for trying the UI
+([switches.md](switches.md)).
 
 Integration tests against a real NetBox are opt-in and destructive to their own test objects only
 (198.51.100.0/24):

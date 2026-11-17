@@ -1,8 +1,23 @@
 # Status of Lanvex 1.1.0
 
-Last updated 2026-11-16. "Verified" means it was run, not just written.
+Last updated 2026-11-17. "Verified" means it was run, not just written.
 
 ## Verified
+
+### Switches (new, not released yet)
+
+Against SNMP agents in the test process, built on pysnmp's own command responder, so requests and
+answers go over UDP as with a switch: SNMPv2c, SNMPv3 with SHA and AES, a wrong password, an unknown
+user, a wrong community and an address outside the allowed networks; a Q-BRIDGE switch with a link
+aggregation, VLANs, a MAC table and LLDP numbered its own way; a Cisco-style switch with VTP VLANs, an
+access and a trunk port and per-VLAN MAC tables (v2c `community@vlan` and v3 contexts); a device
+without bridge or LLDP MIBs. Through the API with two switches joined by an uplink and the
+documentation as a stand-in: every MAC on the one port it is plugged into, each comparison result,
+recording a cable after a preview, Discovery's switch ports, the topology, alerts for refused reads
+and unanswered probes that end by themselves, scheduled reads. In the browser (Playwright): adding a
+switch over SNMPv3 after a failed test, its ports, Discovery, removing it.
+
+Not verified against real switches yet (see below).
 
 ### Monitoring (new in 1.1)
 
@@ -246,6 +261,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | Why | How to close it |
 |---|---|---|
+| Switches from real vendors | The tests use agents built from what the MIBs specify; real switches differ (LLDP port numbering, VLAN tables, Cisco's per-VLAN contexts, AES-192/256 variants, slow agents on large MAC tables) | Add a switch of each kind at hand and compare its page with the switch's own view |
 | Access rules with real users | The lab's client is a container; a phone or laptop on a real VLAN was not used | Allow a network the Internet on a test server and try it |
 | Reading and interface changes on Debian | The Debian 12 lab host (0.8) runs the networks tests through the helper; Lanvex's SSH reads and interface changes run on the Ubuntu hosts | Read a Debian server with Lanvex before relying on it |
 | Interface changes on Fedora; networks on other versions | Networks are tested on Fedora 44, Ubuntu 24.04 and Debian 12; interface changes on the Ubuntu hosts. Older netplan (Ubuntu 20.04/22.04), ifupdown and NetworkManager versions, RHEL, and Ubuntu with NetworkManager for networks are untested | Run a change on a test server of each kind before relying on it |
@@ -267,8 +283,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 - **Kea** as an alternative DHCP server; block lists by name for the DNS filter.
 - **More kinds of server change.** Bonds and bridges; IPv6; static routes; interface settings on
   ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
-- Discovery from the network side (SNMP, switch MAC tables) and of devices Lanvex does not read; a
-  deployment wizard.
+- Changing switches (port VLANs); discovery of devices no server or switch sees; a deployment wizard.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
 - Editing prefix tenant and scopes other than a site, and IP tenant/role/NAT; device creation.
 

@@ -1,4 +1,4 @@
-"""Discovery API: hosts and LLDP links servers see, and recording them in NetBox."""
+"""Discovery API: hosts and LLDP links servers see, switch ports, and recording them in NetBox."""
 
 from typing import Any
 
@@ -15,6 +15,7 @@ from lanvex.discovery.service import (
     stale,
 )
 from lanvex.netbox.client import NetBoxClient
+from lanvex.switches.schemas import PortFindings
 
 router = APIRouter(tags=["discovery"], prefix="/discovery")
 
@@ -34,6 +35,12 @@ async def hosts(
 @router.get("/links", response_model=DiscoveredLinks)
 async def links(request: Request, db: DB, settings: SettingsDep, _: CurrentUser) -> DiscoveredLinks:
     return await _svc(request, db, settings).links()
+
+
+@router.get("/ports", response_model=PortFindings)
+async def ports(request: Request, db: DB, settings: SettingsDep, _: CurrentUser) -> PortFindings:
+    """What is connected to each switch port, compared with the cables in NetBox."""
+    return await _svc(request, db, settings).ports()
 
 
 async def _apply(
@@ -80,3 +87,13 @@ async def record_links(
     svc = _svc(request, db, settings)
     plan, writes = await svc.plan_links(list(dict.fromkeys(body.items)))
     return await _apply(svc, plan, writes, body, audit, "discovery.record_links", "dcim/cables/")
+
+
+@router.post("/ports/record", response_model=DiscoveryPlan)
+async def record_ports(
+    body: DiscoveryRecordRequest, request: Request, db: DB, settings: SettingsDep, _: AdminUser, audit: Audit
+) -> DiscoveryPlan:
+    """Record cables for what switches see on their ports. Without a token this only previews."""
+    svc = _svc(request, db, settings)
+    plan, writes = await svc.plan_ports(list(dict.fromkeys(body.items)))
+    return await _apply(svc, plan, writes, body, audit, "discovery.record_ports", "dcim/cables/")
