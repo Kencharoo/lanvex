@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from lanvex.integrations.snmp.client import Oid
+from lanvex.integrations.snmp.client import ContextUnavailable, Oid
 
 
 class Walker(Protocol):
@@ -380,10 +380,20 @@ async def _cisco(
     if fdb:
         return vlans, []
     out: list[FdbEntry] = []
+    failed = 0
     for v in vlans[:PER_VLAN_LIMIT]:
-        bridge = {bp: idx for bp, idx in _single(await s.walk(BASE_PORT_IFINDEX, v.id)).items()}
-        if bridge:
-            out += await _fdb(s, bridge, v.id)
+        try:
+            bridge = {bp: idx for bp, idx in _single(await s.walk(BASE_PORT_IFINDEX, v.id)).items()}
+            if bridge:
+                out += await _fdb(s, bridge, v.id)
+        except ContextUnavailable:
+            failed += 1
+            if failed >= 3 and not out:  # not set up on this switch: do not wait for every VLAN
+                notes.append(
+                    "The per-VLAN MAC address tables do not answer (SNMPv2c: community@vlan, SNMPv3: "
+                    "contexts vlan-<id>); only the default one was read."
+                )
+                return vlans, []
     if len(vlans) > PER_VLAN_LIMIT:
         notes.append(f"MAC addresses were read for the first {PER_VLAN_LIMIT} VLANs only.")
     return vlans, out

@@ -164,6 +164,9 @@ five NetBox files carry small, listed changes (`FORK.md`). It adds no database m
 `servers` (address, user, auth method, encrypted credential, public key, pinned host key, NetBox link, last status, summary, read interval, next read) ·
 `server_snapshots` (server, time, status, facts JSON, raw output, duration, requested by, fingerprint, confirmed at, reads) ·
 `discovered_addresses` (server, address, interface, MAC, router flag, first and last seen; one row per server and address) ·
+`switches` (address, SNMP version and user, encrypted credentials, NetBox device, last status, summary, read interval, probe failures) ·
+`switch_facts` (a switch's latest successful read) ·
+`switch_macs` (switch, MAC, VLAN, port, first and last seen; one row per switch, MAC and VLAN) ·
 `server_changes` (number, server, interface, request, state before, helper preview, status, approvals,
 deadline, checks, log, outcome; one open change per server).
 Migrations: Alembic in `backend/alembic`.

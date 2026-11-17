@@ -51,7 +51,7 @@ compare each port with the cable recorded on the device's interface of the same 
 | Ports: name, description, state, speed, MAC address | IF-MIB |
 | Link aggregations and their member ports | IEEE8023-LAG-MIB |
 | VLANs, each port's untagged and tagged VLANs and PVID | Q-BRIDGE-MIB; on Cisco IOS without it, CISCO-VTP-MIB and CISCO-VLAN-MEMBERSHIP-MIB |
-| MAC address table: which MAC address on which port, in which VLAN | Q-BRIDGE-MIB, else BRIDGE-MIB; on Cisco IOS, per VLAN (community `@vlan` or SNMPv3 context `vlan-<id>`) |
+| MAC address table: which MAC address on which port, in which VLAN | Q-BRIDGE-MIB, else BRIDGE-MIB; on Cisco IOS, per VLAN (community `@vlan`, or SNMPv3 contexts `vlan-<id>`, which the SNMP group must allow: `snmp-server group LANVEX v3 priv context vlan- match prefix read LANVEX`) |
 | LLDP neighbours | LLDP-MIB |
 | ARP and neighbour tables (layer 3 switches) | IP-MIB |
 

@@ -149,3 +149,17 @@ async def test_a_switch_without_bridge_or_lldp_mibs() -> None:
         agent.stop()
     assert f.system.name == "router-1" and [p.name for p in f.ports] == ["ge-0/0/0"]
     assert f.fdb == [] and f.neighbors == [] and len(f.notes) == 3
+
+
+@pytest.mark.parametrize("creds", [V2, V3])
+async def test_cisco_without_per_vlan_tables(creds: SnmpCredentials) -> None:
+    """Per-VLAN communities or contexts not set up: the read goes on without them, and says so."""
+    table, _ = cisco_switch()
+    table |= {f"1.3.6.1.4.1.9.9.46.1.3.1.1.2.1.{v}": 1 for v in range(20, 30)}  # many VLANs
+    agent = Agent(table)
+    try:
+        f = await read(agent, creds, timeout=0.3, retries=0)
+    finally:
+        agent.stop()
+    assert len(f.vlans) == 12 and f.fdb == []
+    assert any("per-VLAN MAC address tables do not answer" in n for n in f.notes)

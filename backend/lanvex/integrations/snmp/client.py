@@ -105,6 +105,10 @@ class SnmpCredentials(BaseModel):
         }
 
 
+class ContextUnavailable(Exception):
+    """A per-VLAN community or context (Cisco) did not answer."""
+
+
 class SnmpError(Exception):
     """A read that did not work, with the outcome it maps to (ConnectionStatus values)."""
 
@@ -243,8 +247,8 @@ class SnmpSession:
         ):
             self.requests += 1
             if indication:
-                if vlan and isinstance(indication, errind.RequestTimedOut | errind.UnknownCommunityName):
-                    return rows  # this VLAN has no bridge tables
+                if vlan:  # no answer for this VLAN's community or context
+                    raise ContextUnavailable(str(indication))
                 raise _failure(indication, self.creds.version)
             if status:
                 break
