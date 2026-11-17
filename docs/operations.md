@@ -44,7 +44,7 @@ directory under `pki/authorities/local/root.crt`).
 ## Podman
 
 The installer uses Podman when Docker is not there (or not running), with `podman-compose` or
-`podman compose`. Rootless works: run `./install.sh` as the user who should own the containers, without
+`podman compose`. Rootless works: run `lanvexctl install` (or `./install.sh`) as the user who should own the containers, without
 sudo. Notes:
 
 - **Start at boot.** Podman has no daemon that restarts containers after a reboot. The installer

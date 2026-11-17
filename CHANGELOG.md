@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.1.0 — 2026-11-17
+
+Monitoring and alerts, a command-line installer, and a quieter interface.
+
+- **Monitoring** of every server Lanvex reads, of any kind ([docs/monitoring.md](docs/monitoring.md)):
+  alerts when a server's SSH port stops answering (checked every two minutes without signing in), a
+  read is refused, the server drifts from its documentation (addresses, Lanvex networks, DHCP, access
+  rules), a DHCP pool fills up, a device nobody documented gets a lease, or a change fails or is
+  rolled back. One alert per condition, ended when the condition is gone; events end when
+  acknowledged.
+- **Alerts page**, a count in the navigation, open alerts on the overview; checks, thresholds and
+  exclusions under *Settings, Monitoring*.
+- **Email** (SMTP settings in `.env`) and **webhooks** (JSON, ntfy, Gotify, Slack/Mattermost, Discord,
+  Teams), each with its lowest severity, a test message, batching and retries. Webhook URLs are
+  stored encrypted and never shown again.
+- **lanvexctl**: installs the latest release from GitHub (checked against its SHA-256 sum) or from
+  an archive, updates with a backup first, backs up and restores (both databases, Lanvex Core's
+  uploads, `.env`), shows status and logs, manages users, uninstalls. Installations unpacked by
+  hand are taken over on their first update. Tested in CI with Docker: install, update, purge,
+  reinstall and restore, after which the users from before the backup sign in again.
+- Release archives come with a `.sha256` file.
+- **Interface text** cut down: page and section descriptions, hints and notices say only what is
+  needed. Claims that were no longer true (Lanvex never changes servers; it does not configure DHCP)
+  are gone.
+
+**Updating:** `lanvexctl update --file lanvex-1.1.0.zip` (lanvexctl from the release archive), or
+`./install.sh --update <old directory>` as before. New settings are optional (`LANVEX_SMTP_*`,
+`LANVEX_PUBLIC_URL`). The helper (version 5) and Lanvex Core (1.0.0) are unchanged.
+
 ## 1.0.1 — 2026-11-17
 
 Fixes from updating KlassenServer to 1.0.0, all of which stood between it and the takeover.

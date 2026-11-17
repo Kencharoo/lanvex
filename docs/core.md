@@ -15,10 +15,11 @@ Using your own NetBox instead remains fully supported; the installer asks which 
 ## Installing
 
 ```bash
-sudo ./install.sh          # choose "1) In Lanvex Core, installed now"
+sudo lanvexctl install     # choose "1) In Lanvex Core, installed now"
 ```
 
-or without questions: `sudo ./install.sh --core --behind-proxy --admin admin`. The installer
+or without questions: `sudo lanvexctl install -- --core --behind-proxy --admin admin` (from an unpacked
+release: `sudo ./install.sh` with the same options). The installer
 generates every password and key, writes them into `.env`, builds both applications and waits until
 both are healthy. The first start of Lanvex Core sets up its database, which takes several minutes;
 the installer allows 20.
@@ -128,30 +129,35 @@ closed to anyone not signed in. Run it in the directory you installed from; with
 asks for your password and includes the sign-in checks: `scripts/check-install.sh "" admin`.
 
 ```bash
-docker compose ps                          # core and core-worker should be "healthy"
-docker compose logs -f core core-worker    # Lanvex Core and its background jobs
+lanvexctl status                           # every container should be "healthy"
+lanvexctl logs core --follow               # Lanvex Core; also core-worker, lanvex, …
 ```
 
 Lanvex Core logs in `LANVEX_CORE_TIME_ZONE` with the UTC offset on every line; Lanvex logs in UTC.
 
 ### Backups
 
-Back up three things together, and keep `.env` with them:
-
 ```bash
-docker compose exec -T core-db pg_dump -U lanvex_core -Fc lanvex_core > lanvex-core-$(date +%F).dump
-docker run --rm -v lanvex_core-media:/media:ro -v "$PWD":/backup alpine \
-  tar -czf /backup/lanvex-core-media-$(date +%F).tar.gz -C /media .
+lanvexctl backup                       # into <Lanvex directory>/backups/
+lanvexctl backup /mnt/backup/lanvex-$(date +%F).tar.gz
 ```
 
-and Lanvex's own database as described in [operations.md](operations.md). Restoring the Lanvex Core
-database into a fresh installation:
+One file holds Lanvex's database, Lanvex Core's database, Lanvex Core's uploads and `.env`. `.env`
+carries the keys that decrypt server credentials and Lanvex Core's API tokens, so the file is readable
+only by its owner: keep it like a password. `lanvexctl update` makes one before every update.
+
+Restoring, into the same installation or into a fresh one after a reinstall (the same version or a
+newer one):
 
 ```bash
-docker compose stop core core-worker
-docker compose exec -T core-db pg_restore -U lanvex_core -d lanvex_core --clean --if-exists < lanvex-core-….dump
-docker compose up -d
+lanvexctl restore lanvex-2026-11-17.tar.gz
 ```
+
+Both databases are replaced, the uploads too, and `.env` takes the backup's keys (the previous one
+stays as `.env.before-restore`); the containers are recreated. Without lanvexctl, the same by hand:
+`pg_dump -Fc` of both databases (`docker compose exec -T lanvex-db pg_dump -U lanvex -Fc lanvex`,
+`… core-db pg_dump -U lanvex_core -Fc lanvex_core`), a copy of the `lanvex_core-media` volume, and
+`.env`.
 
 ### Management commands
 
@@ -165,35 +171,26 @@ docker compose run --rm core manage nbshell
 ### Updating
 
 Lanvex and Lanvex Core are released together: each Lanvex release names the Lanvex Core version it
-was tested with in `core.lock` and contains it in `./core`. To update, unpack the new release next to
-the running one and let its installer take over from there:
+was tested with in `core.lock` and contains it in `./core`.
 
 ```bash
-# back up first (above), then:
-unzip lanvex-1.0.1.zip && cd lanvex-1.0.1
-./install.sh --update ../lanvex-1.0.0
+lanvexctl update            # the latest release; or: lanvexctl update 1.1.0, lanvexctl update --file lanvex-1.1.0.zip
 ```
 
-`--update` copies `.env` from the old directory, builds the new version, replaces the running
-containers and waits until they are healthy. The Compose project is always called `lanvex`, so the
-new containers use the same volumes, and with them the same data. Under Podman it also points the
-systemd unit that starts Lanvex at boot to the new directory. Once everything runs, the old directory
-can be deleted. Unpacked over the old directory instead (`rsync`, say), run `./install.sh --update .`
-there.
+lanvexctl backs up, unpacks the release next to the running one (`releases/<version>`), runs its
+installer with `--update`, and points `current` at it once the containers are healthy. The previous
+release stays until the next update. An installation unpacked by hand (before lanvexctl) is taken over
+the same way: the update goes into `releases/` beside it.
 
-By hand, the one step that matters is replacing the containers: `docker compose up -d --build`
-does it whenever an image changed, but **podman-compose does not**: with an unchanged compose file it
-keeps the old containers running, so the old version stays. Under Podman, use
-`podman-compose up -d --build --force-recreate`. Then point the boot unit at the new directory:
+Without lanvexctl: unpack the new release next to the old one and run `./install.sh --update
+../lanvex-<old>` in it. It copies `.env`, builds, replaces the containers, waits until they are healthy
+and points the Podman boot unit at the new directory. Unpacked over the old directory instead, run
+`./install.sh --update .`. By hand, the step that matters is replacing the containers:
+`docker compose up -d --build` does it whenever an image changed, but **podman-compose does not**:
+use `podman-compose up -d --build --force-recreate`.
 
-```bash
-sed -i "s|^WorkingDirectory=.*|WorkingDirectory=$PWD|" ~/.config/systemd/user/lanvex.service
-systemctl --user daemon-reload   # as root: /etc/systemd/system/lanvex.service and systemctl daemon-reload
-```
-
-An installation from before 0.6.1 has no such unit; [operations.md](operations.md#podman) shows how to
-add it. Lanvex Core applies its database migrations when it starts; that can take a few minutes after a
-NetBox feature release.
+Lanvex Core applies its database migrations when it starts; that can take a few minutes after a NetBox
+feature release.
 
 ### Switching between Lanvex Core and your own NetBox
 

@@ -115,7 +115,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck install.sh scripts/*.sh deploy/entrypoint.sh
+      - run: shellcheck install.sh lanvexctl scripts/*.sh deploy/entrypoint.sh
+      - name: lanvexctl with stand-ins for the runtime and the installer
+        run: scripts/test-lanvexctl.sh
       - name: Installer writes a valid configuration in both modes
         run: |
           mkdir -p core/lanvex && touch core/lanvex/Dockerfile   # stands in for the Lanvex Core source
@@ -234,6 +236,78 @@ jobs:
       - name: Container logs
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail 150 || echo "No containers were started."
+
+  lanvexctl:
+    name: lanvexctl (install, update, backup, restore)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lanvex
+      - name: Lanvex Core version from core.lock
+        id: lock
+        run: echo "commit=$(sed -n 's/^commit=//p' lanvex/core.lock)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/lanvex-core
+          ref: ${{ steps.lock.outputs.commit }}
+          ssh-key: ${{ secrets.LANVEX_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: lanvex-core
+      - name: Two release archives, this commit and the same as the next version
+        shell: bash
+        run: |
+          cd lanvex
+          git config user.name ci && git config user.email ci@example.invalid
+          scripts/release.sh ../lanvex-core ../dist
+          sed -i 's/^__version__ = "\(.*\)"/__version__ = "\1+next"/' backend/lanvex/__init__.py
+          git commit -qam "The next version"
+          scripts/release.sh ../lanvex-core ../dist
+          ls -l ../dist
+      - name: Install with lanvexctl, as root
+        shell: bash
+        run: |
+          first=$(ls dist/lanvex-*.zip | grep -v next)
+          sudo lanvex/lanvexctl install --file "$first" -- --core --plain-http --port 8080 --admin ci-admin \
+            --time-zone Europe/Berlin --yes < /dev/null | tee install.log
+          test -x /usr/local/bin/lanvexctl && test -L /opt/lanvex/current
+          password=$(sed -n 's/^  Password:  //p' install.log)
+          lanvex/scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$password"
+          sudo lanvexctl status
+      - name: Back up, with a second user to find again
+        run: |
+          id=$(sudo docker ps -q --filter label=com.docker.compose.service=lanvex)
+          printf 'reader-password-1234' | sudo docker exec -i "$id" lanvex create-user ci-reader --password-stdin
+          sudo lanvexctl backup /root/lanvex-backup.tar.gz
+          test "$(sudo stat -c %a /root/lanvex-backup.tar.gz)" = 600
+      - name: Update with lanvexctl
+        shell: bash
+        run: |
+          sudo lanvexctl update --file dist/lanvex-*+next.zip < /dev/null
+          id=$(sudo docker ps -q --filter label=com.docker.compose.service=lanvex)
+          sudo docker exec "$id" python -c "import lanvex; print(lanvex.__version__)" | tee /dev/stderr | grep -q '+next$'
+          sudo ls /opt/lanvex/backups | grep -q before-update
+          lanvex/scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$(sed -n 's/^  Password:  //p' install.log)"
+      - name: Remove everything, install again, restore the backup
+        shell: bash
+        run: |
+          sudo lanvexctl uninstall --purge --yes
+          test -z "$(sudo docker volume ls -q --filter label=com.docker.compose.project=lanvex)"
+          sudo lanvexctl install --file dist/lanvex-*+next.zip -- --core --plain-http --port 8080 --admin other-admin \
+            --yes < /dev/null > reinstall.log
+          sudo lanvexctl restore /root/lanvex-backup.tar.gz --yes
+          # The administrator and the reader from before the backup sign in; the new administrator is gone.
+          lanvex/scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$(sed -n 's/^  Password:  //p' install.log)"
+          login() { curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+            -d "{\"username\": \"$1\", \"password\": \"$2\"}" http://127.0.0.1:8080/api/v1/auth/login; }
+          test "$(login ci-reader reader-password-1234)" = 200
+          test "$(login other-admin "$(sed -n 's/^  Password:  //p' reinstall.log)")" = 401
+      - name: Container logs
+        if: failure()
+        run: |
+          cd /opt/lanvex/current 2>/dev/null && sudo docker compose ps -a && sudo docker compose logs --no-color --tail 150 \
+            || echo "No containers were started."
 
   podman:
     # The same installation under rootless Podman, set up like Fedora Server: no Docker, podman-compose,

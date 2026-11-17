@@ -1,8 +1,33 @@
-# Status of Lanvex 1.0.1
+# Status of Lanvex 1.1.0
 
 Last updated 2026-11-16. "Verified" means it was run, not just written.
 
 ## Verified
+
+### Monitoring (new in 1.1)
+
+API tests with real PostgreSQL and the Lanvex Core stand-in: after reads, a full pool (critical at
+100%), unknown devices (a MAC documented on another device's interface counts as known), drift of
+addresses and networks, and their ending (pool freed, device documented; a device whose lease ended
+stays open; an acknowledged one is not reported again); a refused read opens its alert and keeps what
+the last good read found; an unreachable server is one alert, from the probe, after three missed
+checks; a turned-off check ends its alerts. Delivery: one Slack-format message for three events,
+email through a stand-in SMTP server with STARTTLS, sign-in and a retry after a refused connection;
+webhook URLs appear in no API answer and no audit entry; a failed change opens an alert that
+acknowledging ends. The probe is checked against a real TCP listener: it connects and sends nothing.
+Browser test: the alerts page, saving monitoring settings, adding and deleting a webhook.
+
+Not verified yet: email through a real mail server, and each webhook format against the real service
+(the formats follow their documented APIs; *Test* in the settings checks yours).
+
+### lanvexctl (new in 1.1)
+
+On every push: `scripts/test-lanvexctl.sh` (install, refused second install, a damaged archive, status,
+logs, backup contents and mode, update with a backup first and one previous release kept, restore with
+its checks, uninstall, taking over an installation unpacked by hand) with stand-ins for Docker and the
+installer; and in a CI job with real containers, as root with Docker: install from a release archive,
+back up, update to the next version, purge everything, install again, restore, after which the
+administrator and a reader from before the backup sign in and the new administrator does not.
 
 ### DNS filter and taking over from Netzverwaltung (new in 1.0)
 
@@ -231,9 +256,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 | DNS filter on real devices | The lab's client asks with raw DNS packets; phones and laptops cache names and may use DNS over HTTPS | Filter a test network and try a few devices |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
 | IPv6 and bond interfaces on servers | The lab kernel has no IPv6 or bonding (CI loads 8021q for VLANs) | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
-| Updating an existing installation (0.4.0 → 0.4.2) | Every automatic run installs from scratch | Update the test server as in docs/core.md (*Updating*), then `scripts/check-install.sh "" admin` |
 | In the browser on a real installation: creating and editing data, read-only users, servers over SSH, server changes | Not part of the first installation test | A walkthrough on the test server |
-| Backup and restore of a Docker installation | Not tried yet | The commands in docs/core.md (*Backups*) on the test server, restored into a fresh installation |
+| Backup and restore under Podman | Tested with Docker in CI (lanvexctl); the Podman job tests install and update | `lanvexctl backup`, then a restore on a test server |
 | Upgrading an installation from 0.3 | No 0.3 installation exists outside the build environment | 0.3 installations keep their NetBox; Lanvex Core is only added by a new installation or by hand (`.env.example`) |
 | NetBox versions other than 4.7.4 and 4.7.5 | | Run the live suite against each supported version (4.2+) |
 | Moving data from an existing NetBox into Lanvex Core | Not built | NetBox's own backup and restore, by hand; see docs/core.md |
@@ -244,7 +268,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 - **More kinds of server change.** Bonds and bridges; IPv6; static routes; interface settings on
   ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
 - Discovery from the network side (SNMP, switch MAC tables) and of devices Lanvex does not read; a
-  deployment wizard; monitoring and alerts.
+  deployment wizard.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
 - Editing prefix tenant and scopes other than a site, and IP tenant/role/NAT; device creation.
 

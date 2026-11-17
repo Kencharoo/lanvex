@@ -115,12 +115,16 @@ Netzverwaltung on Fedora; the last step is the takeover on KlassenServer itself.
 Not taken over: Netzverwaltung's block lists by name (its model has them, its interface does not; the
 import report names any it finds, so their domains can be added).
 
-### After 1.0
+### 1.1: Monitoring and lanvexctl (released 2026-11-17)
 
+Alerts for unreachable servers, refused reads, drift from the documentation, full DHCP pools,
+unknown devices and failed changes, by email and webhooks ([monitoring.md](monitoring.md)); lanvexctl to
+install, update, back up and restore.
+
+### Next
+
+- **The manual** (German and English), from the docs as they are now.
+- **More server changes**: static routes, bridges and bonds, then IPv6, each with a lab test.
 - **Kea** as an alternative DHCP server, for servers that already run it.
-
-## Alongside
-
-- **Monitoring and alerts**: unknown devices getting a lease, a network's DHCP pool running full, a
-  server's network stopping to match the documentation, a server becoming unreachable.
-- The manual (German and English) catches up with each stage.
+- **The switch side**: reading switches' MAC tables (which port a device is on), later setting
+  port VLANs.

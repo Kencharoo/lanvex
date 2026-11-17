@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+# lanvexctl: install, update, back up and run Lanvex on this server.
+#
+#   lanvexctl install [VERSION] [--file ZIP] [-- INSTALL.SH OPTIONS]
+#   lanvexctl update [VERSION] [--file ZIP]
+#   lanvexctl status | start | stop | restart
+#   lanvexctl logs [SERVICE] [--follow]
+#   lanvexctl backup [FILE]
+#   lanvexctl restore FILE [--yes]
+#   lanvexctl user create NAME [--admin] | deactivate NAME | delete NAME
+#   lanvexctl uninstall [--purge] [--yes]
+#   lanvexctl versions | version
+#
+# As root, Lanvex lives in /opt/lanvex and lanvexctl in /usr/local/bin; as another user (rootless
+# Podman), in ~/lanvex and ~/.local/bin. LANVEX_HOME, LANVEX_BIN and LANVEX_REPO change where and
+# from where.
+# Releases are downloaded from GitHub and checked against their published SHA-256 sums.
+set -euo pipefail
+
+REPO=${LANVEX_REPO:-Kencharoo/lanvex}
+if [ "$(id -u)" = 0 ]; then
+  HOME_DIR=${LANVEX_HOME:-/opt/lanvex}; BIN_DIR=${LANVEX_BIN:-/usr/local/bin}
+else
+  HOME_DIR=${LANVEX_HOME:-$HOME/lanvex}; BIN_DIR=${LANVEX_BIN:-$HOME/.local/bin}
+fi
+SELF_VERSION=1.1.0
+
+bold() { if [ -t 1 ]; then printf '\033[1m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }
+say() { printf '%s\n' "$*"; }
+fail() { printf 'lanvexctl: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null || fail "$1 is missing. $2"; }
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ---- where Lanvex is --------------------------------------------------------------------------------
+
+# The running installation: HOME_DIR/current (a link to a release), or an installation unpacked by
+# hand straight into HOME_DIR (before lanvexctl).
+current_dir() {
+  if [ -L "$HOME_DIR/current" ]; then readlink -f "$HOME_DIR/current"
+  elif [ -f "$HOME_DIR/.env" ]; then printf '%s\n' "$HOME_DIR"
+  fi
+}
+require_installed() {
+  CUR=$(current_dir)
+  { [ -n "$CUR" ] && [ -f "$CUR/.env" ]; } || fail "Lanvex is not installed in $HOME_DIR (lanvexctl install)."
+}
+version_of() { sed -n 's/^__version__ = "\(.*\)"/\1/p' "$1/backend/lanvex/__init__.py" 2>/dev/null; }
+env_value() { sed -n "s/^$1=//p" "$CUR/.env" | tail -n 1; }
+
+# ---- containers -------------------------------------------------------------------------------------
+
+detect_runtime() {
+  RUNTIME="" COMPOSE=()
+  local real_docker=false
+  if command -v docker >/dev/null && ! docker --version 2>/dev/null | grep -qi podman; then real_docker=true; fi
+  if $real_docker && docker compose version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    RUNTIME=docker; COMPOSE=(docker compose)
+  elif command -v podman >/dev/null; then
+    RUNTIME=podman
+    if command -v podman-compose >/dev/null; then COMPOSE=(podman-compose)
+    elif podman compose version >/dev/null 2>&1; then COMPOSE=(podman compose)
+    else fail "podman-compose is missing (Fedora: dnf install podman-compose; Debian/Ubuntu: apt install podman-compose)."
+    fi
+  elif $real_docker; then
+    RUNTIME=docker; COMPOSE=(docker compose)
+  else
+    fail "Neither Docker nor Podman is installed."
+  fi
+}
+compose() { (cd "$CUR" && "${COMPOSE[@]}" "$@"); }
+container() {
+  "$RUNTIME" ps -aq --filter "label=com.docker.compose.project=lanvex" \
+    --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -n 1
+}
+running() { [ -n "$("$RUNTIME" ps -q --filter "label=com.docker.compose.project=lanvex" --filter "label=com.docker.compose.service=$1" 2>/dev/null)" ]; }
+in_container() {  # in_container SERVICE COMMAND...: stdin and stdout pass through
+  local id; id=$(container "$1"); shift
+  [ -n "$id" ] || fail "The container for ${1:-it} does not exist; is Lanvex running?"
+  "$RUNTIME" exec -i "$id" "$@"
+}
+core_enabled() { grep -q '^COMPOSE_PROFILES=core' "$CUR/.env"; }
+health() {
+  local id; id=$(container "$1")
+  [ -n "$id" ] || { echo missing; return; }
+  if [ "$RUNTIME" = podman ]; then "$RUNTIME" healthcheck run "$id" >/dev/null 2>&1 || true; fi
+  "$RUNTIME" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || echo missing
+}
+wait_healthy() {  # wait_healthy SERVICE MINUTES
+  local deadline=$(( $(date +%s) + $2 * 60 )) state
+  printf 'Waiting for %s' "$1"
+  while :; do
+    state=$(health "$1")
+    case "$state" in
+      healthy) printf ' ready.\n'; return 0 ;;
+      unhealthy|exited|dead|missing) printf ' %s.\n' "$state"; return 1 ;;
+    esac
+    [ "$(date +%s)" -lt "$deadline" ] || { printf ' timed out.\n'; return 1; }
+    printf '.'; sleep 5
+  done
+}
+
+# ---- releases ---------------------------------------------------------------------------------------
+
+latest_version() {
+  local tag
+  tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/^ *"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)
+  [ -n "$tag" ] || fail "No release found at https://github.com/$REPO/releases."
+  printf '%s\n' "$tag"
+}
+
+# fetch_release VERSION|"" [ZIP] -> unpacks into HOME_DIR/releases/VERSION, prints that directory
+fetch_release() (
+  version=$1 zip=${2:-}
+  need unzip "Install unzip (dnf/apt install unzip)."
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  if [ -n "$zip" ]; then
+    [ -f "$zip" ] || fail "$zip not found."
+    if [ -f "$zip.sha256" ]; then
+      (cd "$(dirname "$zip")" && sha256sum -c --quiet "$(basename "$zip").sha256") >&2 || fail "$zip does not match $zip.sha256."
+    fi
+    cp "$zip" "$tmp/release.zip"
+  else
+    need curl "Install curl."
+    need sha256sum "Install coreutils."
+    [ -n "$version" ] || version=$(latest_version)
+    local base="https://github.com/$REPO/releases/download/v$version"
+    say "Downloading Lanvex $version from github.com/$REPO" >&2
+    curl -fL --progress-bar -o "$tmp/lanvex-$version.zip" "$base/lanvex-$version.zip" || fail "Lanvex $version is not available."
+    curl -fsSL -o "$tmp/lanvex-$version.zip.sha256" "$base/lanvex-$version.zip.sha256" || fail "Its checksum is not available."
+    (cd "$tmp" && sha256sum -c --quiet "lanvex-$version.zip.sha256") >&2 || fail "The download does not match its published checksum."
+    mv "$tmp/lanvex-$version.zip" "$tmp/release.zip"
+  fi
+  mkdir -p "$tmp/x"
+  unzip -q "$tmp/release.zip" -d "$tmp/x"
+  unpacked=$(find "$tmp/x" -mindepth 1 -maxdepth 1 -type d -name 'lanvex-*' | head -n 1)
+  { [ -n "$unpacked" ] && [ -f "$unpacked/install.sh" ]; } || fail "That archive is not a Lanvex release."
+  version=$(version_of "$unpacked")
+  dir="$HOME_DIR/releases/$version"
+  if [ -e "$dir" ]; then
+    [ "$(readlink -f "$HOME_DIR/current" 2>/dev/null)" != "$(readlink -f "$dir")" ] || fail "Lanvex $version is the version running."
+    rm -rf "$dir"
+  fi
+  mkdir -p "$HOME_DIR/releases"
+  mv "$unpacked" "$dir"
+  chmod 755 "$dir/install.sh" "$dir/lanvexctl" 2>/dev/null || true
+  printf '%s\n' "$dir"
+)
+
+install_self() {  # install_self SOURCE: lanvexctl itself, from a release or from where it runs
+  local src=$1
+  [ -f "$src" ] || return 0
+  mkdir -p "$BIN_DIR"
+  if [ "$(readlink -f "$src")" != "$(readlink -f "$BIN_DIR/lanvexctl" 2>/dev/null)" ]; then
+    install -m 755 "$src" "$BIN_DIR/lanvexctl"
+  fi
+  case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "Add $BIN_DIR to PATH to run lanvexctl from anywhere." ;; esac
+}
+
+prune_releases() {  # keep the running release and the one before it
+  local keep_current keep_prev
+  keep_current=$(readlink -f "$HOME_DIR/current" 2>/dev/null || true)
+  keep_prev=${1:-}
+  for d in "$HOME_DIR"/releases/*/; do
+    d=$(readlink -f "$d")
+    [ "$d" = "$keep_current" ] || [ "$d" = "$keep_prev" ] || rm -rf "$d"
+  done
+}
+
+# ---- commands ---------------------------------------------------------------------------------------
+
+cmd_install() {
+  local version="" zip="" args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) zip=${2:?--file needs a release archive}; shift ;;
+      --) shift; args=("$@"); break ;;
+      -*) fail "Unknown option $1." ;;
+      *) version=$1 ;;
+    esac
+    shift
+  done
+  [ -z "$(current_dir)" ] || fail "Lanvex is already installed in $HOME_DIR. Use lanvexctl update."
+  mkdir -p "$HOME_DIR"
+  local dir; dir=$(fetch_release "$version" "$zip")
+  bold "Installing Lanvex $(version_of "$dir") in $dir"
+  if ! (cd "$dir" && ./install.sh "${args[@]}"); then
+    fail "The installation did not finish; the output above says why. $dir is kept."
+  fi
+  ln -sfn "releases/$(basename "$dir")" "$HOME_DIR/current"
+  install_self "$dir/lanvexctl"
+}
+
+cmd_update() {
+  local version="" zip=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) zip=${2:?--file needs a release archive}; shift ;;
+      -*) fail "Unknown option $1." ;;
+      *) version=$1 ;;
+    esac
+    shift
+  done
+  require_installed
+  local old=$CUR from_version; from_version=$(version_of "$old")
+  if [ -z "$zip" ] && [ -z "$version" ]; then
+    version=$(latest_version)
+    [ "$version" != "$from_version" ] || { say "Lanvex $from_version is the latest release."; return 0; }
+  fi
+  local dir; dir=$(fetch_release "$version" "$zip")
+  bold "Updating Lanvex $from_version to $(version_of "$dir")"
+  say "Backing up first."
+  cmd_backup "$HOME_DIR/backups/lanvex-$from_version-before-update-$(date +%Y%m%d-%H%M%S).tar.gz"
+  if ! (cd "$dir" && ./install.sh --update "$old"); then
+    fail "The update did not finish; the output above says why. The previous version is in $old: 'cd $old && ./install.sh --update .' brings it back."
+  fi
+  ln -sfn "releases/$(basename "$dir")" "$HOME_DIR/current"
+  install_self "$dir/lanvexctl"
+  case "$old" in "$HOME_DIR"/releases/*) prune_releases "$old" ;; esac
+  say "Lanvex $(version_of "$dir") is running. The previous release stays in $old until the next update."
+}
+
+cmd_status() {
+  require_installed; detect_runtime
+  local port; port=$(env_value LANVEX_HTTP_PORT); port=${port:-8080}
+  bold "Lanvex $(version_of "$CUR")"
+  say "Directory:  $CUR"
+  say "Runtime:    ${COMPOSE[*]}"
+  say "Address:    http://$(hostname -f 2>/dev/null || hostname):$port"
+  say ""
+  local services=(lanvex lanvex-db lanvex-redis)
+  if core_enabled; then services+=(core core-worker core-db core-redis); fi
+  local s bad=0
+  for s in "${services[@]}"; do
+    local h; h=$(health "$s")
+    printf '  %-14s %s\n' "$s" "$h"
+    [ "$h" = healthy ] || bad=1
+  done
+  return $bad
+}
+
+cmd_start() { require_installed; detect_runtime; compose up -d; wait_healthy lanvex 5; }
+cmd_stop() { require_installed; detect_runtime; compose stop; }
+cmd_restart() { require_installed; detect_runtime; compose restart; wait_healthy lanvex 5; }
+
+cmd_logs() {
+  require_installed; detect_runtime
+  local service=lanvex follow=()
+  while [ $# -gt 0 ]; do
+    case "$1" in -f|--follow) follow=(-f) ;; -*) fail "Unknown option $1." ;; *) service=$1 ;; esac
+    shift
+  done
+  local id; id=$(container "$service"); [ -n "$id" ] || fail "No container for $service."
+  "$RUNTIME" logs --tail 200 "${follow[@]}" "$id"
+}
+
+# A backup holds .env (the keys to the data: keep it safe), both databases and Lanvex Core's uploads.
+cmd_backup() (
+  require_installed; detect_runtime
+  file=${1:-$HOME_DIR/backups/lanvex-$(version_of "$CUR")-$(date +%Y%m%d-%H%M%S).tar.gz}
+  running lanvex-db || fail "The database is not running (lanvexctl start)."
+  umask 077
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  mkdir -p "$(dirname "$file")"
+  cp "$CUR/.env" "$tmp/env"
+  printf 'version=%s\ncreated=%s\ncore=%s\n' "$(version_of "$CUR")" "$(date -u +%FT%TZ)" "$(core_enabled && echo yes || echo no)" > "$tmp/manifest"
+  in_container lanvex-db pg_dump -U lanvex -d lanvex -Fc > "$tmp/lanvex.dump"
+  if core_enabled; then
+    in_container core-db pg_dump -U lanvex_core -d lanvex_core -Fc > "$tmp/core.dump"
+    if running core; then
+      in_container core tar -C /opt/lanvex-core/netbox/media -cf - . > "$tmp/core-media.tar"
+    fi
+  fi
+  tar -C "$tmp" -czf "$file" .
+  chmod 600 "$file"
+  say "Backup: $file ($(du -h "$file" | cut -f1)). It contains .env with Lanvex's keys: keep it like a password."
+)
+
+# restore_db SERVICE DATABASE USER DUMP PASSWORD: the database is replaced by the dump, and the user
+# (the cluster's superuser) gets the backup's password, which the backup's .env names.
+restore_db() {
+  in_container "$1" dropdb -U "$3" --force --if-exists "$2"
+  in_container "$1" createdb -U "$3" -O "$3" "$2"
+  in_container "$1" pg_restore -U "$3" -d "$2" --no-owner --exit-on-error < "$4" || fail "Restoring $2 failed (above)."
+  if [ -n "$5" ]; then
+    printf "ALTER USER %s PASSWORD '%s';\n" "$3" "${5//\'/\'\'}" | in_container "$1" psql -q -U "$3" -d "$2" >/dev/null
+  fi
+}
+
+# Restoring into an installation (the same one, or a fresh one after a reinstall): the databases and
+# uploads are replaced, and .env takes the backup's keys; the database passwords are set to the
+# backup's on the running databases first, so the containers can be recreated with the backup's .env.
+cmd_restore() (
+  file="" yes=false
+  while [ $# -gt 0 ]; do
+    case "$1" in --yes) yes=true ;; -*) fail "Unknown option $1." ;; *) file=$1 ;; esac
+    shift
+  done
+  { [ -n "$file" ] && [ -f "$file" ]; } || fail "Name a backup file (lanvexctl restore FILE)."
+  require_installed; detect_runtime
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  tar -C "$tmp" -xzf "$file"
+  { [ -f "$tmp/manifest" ] && [ -f "$tmp/env" ] && [ -f "$tmp/lanvex.dump" ]; } || fail "$file is not a Lanvex backup."
+  bversion=$(sed -n 's/^version=//p' "$tmp/manifest")
+  nversion=$(version_of "$CUR")
+  if [ "$(printf '%s\n%s\n' "$bversion" "$nversion" | sort -V | tail -n 1)" != "$nversion" ]; then
+    fail "The backup is from Lanvex $bversion, newer than $nversion here. Update first (lanvexctl update $bversion)."
+  fi
+  if grep -q '^core=yes' "$tmp/manifest" && ! core_enabled; then
+    fail "The backup includes Lanvex Core; this installation runs without it."
+  fi
+  if ! $yes; then
+    say "This replaces Lanvex's data in $CUR with the backup from Lanvex $bversion ($(sed -n 's/^created=//p' "$tmp/manifest"))."
+    [ -t 0 ] || fail "Confirm with --yes."
+    read -r -p "Type restore to continue: " answer
+    [ "$answer" = restore ] || fail "Not restored."
+  fi
+  bold "Restoring"
+  stopped=(lanvex)
+  if core_enabled; then stopped+=(core core-worker); fi
+  if [ -f "$tmp/core-media.tar" ] && running core; then
+    in_container core sh -c 'cd /opt/lanvex-core/netbox/media && find . -mindepth 1 -delete && tar -xf -' < "$tmp/core-media.tar"
+  fi
+  compose stop "${stopped[@]}"
+  restore_db lanvex-db lanvex lanvex "$tmp/lanvex.dump" "$(sed -n 's/^LANVEX_POSTGRES_PASSWORD=//p' "$tmp/env" | tail -n 1)"
+  if [ -f "$tmp/core.dump" ]; then
+    restore_db core-db lanvex_core lanvex_core "$tmp/core.dump" "$(sed -n 's/^LANVEX_CORE_DB_PASSWORD=//p' "$tmp/env" | tail -n 1)"
+    # Lanvex Core caches objects in Redis: what it cached from the data before the restore goes.
+    in_container core-redis redis-cli FLUSHALL >/dev/null 2>&1 || true
+  fi
+  cp "$CUR/.env" "$CUR/.env.before-restore"
+  install -m 600 "$tmp/env" "$CUR/.env"
+  compose up -d --force-recreate
+  wait_healthy lanvex 5 || fail "Lanvex did not start after the restore; '$CUR/.env.before-restore' holds the previous .env."
+  if core_enabled; then wait_healthy core 20 || fail "Lanvex Core did not start after the restore."; fi
+  say "Restored the backup from Lanvex $bversion. The previous .env is in $CUR/.env.before-restore."
+)
+
+cmd_user() {
+  require_installed; detect_runtime
+  local action=${1:-} name=${2:-}
+  { [ -n "$action" ] && [ -n "$name" ]; } || fail "lanvexctl user create NAME [--admin] | deactivate NAME | delete NAME"
+  case "$action" in
+    create)
+      local role=readonly
+      if [ "${3:-}" = --admin ]; then role="admin"; fi
+      local password password2
+      read -r -s -p "Password for $name (12 characters or more): " password; echo
+      read -r -s -p "Again: " password2; echo
+      [ "$password" = "$password2" ] || fail "The passwords differ."
+      printf '%s' "$password" | in_container lanvex lanvex create-user "$name" --role "$role" --password-stdin ;;
+    deactivate) in_container lanvex lanvex deactivate-user "$name" ;;
+    delete) in_container lanvex lanvex delete-user "$name" ;;
+    *) fail "Unknown user action $action." ;;
+  esac
+}
+
+cmd_uninstall() {
+  local purge=false yes=false
+  while [ $# -gt 0 ]; do
+    case "$1" in --purge) purge=true ;; --yes) yes=true ;; *) fail "Unknown option $1." ;; esac
+    shift
+  done
+  require_installed; detect_runtime
+  if ! $yes; then
+    if $purge; then say "This removes Lanvex and ALL its data (databases, Lanvex Core's uploads, .env)."
+    else say "This removes Lanvex's containers; the data stays in its volumes and $HOME_DIR."; fi
+    [ -t 0 ] || fail "Confirm with --yes."
+    read -r -p "Type uninstall to continue: " answer
+    [ "$answer" = uninstall ] || fail "Nothing removed."
+  fi
+  if $purge; then compose down --volumes; else compose down; fi
+  for unit in /etc/systemd/system/lanvex.service "$HOME/.config/systemd/user/lanvex.service"; do
+    [ -w "$unit" ] || continue
+    if [ "$unit" = /etc/systemd/system/lanvex.service ]; then systemctl disable lanvex.service >/dev/null 2>&1 || true
+    else systemctl --user disable lanvex.service >/dev/null 2>&1 || true; fi
+    rm -f "$unit"
+  done
+  if $purge; then
+    rm -rf "$HOME_DIR/releases" "$HOME_DIR/current"
+    [ "$CUR" = "$HOME_DIR" ] && rm -f "$HOME_DIR/.env"
+    say "Lanvex and its data are removed. Backups in $HOME_DIR/backups are kept."
+  else
+    say "Lanvex's containers are removed. 'lanvexctl start' brings it back with its data."
+  fi
+}
+
+cmd_versions() {
+  need curl "Install curl."
+  curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=20" | sed -n 's/^ *"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p'
+}
+
+cmd_version() {
+  local cur; cur=$(current_dir)
+  say "lanvexctl $SELF_VERSION"
+  if [ -n "$cur" ]; then say "Lanvex $(version_of "$cur") in $cur"; fi
+}
+
+main() {
+  local cmd=${1:-help}
+  [ $# -gt 0 ] && shift
+  case "$cmd" in
+    install) cmd_install "$@" ;;
+    update|upgrade) cmd_update "$@" ;;
+    status) cmd_status ;;
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    restart) cmd_restart ;;
+    logs) cmd_logs "$@" ;;
+    backup) cmd_backup "$@" ;;
+    restore) cmd_restore "$@" ;;
+    user) cmd_user "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    versions) cmd_versions ;;
+    version|--version|-V) cmd_version ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

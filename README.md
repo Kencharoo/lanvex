@@ -27,6 +27,7 @@ it; see below.
 | Topology | Interactive map of devices, sites, provider circuits and the cables between them, as documented: role-ranked layout (core above access above servers), servers stacked under their switch, search, a details panel with every cable, devices read by Lanvex marked, and a cable list. Stays fast with hundreds of devices |
 | Discovery | Hosts in the servers' neighbour tables and DHCP leases, and the devices on the other end of each server interface as they announce themselves over LLDP, compared with NetBox: missing addresses and cables can be recorded after a preview |
 | Overview | Inventory counts, most-utilized networks, addresses by status, recent changes (NetBox change log, falling back to the Lanvex audit log) |
+| Monitoring | Alerts for servers that stop answering or cannot be read, drift from the documentation, DHCP pools running full, unknown devices getting a lease and failed changes; by email and webhooks (ntfy, Gotify, Slack, Discord, Teams, JSON). See [docs/monitoring.md](docs/monitoring.md) |
 | Platform | Local users with admin / read-only roles, server-side sessions, CSRF, rate limiting, append-only audit log, light and dark themes, NetBox connection checks |
 
 **Automation** lists every server change with its status. Lanvex does not configure switches or dedicated routers; on Linux servers it manages VLAN interfaces, DHCP, access rules and DNS filters, and takes over from Netzverwaltung (see [docs/networks.md](docs/networks.md)).
@@ -35,22 +36,31 @@ it; see below.
 
 You need a Linux server with Docker and Docker Compose v2, or with Podman and podman-compose
 (Fedora Server's default; rootless works too, see [docs/operations.md](docs/operations.md#podman)).
+`lanvexctl` downloads the latest release, checks it against its published SHA-256 sum and installs it:
 
 ```bash
-unzip lanvex-1.0.1.zip && cd lanvex-1.0.1
-sudo ./install.sh
+curl -fsSLO https://raw.githubusercontent.com/Kencharoo/lanvex/main/lanvexctl
+sudo bash lanvexctl install          # rootless Podman: bash lanvexctl install
 ```
 
 The installer asks where to keep your network documentation (Lanvex Core, installed now, or a NetBox
 you already run), whether Lanvex will be reached over HTTPS through a reverse proxy or over plain HTTP,
-which port it listens on (it checks that the port is free), and the first administrator's name. It
-generates every password and key into `.env`, builds and starts the containers, waits until they are
-healthy and prints how to sign in. `./install.sh --help` lists options for installing without
-questions, such as `--port 100.64.0.5:8081`.
+which port it listens on, and the first administrator's name. It generates every password and key into
+`.env`, builds and starts the containers, waits until they are healthy and prints how to sign in.
+Options after `--` go to the installer (`lanvexctl install -- --help` lists them). From a release
+archive instead: `lanvexctl install --file lanvex-1.1.0.zip`, or unzip it and run `./install.sh`.
 
-To update, back up first, unpack the new release next to the old one and run
-`./install.sh --update ../lanvex-<old version>` in it: it takes over `.env`, replaces the containers
-and keeps the data in the volumes ([docs/core.md](docs/core.md#updating)).
+| Command | |
+|---|---|
+| `lanvexctl update` | Backs up, installs the latest release next to the running one, replaces the containers |
+| `lanvexctl status` | Version, directory, address, health of every container |
+| `lanvexctl backup [FILE]` | Both databases, Lanvex Core's uploads and `.env` in one file (mode 600) |
+| `lanvexctl restore FILE` | Into this installation, also a fresh one after a reinstall |
+| `lanvexctl start`, `stop`, `restart`, `logs [SERVICE]` | |
+| `lanvexctl user create NAME [--admin]`, `deactivate`, `delete` | |
+| `lanvexctl uninstall [--purge]` | Removes the containers; `--purge` also the data (backups stay) |
+
+[docs/core.md](docs/core.md#updating) covers updates, backups and restores in detail;
 [CHANGELOG.md](CHANGELOG.md) lists what changed.
 
 Session cookies are HTTPS-only unless you choose plain HTTP. For HTTPS see

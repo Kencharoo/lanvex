@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the release archive: Lanvex at HEAD plus the Lanvex Core source pinned in core.lock, in one
-# zip that install.sh can install from without git or network access to either repository.
+# zip that install.sh (and lanvexctl) can install from without git or network access to either
+# repository, with its SHA-256 sum next to it, as lanvexctl checks it.
 #
 #   scripts/release.sh [lanvex-core repository; default ../lanvex-core] [output directory; default .]
 set -euo pipefail
@@ -21,4 +22,5 @@ git -C "$core_repo" archive "$commit" | tar -x -C "$dir/core"
 echo "$commit" > "$dir/core/.lanvex-core-commit"
 (cd "$work" && python3 -m zipfile -c "lanvex-$version.zip" "lanvex-$version" >/dev/null)
 mv "$work/lanvex-$version.zip" "$out/"
-echo "$out/lanvex-$version.zip (Lanvex $version with Lanvex Core $(sed -n 's/^tag=//p' core.lock))"
+(cd "$out" && sha256sum "lanvex-$version.zip" > "lanvex-$version.zip.sha256")
+echo "$out/lanvex-$version.zip (Lanvex $version with Lanvex Core $(sed -n 's/^tag=//p' core.lock)), and its .sha256"
