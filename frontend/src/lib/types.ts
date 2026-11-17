@@ -759,3 +759,81 @@ export interface NetworksView {
   missing_fields: string[];
   other_leases: NetworkLease[];
 }
+
+// ---- monitoring ----------------------------------------------------------------------------------------
+
+export type AlertKind = "unreachable" | "read_failed" | "drift" | "pool_full" | "unknown_device" | "change_failed";
+export type Severity = "critical" | "warning" | "info";
+export type WebhookFormat = "generic" | "ntfy" | "gotify" | "slack" | "discord" | "teams";
+
+export interface Alert {
+  id: string;
+  kind: AlertKind;
+  server_id: string | null;
+  server_name: string;
+  key: string;
+  severity: Severity;
+  title: string;
+  detail: string[];
+  state: "open" | "resolved";
+  opened_at: string;
+  last_seen_at: string;
+  resolved_at: string | null;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+}
+
+export interface AlertList {
+  alerts: Alert[];
+  open: number;
+  unacknowledged: number;
+}
+
+export interface AlertCount {
+  open: number;
+  unacknowledged: number;
+  critical: number;
+}
+
+export interface MonitoringSettings {
+  unreachable: boolean;
+  read_failed: boolean;
+  drift: boolean;
+  pool_full: boolean;
+  unknown_device: boolean;
+  change_failed: boolean;
+  unreachable_after: number;
+  pool_threshold: number;
+  drift_ignore_interfaces: string[];
+  unknown_device_ignore: string[];
+  email_enabled: boolean;
+  email_to: string[];
+  email_min_severity: Severity;
+  notify_resolved: boolean;
+}
+
+export interface MonitoringOut {
+  settings: MonitoringSettings;
+  smtp_configured: boolean;
+  smtp_from: string | null;
+  probe_seconds: number;
+  enabled: boolean;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export interface Webhook {
+  id: string;
+  name: string;
+  format: WebhookFormat;
+  url_hint: string;
+  enabled: boolean;
+  min_severity: Severity;
+  created_at: string;
+}
+
+export interface DeliveryResult {
+  channel: string;
+  ok: boolean;
+  error: string | null;
+}

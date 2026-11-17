@@ -30,7 +30,7 @@ export function NotConfigured() {
         </Button>
       }
     >
-      Lanvex reads and writes network data through NetBox. Set LANVEX_NETBOX_URL and LANVEX_NETBOX_TOKEN on the Lanvex server, then restart it.
+      Set LANVEX_NETBOX_URL and LANVEX_NETBOX_TOKEN, then restart Lanvex.
     </EmptyState>
   );
 }
@@ -88,7 +88,6 @@ export function NetworksPage() {
     <>
       <PageHeader
         title="Networks"
-        description={`IP prefixes documented in ${nbName}, organised by VRF and hierarchy.`}
         actions={
           isAdmin && (
             <Button variant="primary" onClick={() => setCreating(true)}>

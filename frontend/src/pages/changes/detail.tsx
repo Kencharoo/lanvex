@@ -107,9 +107,8 @@ export function ChangeDetailPage() {
 
       <div className="grid gap-8">
         {q.error && isActive(c.status) && (
-          <Notice tone="danger" title="This browser cannot reach Lanvex right now">
-            {errorMessage(q.error)}. If the change cut this connection, the server restores its previous configuration
-            {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""} unless the change was confirmed. This page updates as soon as Lanvex answers again.
+          <Notice tone="danger" title="Lanvex not reachable">
+            {errorMessage(q.error)}. Unless confirmed, the server rolls back{c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
           </Notice>
         )}
         {c.can_decide && <BrowserDecision change={c} onDecided={refresh} />}
@@ -123,7 +122,7 @@ export function ChangeDetailPage() {
         {c.preview && (
           <Section
             title={pending ? "Exactly what Lanvex will do" : "What Lanvex was approved to do"}
-            description={`Prepared by the helper on the server, against its configuration at that moment (${BACKEND_LABEL[c.preview.backend] ?? c.preview.backend}).`}
+            description={BACKEND_LABEL[c.preview.backend] ?? c.preview.backend}
           >
             {c.preview.warnings.length > 0 && (
               <Notice tone="warn" title={pending ? "Before you approve" : "Shown before approval"}>
@@ -151,17 +150,14 @@ export function ChangeDetailPage() {
                   </li>
                 ))}
               </ol>
-              <p>
-                Before anything is written, the server arms a timer that restores {c.preview.files.length === 1 ? "this file" : "these files"} after{" "}
-                {c.rollback_seconds} seconds unless Lanvex confirms the change. Values that look like passwords are shown as [redacted].
-              </p>
+              <p>Automatic rollback after {c.rollback_seconds} s unless confirmed. Secrets are redacted.</p>
             </div>
           </Section>
         )}
 
         <div className="grid gap-8 lg:grid-cols-2">
           {c.checks.length > 0 && (
-            <Section title="Verification" description="Run on the server after the change, before Lanvex confirms it.">
+            <Section title="Verification">
               <div className="rounded-[var(--radius-panel)] border border-line bg-surface p-4">
                 <CheckList checks={c.checks} />
               </div>
@@ -195,17 +191,16 @@ function Documentation({ change: c }: { change: ChangeDetail }) {
   if (!cmp.linked) {
     return (
       <Notice title={`${nbName} was not updated`}>
-        Lanvex does not change {nbName} by itself. Link {s.name} to its {nbName} device or virtual machine on the{" "}
         <Link to={`/servers/${s.id}`} className="text-accent hover:underline">
-          server page
+          Link {s.name}
         </Link>{" "}
-        to compare it and record what changed.
+        to a device to record changes.
       </Notice>
     );
   }
   const rows = cmp.rows.filter((r) => differs(r) && (r.server_interface === c.interface || r.netbox_interface === c.interface));
   if (rows.length === 0) {
-    return <Notice title={`${nbName} matches`}>{nbName} documents the addresses of {c.interface} as the server has them now.</Notice>;
+    return <Notice title={`${nbName} matches the server`} />;
   }
   return (
     <>
@@ -218,8 +213,7 @@ function Documentation({ change: c }: { change: ChangeDetail }) {
           </Button>
         }
       >
-        {rows.length === 1 ? "One address" : `${rows.length} addresses`} on {c.interface} differ from what {nbName} documents for {s.name}:{" "}
-        {rows.map((r) => r.server_address ?? r.netbox_address).join(", ")}.
+        {c.interface}: {rows.map((r) => r.server_address ?? r.netbox_address).join(", ")}
       </Notice>
       <RecordDialog server={s} rows={cmp.rows} initial={rows.map((r) => r.address)} open={open} onClose={() => setOpen(false)} />
     </>
@@ -230,39 +224,37 @@ function Outcome({ change: c }: { change: ChangeDetail }) {
   switch (c.status) {
     case "pending_approval":
       return (
-        <Notice tone="info" title="Nothing has been changed yet">
-          {c.approve_blocker ?? "Review the change below. It is applied only after an administrator approves it."}
+        <Notice tone="info" title="Not applied yet">
+          {c.approve_blocker ?? "Applied after approval."}
         </Notice>
       );
     case "approved":
-      return <Notice title="Approved. Lanvex starts applying it in a moment." />;
+      return <Notice title="Approved" />;
     case "running":
-      return <Notice title="Applying on the server">The server has backed up its configuration and armed its rollback timer.</Notice>;
+      return <Notice title="Applying" />;
     case "verifying":
       if (c.browser?.waiting_since && !c.browser.decision) {
         return c.can_decide ? null : (
-          <Notice title="Applied and checked; waiting for an administrator to keep it">
-            An administrator keeps or undoes this change in the browser. Without a decision, the server restores its previous configuration
-            {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
+          <Notice title="Waiting for an administrator to keep it">
+            Rolls back{c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""} without a decision.
           </Notice>
         );
       }
       if (c.browser?.decision) {
         return (
-          <Notice title={c.browser.decision === "keep" ? `Kept by ${c.browser.by}; Lanvex is confirming it on the server` : `Undone by ${c.browser.by}; the server is restoring its previous configuration`} />
+          <Notice title={c.browser.decision === "keep" ? `Kept by ${c.browser.by}; confirming` : `Undone by ${c.browser.by}; rolling back`} />
         );
       }
       return (
-        <Notice title="Applied; Lanvex is checking the result">
-          Unless every check passes and {c.confirm_in_browser ? "an administrator keeps it in the browser" : "Lanvex confirms"}, the server restores its previous configuration
-          {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
+        <Notice title="Verifying">
+          Rolls back{c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""} unless every check passes{c.confirm_in_browser ? " and it is kept" : ""}.
         </Notice>
       );
     case "succeeded":
       return <Notice title="Applied and verified">{c.outcome}</Notice>;
     case "rolled_back":
       return (
-        <Notice tone="warn" title="Rolled back: the previous configuration is in place">
+        <Notice tone="warn" title="Rolled back">
           {c.outcome}
         </Notice>
       );
@@ -322,20 +314,19 @@ function BrowserDecision({ change: c, onDecided }: { change: ChangeDetail; onDec
         )}
       </div>
       <p className="text-[13px] text-muted">
-        The change is applied on {c.server_name} and every check there passed. Keep it only if what you need still works. Without a decision, the server restores its previous configuration
-        {c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
+        All checks on {c.server_name} passed. Keep it only if everything you need still works; otherwise it rolls back{c.deadline_at ? ` at ${absoluteTime(c.deadline_at)}` : ""}.
       </p>
       {where &&
         (where.on_server ? (
           <p className="text-[13px]">
-            You use Lanvex at <span className="addr">{where.host}</span>, one of {c.server_name}'s own addresses, so this page still answering shows that address still works.
+            Connected through <span className="addr">{where.host}</span>, an address of {c.server_name}: it still works.
           </p>
         ) : (
           <Notice tone="warn" title={where.vpn ? `${where.host} is ${c.server_name}'s VPN address (${where.interface})` : `${where.host} is not one of ${c.server_name}'s addresses`}>
             <p>
               {where.vpn
-                ? `Reaching Lanvex through the VPN shows only that the VPN still works, not ${c.server_name}'s LAN and VLANs. Open Lanvex through the server's LAN address, or check those yourself.`
-                : `Reaching Lanvex from here does not show that ${c.server_name}'s network still works. Open Lanvex through one of the server's own addresses, or check it yourself.`}
+                ? `This proves only the VPN works. Use the server's LAN address, or check the network yourself.`
+                : `This does not prove ${c.server_name}'s network works. Use one of its addresses, or check it yourself.`}
             </p>
             <div className="pt-2">
               <Checkbox id="ack-indirect" label="I checked that the server's network still works" checked={ack} onChange={(e) => setAck(e.target.checked)} />

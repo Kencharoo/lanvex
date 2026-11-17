@@ -288,7 +288,7 @@ function EditPrefixDialog({ prefix, open, onOpenChange }: { prefix: Prefix; open
               </Select>
             </Field>
             {form.status !== "container" && (
-              <Field label="Gateway" htmlFor="ep-gw" optional error={fieldError(save.error, "gateway")} hint="Leave empty to remove the gateway marker. The IP address record is kept.">
+              <Field label="Gateway" htmlFor="ep-gw" optional error={fieldError(save.error, "gateway")} >
                 <Input id="ep-gw" className="addr" value={form.gateway} onChange={(e) => set("gateway", e.target.value)} spellCheck={false} />
               </Field>
             )}
@@ -356,7 +356,7 @@ function DeletePrefixDialog({
   const matches = confirm.trim() === prefix.prefix;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title={`Delete ${prefix.prefix}?`} description={`This removes the prefix record from ${nbName}.`} role="alertdialog">
+      <DialogContent title={`Delete ${prefix.prefix}?`} role="alertdialog">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -379,8 +379,7 @@ function DeletePrefixDialog({
                   </>
                 ) : (
                   "No IP address records are inside it."
-                )}{" "}
-                Devices are not changed.
+                )}
               </Notice>
             ) : null}
             <Field label={`Type ${prefix.prefix} to confirm`} htmlFor="del-confirm" error={fieldError(del.error, "confirm")}>

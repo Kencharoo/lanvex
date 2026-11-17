@@ -17,12 +17,10 @@ import { absoluteTime, relativeTime } from "@/lib/utils";
 import { ActionLine } from "./servers/record";
 
 export function DiscoveryPage() {
-  const nbName = useNetBoxLabel();
   return (
     <>
       <PageHeader
         title="Discovery"
-        description={`What your servers see around them each time Lanvex reads them: hosts in their neighbour tables, and devices that announce themselves over LLDP. Compared with ${nbName}; nothing is recorded until you choose to.`}
       />
       <div className="grid gap-8">
         <HostsSection />
@@ -146,7 +144,7 @@ function HostsSection() {
   return (
     <Section
       title="Hosts seen"
-      description="From the servers' neighbour tables (ARP and IPv6 neighbour discovery): hosts they exchanged packets with recently. Link-local addresses are left out."
+      description="ARP and IPv6 neighbour tables of your servers"
       actions={<Checkbox id="disc-missing" label={`Only those not in ${nbName}`} checked={onlyMissing} onChange={(e) => setOnlyMissing(e.target.checked)} />}
     >
       {q.error ? (
@@ -194,7 +192,7 @@ function HostsSection() {
         endpoint="/discovery/hosts/record"
         items={picked}
         title={`Record hosts in ${nbName}`}
-        description={`Adds each host to ${nbName} as an unassigned IP address, with the prefix length of the network it was seen on and a note of who saw it. Assign them to devices there later.`}
+        description="Added as unassigned IP addresses."
       />
     </Section>
   );
@@ -272,7 +270,7 @@ function LinksSection() {
   return (
     <Section
       title="Connections seen over LLDP"
-      description={`What is on the other end of each server interface, as that device announces it, compared with the cables ${nbName} documents. Through patch panels, the far end counts.`}
+      description={`Compared with the cables in ${nbName}`}
     >
       {q.error ? (
         <Notice tone="danger">{errorMessage(q.error)}</Notice>
@@ -286,13 +284,13 @@ function LinksSection() {
             rowKey={(l) => l.key}
             empty={
               <EmptyState icon={Cable} title="No LLDP neighbours seen">
-                Servers report LLDP neighbours when lldpd or systemd-networkd receives them, and the switch sends LLDP.
+                Requires lldpd or systemd-networkd on the server and LLDP on the switch.
               </EmptyState>
             }
           />
           {d && d.servers_without_lldp.length > 0 && (
             <p className="text-xs text-muted">
-              No LLDP neighbours from {d.servers_without_lldp.join(", ")}. Their server pages say why when Lanvex knows (for example, lldpd runs but Lanvex may not ask it).
+              No LLDP data from {d.servers_without_lldp.join(", ")}.
             </p>
           )}
         </>
@@ -303,7 +301,7 @@ function LinksSection() {
         endpoint="/discovery/links/record"
         items={recordKey ? [recordKey] : []}
         title={`Record a cable in ${nbName}`}
-        description={`Adds a connected cable between the two interfaces in ${nbName}, as seen over LLDP. The topology map shows it from then on.`}
+        description="Added as a connected cable."
       />
     </Section>
   );

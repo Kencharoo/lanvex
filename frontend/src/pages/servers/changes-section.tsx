@@ -79,7 +79,6 @@ export function ChangesSection({
   return (
     <Section
       title="Configuration changes"
-      description="Change an interface's IPv4 addresses, gateway and DNS. Every change is previewed, approved, verified, and undone automatically if it fails."
       actions={
         isAdmin &&
         r?.ready &&
@@ -96,27 +95,25 @@ export function ChangesSection({
       ) : (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div className="grid content-start gap-3 rounded-[var(--radius-panel)] border border-line bg-surface p-4">
-            <p className="text-[13px] font-medium">Before Lanvex can change {s.name}</p>
+            <p className="text-[13px] font-medium">Requirements</p>
             <ul className="grid gap-2.5">
-              <Requirement ok={r.automation_enabled} label="Changes allowed for this Lanvex installation">
+              <Requirement ok={r.automation_enabled} label="Changes enabled">
                 {r.automation_enabled ? (
-                  <>Approved changes are verified and confirmed within {r.rollback_seconds} seconds{r.second_admin_required ? "; a second administrator must approve" : ""}.</>
+                  <>Rollback after {r.rollback_seconds} s{r.second_admin_required ? "; second approval required" : ""}.</>
                 ) : (
                   <>
-                    Off by default. An administrator of the Lanvex server sets <span className="addr">LANVEX_AUTOMATION_ENABLED=true</span>.
+                    Set <span className="addr">LANVEX_AUTOMATION_ENABLED=true</span>.
                   </>
                 )}
               </Requirement>
-              <Requirement ok={r.stack_supported} label="Network managed by netplan, NetworkManager or ifupdown">
-                {r.stack_label ? `This server uses ${r.stack_label}.` : "Read the server first."}
-                {r.stack_supported === false && " Lanvex cannot change this kind of setup yet."}
-                {r.interface_changes === false && r.stack_supported && " Lanvex manages its VLAN networks; changing interface settings works on netplan and NetworkManager servers."}
+              <Requirement ok={r.stack_supported} label="Supported network stack">
+                {r.stack_label ?? "Not read yet."}
+                {r.interface_changes === false && r.stack_supported && " (VLAN networks only)"}
               </Requirement>
               <Requirement ok={r.helper.state === "ok" ? true : r.helper.state === "unknown" ? null : false} label={`Change helper: ${HELPER_LABEL[r.helper.state]}`}>
                 <span className="grid gap-1.5">
                   <span>
-                    {r.helper.message ??
-                      "A small program you install once; the only thing Lanvex runs as root."}
+                    {r.helper.message}
                     {r.helper.checked_at && <> Checked {relativeTime(r.helper.checked_at)}.</>}
                   </span>
                   {isAdmin && (
@@ -277,15 +274,13 @@ function InstallHelperDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         title="Install the change helper"
-        description={`Lanvex changes ${s.name}'s network settings through a small program that runs as root. Installing it needs root, so you do it once, on the server.`}
         width="max-w-2xl"
       >
         <DialogBody>
           <ol className="grid gap-4 text-[13px]">
             <li className="grid gap-2">
               <p>
-                <span className="font-medium">1. Put the helper on the server.</span>{" "}
-                <span className="text-muted">Lanvex can copy it into the home directory of {s.username}, or you download it and copy it yourself.</span>
+                <span className="font-medium">1. Copy the helper to the server</span>
               </p>
               <span className="flex flex-wrap gap-2">
                 <Button size="sm" variant="secondary" onClick={() => upload.mutate()} loading={upload.isPending}>
@@ -301,18 +296,15 @@ function InstallHelperDialog({
             </li>
             <li className="grid gap-2">
               <p>
-                <span className="font-medium">2. On the server, as an administrator, run:</span>{" "}
-                <span className="text-muted">
-                  The first line checks the file is exactly the one this Lanvex ships; stop if it does not say OK. The rest installs it for root and allows {s.username} to
-                  run only this program with sudo.
-                </span>
+                <span className="font-medium">2. Install it as root</span>{" "}
+                <span className="text-muted">Stop if the checksum line does not print OK.</span>
               </p>
               <CodeBlock text={commands.join("\n")} label="Copy commands" />
-              <p className="text-xs text-muted">Needs Python 3.8 or newer and systemd. On netplan systems python3-yaml is already installed with netplan.</p>
+              <p className="text-xs text-muted">Requires Python 3.8+ and systemd.</p>
             </li>
             <li className="grid gap-2">
               <p>
-                <span className="font-medium">3. Check it.</span> <span className="text-muted">Lanvex asks the helper for its version through sudo.</span>
+                <span className="font-medium">3. Check it</span>
               </p>
               <span>
                 <Button size="sm" variant="secondary" onClick={() => check.mutate()} loading={check.isPending}>
@@ -429,7 +421,6 @@ function ChangeDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         title={`Change IP settings on ${s.name}`}
-        description="Describe how the interface should be set up. Next, Lanvex reads the server again and shows exactly what would change. Nothing changes until it is approved."
         width="max-w-xl"
       >
         <form
@@ -442,7 +433,7 @@ function ChangeDialog({
             {generalError && <Notice tone="danger">{generalError}</Notice>}
             {seed && seed.iface === d.iface && (
               <Notice tone="info" title="Prepared from the comparison">
-                {seed.note} Check the other settings, then continue to the preview.
+                {seed.note}
               </Notice>
             )}
             <Field label="Interface" htmlFor="chg-iface" error={err("interface")}>
@@ -504,7 +495,7 @@ function ChangeDialog({
                     </Button>
                   </span>
                 </div>
-                <Field label="Default gateway" htmlFor="chg-gw" optional error={err("gateway")} hint="Leave empty if this interface should not have a default route.">
+                <Field label="Default gateway" htmlFor="chg-gw" optional error={err("gateway")} >
                   <Input id="chg-gw" className="addr" value={d.gateway} placeholder="192.0.2.1" onChange={(e) => set({ gateway: e.target.value })} />
                 </Field>
               </>
@@ -513,11 +504,11 @@ function ChangeDialog({
             <div className="grid gap-2 rounded-[var(--radius-control)] border border-line p-3">
               <Checkbox id="chg-dns" label="Also change DNS for this interface" checked={d.changeDns} onChange={(e) => set({ changeDns: e.target.checked })} />
               {!d.changeDns ? (
-                <p className="text-xs text-muted">The interface's DNS servers and search domains stay exactly as they are.</p>
+                <p className="text-xs text-muted">Unchanged</p>
               ) : (
                 <>
-                  {!dnsKnown && <Notice tone="warn">Lanvex could not read this interface's DNS settings. Whatever you enter replaces them; leave both fields empty to remove them.</Notice>}
-                  <Field label="DNS servers" htmlFor="chg-dns-servers" error={err("dns_servers")} hint="IPv4 addresses, separated by commas.">
+                  {!dnsKnown && <Notice tone="warn">Current DNS settings unknown; these replace them.</Notice>}
+                  <Field label="DNS servers" htmlFor="chg-dns-servers" error={err("dns_servers")} hint="Comma-separated">
                     <Input id="chg-dns-servers" className="addr" value={d.dns} placeholder="192.0.2.53, 192.0.2.54" onChange={(e) => set({ dns: e.target.value })} />
                   </Field>
                   <Field label="Search domains" htmlFor="chg-dns-search" optional error={err("dns_search")}>
@@ -532,13 +523,11 @@ function ChangeDialog({
               htmlFor="chg-verify"
               optional
               error={err("verify_dns_name")}
-              hint="A host name the server must still be able to look up, e.g. your NetBox. Part of the verification."
             >
               <Input id="chg-verify" value={d.verifyName} placeholder="netbox.example.net" onChange={(e) => set({ verifyName: e.target.value })} />
             </Field>
             <p className="text-xs text-muted">
-              IPv6 settings, routes other than the default route, and everything else on the interface stay as they are. If the change fails or cuts the connection,
-              the server restores its previous configuration after {r.rollback_seconds} seconds.
+              Other settings stay unchanged. Rolled back automatically after {r.rollback_seconds} s if it fails.
             </p>
           </DialogBody>
           <DialogFooter>

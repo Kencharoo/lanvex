@@ -96,7 +96,6 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
   return (
     <Section
       title="Networks"
-      description={`VLAN interfaces on ${s.name} and the DHCP it serves on them, as ${nbName} documents them. Lanvex changes the server only through an approved change.`}
       actions={
         isAdmin &&
         v?.linked && (
@@ -118,12 +117,12 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
       {q.error && <Notice tone="danger">{errorMessage(q.error)}</Notice>}
       {v && !v.linked && (
         <Notice title={`Link ${s.name} to its device in ${nbName}`}>
-          Networks are documented as the device's VLAN interfaces. Link the server under "Documented in {nbName} vs. on the server" first.
+          Networks are the device's VLAN interfaces.
         </Notice>
       )}
       {v?.linked && v.supported === false && (
-        <Notice tone="warn" title="Not on this server yet">
-          Lanvex creates VLAN interfaces and serves DHCP on servers whose network NetworkManager, netplan or ifupdown manages (Fedora, RHEL, Ubuntu Server, Debian). {s.name} uses {v.stack_label}.
+        <Notice tone="warn" title="Network stack not supported">
+          Supported: NetworkManager, netplan, ifupdown. {s.name} uses {v.stack_label}.
         </Notice>
       )}
       {report?.found && (
@@ -136,12 +135,12 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
               </li>
             ))}
           </ul>
-          <p className="pt-2">Nothing on {s.name} changed. Check the networks below, then take them over in one change: Netzverwaltung's files are replaced by Lanvex's, and a rollback brings them back.</p>
+          <p className="pt-2">{s.name} is unchanged until the takeover is applied.</p>
         </Notice>
       )}
       {isAdmin && v?.networks.some((n) => n.status === "foreign") && (
         <Notice tone="warn" title="Networks another tool manages">
-          <p>Lanvex leaves them alone. If they are Netzverwaltung's, take them over: one change replaces all of its networks with Lanvex's, stops Netzverwaltung, and is undone like any other. Protected names must be removed from the server's protected interfaces first.</p>
+          <p>Left unchanged. Netzverwaltung networks can be taken over in one change; remove them from the protected interfaces first.</p>
           <div className="pt-2">
             <Button size="sm" variant="secondary" loading={prepare.isPending} onClick={() => prepare.mutate(true)}>
               <Send /> Prepare takeover from Netzverwaltung
@@ -151,14 +150,14 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
       )}
       {v && v.missing_fields.length > 0 && (
         <Notice tone="warn" title={`${nbName} lacks fields Lanvex needs for DHCP`}>
-          Missing custom fields: {v.missing_fields.join(", ")}. Lanvex Core 0.9 has them; in your own NetBox, add them as described in docs/networks.md.
+          Missing custom fields: {v.missing_fields.join(", ")} (see docs/networks.md).
         </Notice>
       )}
       {v?.linked && (
         <>
           {v.networks.length === 0 ? (
             <div className="rounded-[var(--radius-panel)] border border-dashed border-line bg-surface px-4 py-6 text-center text-[13px] text-muted">
-              No VLAN networks documented on {s.name}.{isAdmin && v.supported !== false && " Add one to create it on the server with an approved change."}
+              No VLAN networks on {s.name}.
             </div>
           ) : (
             <div className="overflow-x-auto rounded-[var(--radius-panel)] border border-line bg-surface">
@@ -198,8 +197,8 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
             <AccessMatrix networks={v.networks} isAdmin={isAdmin} onEdit={setAccess} />
           )}
           <p className="text-xs text-muted">
-            {v.read_at ? `Compared with the server's read ${relativeTime(v.read_at)}. ` : "Read the server to compare. "}
-            {v.in_sync ? `${s.name} has the networks ${nbName} documents.` : `${pending} network${pending === 1 ? "" : "s"} to bring in line: prepare the change.`}
+            {v.read_at ? `Read ${relativeTime(v.read_at)}. ` : "Not read yet. "}
+            {v.in_sync ? "In sync." : `${pending} network${pending === 1 ? "" : "s"} pending.`}
           </p>
         </>
       )}
@@ -307,7 +306,7 @@ function NetworkRow({
                   )}
                 </div>
                 {n.fixed.length === 0 ? (
-                  <p className="text-xs text-muted">None. A device with a fixed address always gets the same one.</p>
+                  <p className="text-xs text-muted">None</p>
                 ) : (
                   <ul className="grid gap-1">
                     {n.fixed.map((f) => (
@@ -330,7 +329,7 @@ function NetworkRow({
               <div className="grid content-start gap-1.5">
                 <p className="text-xs font-medium">Leases on the server</p>
                 {n.leases.length === 0 ? (
-                  <p className="text-xs text-muted">No device has an address from this network right now (as of the last read).</p>
+                  <p className="text-xs text-muted">None</p>
                 ) : (
                   <ul className="grid gap-1">
                     {n.leases.map((l) => (
@@ -437,7 +436,7 @@ function AddNetworkDialog({
   const err = (field: string) => fieldError(save.error, field);
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title={`Add a network to ${s.name}`} description={`Lanvex documents it in ${nbName} first. The server gets it with the next change you prepare and approve.`}>
+      <DialogContent title={`Add a network to ${s.name}`} >
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -452,7 +451,7 @@ function AddNetworkDialog({
               <Field label="VLAN name" htmlFor="nw-vname" optional>
                 <Input id="nw-vname" value={f.vlan_name} onChange={(e) => setF({ ...f, vlan_name: e.target.value })} placeholder="Klasse 5" />
               </Field>
-              <Field label="Interface name" htmlFor="nw-name" error={err("name")} hint="On the server, at most 15 characters.">
+              <Field label="Interface name" htmlFor="nw-name" error={err("name")} hint="Up to 15 characters">
                 <Input
                   id="nw-name"
                   className="addr"
@@ -465,7 +464,7 @@ function AddNetworkDialog({
                   required
                 />
               </Field>
-              <Field label="On" htmlFor="nw-parent" error={err("parent")} hint="The trunk to the switch.">
+              <Field label="On" htmlFor="nw-parent" error={err("parent")} hint="Trunk interface">
                 <Select id="nw-parent" value={f.parent} onChange={(e) => setF({ ...f, parent: e.target.value })} required>
                   {parents.map((i) => (
                     <option key={i.name} value={i.name}>
@@ -475,7 +474,7 @@ function AddNetworkDialog({
                 </Select>
               </Field>
             </div>
-            <Field label="The server's address in the network" htmlFor="nw-addr" error={err("address")} hint="With prefix length. Devices use it as their gateway and DNS server.">
+            <Field label="The server's address in the network" htmlFor="nw-addr" error={err("address")} hint="With prefix length; gateway and DNS for devices">
               <Input
                 id="nw-addr"
                 className="addr"
@@ -561,7 +560,7 @@ function PoolDialog({ server: s, network: n, onClose, onSaved }: { server: Serve
   });
   return (
     <Dialog open={n !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title={`DHCP pool on ${n?.name ?? ""}`} description={`Addresses devices on ${n?.network ?? "this network"} get. The server serves it after the next approved change.`}>
+      <DialogContent title={`DHCP pool on ${n?.name ?? ""}`} description={n?.network ?? undefined}>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -633,7 +632,7 @@ function FixedDialog({
   });
   return (
     <Dialog open={seed !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title="Fixed address" description={`The device with this MAC address always gets this address on ${seed?.network.name ?? ""}.`}>
+      <DialogContent title="Fixed address" description={seed?.network.name}>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -641,13 +640,13 @@ function FixedDialog({
           }}
         >
           <DialogBody>
-            <Field label="Address" htmlFor="fx-ip" error={fieldError(save.error, "ip")} hint="Free, or the address of a device documented in Lanvex Core: it then gets that address by DHCP.">
+            <Field label="Address" htmlFor="fx-ip" error={fieldError(save.error, "ip")} >
               <Input id="fx-ip" className="addr" value={f.ip} onChange={(e) => setF({ ...f, ip: e.target.value })} placeholder={seed?.network.network?.replace(/0\/\d+$/, "20") ?? ""} required autoFocus />
             </Field>
             <Field label="MAC address" htmlFor="fx-mac" error={fieldError(save.error, "mac")}>
               <Input id="fx-mac" className="addr" value={f.mac} onChange={(e) => setF({ ...f, mac: e.target.value })} placeholder="aa:bb:cc:dd:ee:ff" required />
             </Field>
-            <Field label="Name" htmlFor="fx-name" optional error={fieldError(save.error, "name")} hint="The device's host name, like drucker-1.">
+            <Field label="Name" htmlFor="fx-name" optional error={fieldError(save.error, "name")} >
               <Input id="fx-name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
             </Field>
             {save.error && !fieldError(save.error, "ip", "mac", "name") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
@@ -789,7 +788,6 @@ function AccessDialog({
   onClose: () => void;
   onSaved: (v: NetworksView) => void;
 }) {
-  const nbName = useNetBoxLabel();
   const others = networks.filter((t) => n && t.name !== n.name && t.network && t.netbox_interface_id !== null);
   const [internet, setInternet] = React.useState(false);
   const [lanvex, setLanvex] = React.useState<string[]>([]);
@@ -843,7 +841,7 @@ function AccessDialog({
     <Dialog open={n !== null} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         title={`What devices on ${n?.name ?? ""} may reach`}
-        description={`Documented in ${nbName} at once; ${s.name} gets it with the next change you prepare and approve. Answers to allowed connections always come back.`}
+        description={`Applied to ${s.name} with the next change`}
       >
         <form
           onSubmit={(e) => {
@@ -912,7 +910,7 @@ function AccessDialog({
                   </Field>
                 </div>
               )}
-              {filtering && <p className="text-xs text-muted">Devices notice a block once their own DNS cache expires; switching Wi-Fi off and on again helps.</p>}
+              {filtering && <p className="text-xs text-muted">Takes effect when the devices' DNS cache expires.</p>}
             </fieldset>
             {save.error && !fieldError(save.error, "services") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
           </DialogBody>

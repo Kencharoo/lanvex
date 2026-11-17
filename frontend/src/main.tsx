@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/misc";
 import { TooltipProvider } from "@/components/ui/misc";
 import { ApiError } from "@/lib/api";
 import { ActivityPage } from "@/pages/activity";
+import { AlertsPage } from "@/pages/alerts";
 import { DeviceDetailPage, DevicesPage } from "@/pages/devices";
 import { DiscoveryPage } from "@/pages/discovery";
 import { IPAddressesPage } from "@/pages/ip-addresses";
@@ -59,6 +60,7 @@ const router = createBrowserRouter([
       { path: "devices/:id", element: <DeviceDetailPage /> },
       { path: "servers", element: <ServersPage /> },
       { path: "servers/:id", element: <ServerDetailPage /> },
+      { path: "alerts", element: <AlertsPage /> },
       { path: "discovery", element: <DiscoveryPage /> },
       { path: "topology", element: <Suspense fallback={<Skeleton className="h-96 w-full" />}><TopologyPage /></Suspense> },
       { path: "automation", element: <AutomationPage /> },

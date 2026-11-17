@@ -33,7 +33,6 @@ import { useNetBoxLabel } from "@/lib/system";
 const AUTH_LABEL = { generated_key: "Key created by Lanvex", private_key: "Uploaded private key", password: "Password" } as const;
 
 export function ServerDetailPage() {
-  const nbName = useNetBoxLabel();
   const { id = "" } = useParams();
   const { isAdmin } = useSession();
   const navigate = useNavigate();
@@ -68,7 +67,7 @@ export function ServerDetailPage() {
   const collect = useMutation({
     mutationFn: () => api<Snapshot>(`/servers/${id}/collect`, { method: "POST" }),
     onSuccess: (snap) => {
-      if (snap.status === "ok") toast.success("Read the server's network state", { description: snap.message ?? `Took ${snap.duration_ms} ms. Nothing on the server was changed.` });
+      if (snap.status === "ok") toast.success("Read the server's network state", { description: snap.message ?? `${snap.duration_ms} ms` });
       else toast.error(snap.message ?? "Reading the server failed.");
       refreshAll();
     },
@@ -158,14 +157,13 @@ export function ServerDetailPage() {
             title="No network state read yet"
             action={isAdmin && <Button variant="primary" onClick={() => collect.mutate()} loading={collect.isPending}>Read now</Button>}
           >
-            Lanvex signs in over SSH and runs a fixed set of read-only commands. Nothing on the server is changed.
+            Read-only commands over SSH.
           </EmptyState>
         </div>
       ) : (
         <div className="grid gap-8">
           <p className="-mt-2 text-xs text-muted">
-            {s?.last_status && s.last_status !== "ok" ? "Last successful read" : "Live state read"} over SSH {relativeTime(latest.data!.taken_at)} ({absoluteTime(latest.data!.taken_at)}). Everything below is what
-            the server reported, not what {nbName} documents.
+            {s?.last_status && s.last_status !== "ok" ? "Last successful read" : "Read"} {relativeTime(latest.data!.taken_at)} ({absoluteTime(latest.data!.taken_at)})
           </p>
           <SystemSummary facts={facts} />
           {facts.warnings.length > 0 && (
@@ -243,7 +241,7 @@ function StatusNotice({ server: s, onRepin, hasFacts }: { server: Server; onRepi
         className="mb-6"
         action={isAdmin && <Button size="sm" onClick={onRepin}>Verify new key</Button>}
       >
-        Lanvex refused to connect. This is expected after reinstalling the server; otherwise treat it as a possible interception and check before trusting the new key.
+        Connection refused. Expected after a reinstall; otherwise verify before trusting the new key.
       </Notice>
     );
   }
@@ -364,7 +362,7 @@ function InterfacesSection({ facts }: { facts: HostFacts }) {
     },
   ];
   return (
-    <Section title="Interfaces" description={`${facts.interfaces.length} on the server, as reported by ip.`}>
+    <Section title="Interfaces" description={`${facts.interfaces.length}`}>
       <DataTable dense columns={columns} rows={rows} rowKey={(i) => i.name} />
     </Section>
   );
@@ -399,7 +397,7 @@ function RoutesSection({ routes }: { routes: HostRoute[] }) {
     },
   ];
   return (
-    <Section title="Routes" description="Main routing table, IPv4 and IPv6.">
+    <Section title="Routes" description="Main table">
       <DataTable dense columns={columns} rows={sorted} rowKey={(r) => `${r.family}-${r.destination}-${r.gateway}-${r.interface}-${r.protocol}-${r.metric}`} empty={<p className="p-4 text-[13px] text-muted">No routes reported.</p>} />
     </Section>
   );
@@ -430,7 +428,7 @@ function DnsSection({ facts }: { facts: HostFacts }) {
                 ))}
               </tbody>
             </table>
-            {!d.uses_resolved_stub && <p className="text-xs text-warn">resolv.conf does not point at systemd-resolved, so these per-interface servers are not what most applications use.</p>}
+            {!d.uses_resolved_stub && <p className="text-xs text-warn">resolv.conf does not use systemd-resolved; most applications ignore these.</p>}
           </div>
         )}
       </div>
@@ -544,7 +542,7 @@ function ComparisonSection({
   return (
     <Section
       title={`Documented in ${nbName} vs. on the server`}
-      description={`Compares addresses, ignoring loopback and link-local. A difference can be recorded in ${nbName}, or changed on the server through a previewed and approved change.`}
+      description="Addresses, without loopback and link-local"
       actions={
         c?.linked && c.netbox ? (
           <span className="flex items-center gap-2 whitespace-nowrap text-xs">
@@ -573,8 +571,7 @@ function ComparisonSection({
           {!c.linked && (
             <div className="grid gap-3 rounded-[var(--radius-panel)] border border-line bg-surface p-4">
               <p className="text-[13px]">
-                Link this server to its {nbName} device or virtual machine to compare against the addresses documented for it. Until then, Lanvex only shows whether each address appears
-                anywhere in {nbName}.
+                Not linked to a device or virtual machine in {nbName}.
               </p>
               {isAdmin && (
                 <>
@@ -661,7 +658,7 @@ function LinkPicker({ onPick, busy }: { onPick: (r: NetBoxRef) => void; busy: bo
 
 function AccessSection({ server: s }: { server: Server }) {
   return (
-    <Section title="Access" description="How Lanvex connects. Credentials are encrypted and never displayed.">
+    <Section title="Access">
       <div className="grid gap-4 rounded-[var(--radius-panel)] border border-line bg-surface p-4">
         <Facts
           items={[
@@ -849,7 +846,7 @@ function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; ope
   });
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title={`Edit ${s.name}`} description="To move the server to another address, remove it and add it again so its host key is verified.">
+      <DialogContent title={`Edit ${s.name}`}>
         <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
           <DialogBody>
             <Field label="Name" htmlFor="ed-name" error={fieldError(save.error, "name")}>
@@ -869,17 +866,14 @@ function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; ope
                 checked={f.confirm_in_browser}
                 onChange={(e) => setF({ ...f, confirm_in_browser: e.target.checked })}
               />
-              <p className="pl-6 text-xs text-muted">
-                For the server Lanvex runs on. Lanvex reaches it only through its own loopback, which shows nothing about the server's network. After a change, you choose Keep in
-                your browser; if the browser can no longer reach Lanvex, the server restores its previous configuration by itself.
-              </p>
+              <p className="pl-6 text-xs text-muted">For the server Lanvex runs on.</p>
             </div>
             <Field
               label="Verification address"
               htmlFor="ed-verify"
               optional
               error={fieldError(save.error, "verify_address")}
-              hint="One of the server's own addresses that Lanvex reaches directly. Needed when Lanvex connects through port forwarding, NAT, or from a container on this server: every change must leave this address reachable."
+              hint="Needed behind NAT or port forwarding"
             >
               <Input id="ed-verify" className="addr" value={f.verify_address} onChange={(e) => setF({ ...f, verify_address: e.target.value })} placeholder="192.168.178.2" />
             </Field>
@@ -888,7 +882,7 @@ function EditDialog({ server: s, open, onClose, onSaved }: { server: Server; ope
               htmlFor="ed-protected"
               optional
               error={fieldError(save.error, "protected_interfaces")}
-              hint="Interfaces another tool manages. Lanvex never changes them. Names or patterns, separated by commas, for example vlan-*, eno1."
+              hint="Never changed by Lanvex; patterns allowed"
             >
               <Input id="ed-protected" className="addr" value={f.protected} onChange={(e) => setF({ ...f, protected: e.target.value })} placeholder="vlan-*" />
             </Field>
@@ -985,7 +979,7 @@ function HostKeyDialog({ server: s, open, onClose, onSaved }: { server: Server; 
         <DialogBody>
           {fetchKey.isPending && <Skeleton className="h-24 w-full" />}
           {fetchKey.error && <Notice tone="danger">{errorMessage(fetchKey.error)}</Notice>}
-          {scan && same && <Notice title="Unchanged">The server still presents the key Lanvex has pinned. Nothing to do.</Notice>}
+          {scan && same && <Notice title="Unchanged">The server presents the pinned key.</Notice>}
           {scan && !same && <HostKeyVerification scan={scan} confirmed={confirmed} onConfirm={setConfirmed} previous={s.host_key_fingerprint} />}
           {pin.error && <Notice tone="danger">{errorMessage(pin.error)}</Notice>}
         </DialogBody>
@@ -1011,7 +1005,7 @@ function DeleteDialog({ server: s, open, onClose, onDeleted }: { server: Server;
   });
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title={`Remove ${s.name}?`} description="Lanvex deletes its stored credentials and read history for this server." role="alertdialog">
+      <DialogContent title={`Remove ${s.name}?`} description="Its credentials and read history are deleted." role="alertdialog">
         <form onSubmit={(e) => { e.preventDefault(); if (confirm === s.name) del.mutate(); }}>
           <DialogBody>
             {s.authorized_keys_line && <p className="text-[13px] text-muted">The server itself is not touched. Remove Lanvex's key from its authorized_keys file yourself.</p>}

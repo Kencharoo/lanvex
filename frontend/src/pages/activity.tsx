@@ -11,7 +11,6 @@ import { api } from "@/lib/api";
 import { useUrlState } from "@/lib/hooks";
 import type { AuditEvent, Page } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
-import { useNetBoxLabel } from "@/lib/system";
 
 const LIMIT = 50;
 
@@ -37,7 +36,6 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 export function ActivityPage() {
-  const nbName = useNetBoxLabel();
   const { values, set, offset } = useUrlState(["q", "action", "outcome"] as const);
   const [open, setOpen] = React.useState<AuditEvent | null>(null);
   const query = { q: values.q, action: values.action, outcome: values.outcome, limit: LIMIT, offset };
@@ -69,7 +67,7 @@ export function ActivityPage() {
 
   return (
     <>
-      <PageHeader title="Activity & Audit Logs" description={`Every action taken through Lanvex, including failed and denied attempts. Changes made directly in ${nbName} appear in ${nbName}'s own change log.`} />
+      <PageHeader title="Activity & Audit Logs" />
       <Toolbar>
         <SearchInput label="Search activity" placeholder="Search user, object, action" value={values.q} onChange={(q) => set({ q })} />
         <Select aria-label="Area" className="w-auto" value={values.action} onChange={(e) => set({ action: e.target.value })}>

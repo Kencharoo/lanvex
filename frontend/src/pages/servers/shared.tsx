@@ -136,10 +136,10 @@ export function CredentialsForm({
       </div>
       {value.method === "private_key" && (
         <>
-          <Field label="Private key" htmlFor="cr-key" error={errors?.private_key} hint="OpenSSH or PEM format. Stored encrypted; never shown again.">
+          <Field label="Private key" htmlFor="cr-key" error={errors?.private_key} hint="OpenSSH or PEM; stored encrypted">
             <Textarea id="cr-key" className="addr min-h-32 text-xs" value={value.private_key} onChange={(e) => set("private_key", e.target.value)} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellCheck={false} />
           </Field>
-          <Field label="Passphrase" htmlFor="cr-pass" optional error={errors?.passphrase} hint="Used once to unlock the key. Not stored.">
+          <Field label="Passphrase" htmlFor="cr-pass" optional error={errors?.passphrase} hint="Not stored">
             <Input id="cr-pass" type="password" autoComplete="off" value={value.passphrase} onChange={(e) => set("passphrase", e.target.value)} />
           </Field>
         </>
@@ -163,11 +163,10 @@ export function InstallKeyInstructions({ username, line }: { username: string; l
   return (
     <div className="grid gap-2 text-[13px]">
       <p>
-        Add this key to <span className="addr">{home}/.ssh/authorized_keys</span> on the server. <span className="addr">restrict</span> turns off forwarding and
-        terminals for it; Lanvex only runs a fixed set of read-only commands.
+        Add this key to <span className="addr">{home}/.ssh/authorized_keys</span> on the server.
       </p>
       <CodeBlock text={line} label="Copy key" />
-      <p className="text-muted">Or run this on the server as an administrator:</p>
+      <p className="text-muted">Or run as root:</p>
       <CodeBlock text={script} label="Copy commands" />
     </div>
   );

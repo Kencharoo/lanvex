@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from lanvex.core.config import get_settings
 from lanvex.core.db import Database
+from lanvex.integrations.linux import adapter, transport
 from lanvex.integrations.linux.assemble import assemble
 from lanvex.integrations.linux.facts import DhcpFacts, DhcpLease, DhcpPool
 from lanvex.monitoring import checks, notify
@@ -217,15 +218,26 @@ async def test_alerts_follow_what_reads_find(
 
 
 async def test_a_failed_read_says_so_and_keeps_what_the_last_good_read_found(
-    admin: httpx.AsyncClient, core: CoreStandIn, fake: FakeServer
+    admin: httpx.AsyncClient, core: CoreStandIn, fake: FakeServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sid = await router_01(admin, fake)
     assert "drift:" in await alerts(admin)
-    fake.reachable = False
+    collect = adapter.collect
+
+    async def rejected(*_: Any, **__: Any) -> Any:
+        raise transport.SSHError("The server rejected the credentials for user 'lanvex'.", code="auth_failed")
+
+    monkeypatch.setattr(adapter, "collect", rejected)
     await admin.post(f"/api/v1/servers/{sid}/collect")
     found = await alerts(admin)
-    assert found["read_failed:"]["title"] == "router-01: not reachable over SSH"
+    assert found["read_failed:"]["title"] == "router-01: sign-in rejected"
+    assert found["read_failed:"]["detail"] == ["The server rejected the credentials for user 'lanvex'."]
     assert "drift:" in found  # unknown now; not resolved by a read that saw nothing
+    # Not answering at all is the probe's alert, not a second one.
+    fake.reachable = False
+    monkeypatch.setattr(adapter, "collect", collect)
+    await admin.post(f"/api/v1/servers/{sid}/collect")
+    assert "read_failed:" not in await alerts(admin)
     fake.reachable = True
     await admin.post(f"/api/v1/servers/{sid}/collect")
     assert "read_failed:" not in await alerts(admin)

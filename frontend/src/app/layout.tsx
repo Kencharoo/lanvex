@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
+  BellRing,
   Boxes,
   ChevronsLeft,
   ChevronsRight,
@@ -24,7 +25,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { Wordmark } from "@/components/logo";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Tooltip } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { ChangeOut, NetBoxStatus } from "@/lib/types";
+import type { AlertCount, ChangeOut, NetBoxStatus } from "@/lib/types";
 import { useNetBoxLabel, useSystemInfo } from "@/lib/system";
 import { cn } from "@/lib/utils";
 import { useSession } from "./session";
@@ -40,6 +41,8 @@ type NavItem = {
   page?: boolean;
   /** Shown only when Lanvex Core is part of this installation. */
   core?: boolean;
+  /** A count shown next to the label. */
+  count?: "alerts";
 };
 
 const NAV: NavItem[][] = [
@@ -53,6 +56,7 @@ const NAV: NavItem[][] = [
     { to: "/core/", label: "Lanvex Core", icon: Boxes, page: true, core: true },
   ],
   [
+    { to: "/alerts", label: "Alerts", icon: BellRing, count: "alerts" },
     { to: "/topology", label: "Topology", icon: Share2 },
     { to: "/discovery", label: "Discovery", icon: Radar },
     { to: "/automation", label: "Automation", icon: Workflow, also: "/changes/" },
@@ -212,6 +216,7 @@ export function AppLayout() {
                     <item.icon className="size-4 shrink-0" />
                     {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
                     {!collapsed && item.later && <span className="text-2xs text-faint">Planned</span>}
+                    {item.count === "alerts" && <AlertBadge collapsed={collapsed} />}
                     {collapsed && <span className="sr-only">{item.label}</span>}
                   </NavLink>
                 );
@@ -240,6 +245,26 @@ export function AppLayout() {
   );
 }
 
+
+export function useAlertCount() {
+  return useQuery({
+    queryKey: ["alerts", "count"],
+    queryFn: () => api<AlertCount>("/alerts/count"),
+    refetchInterval: 30_000,
+  });
+}
+
+function AlertBadge({ collapsed }: { collapsed: boolean }) {
+  const n = useAlertCount().data;
+  if (!n?.unacknowledged) return null;
+  const tone = n.critical ? "bg-danger-soft text-danger" : "bg-warn-soft text-warn";
+  if (collapsed) return <span className={cn("absolute right-1.5 top-1.5 size-2 rounded-full", n.critical ? "bg-danger" : "bg-warn")} aria-label={`${n.unacknowledged} new alerts`} />;
+  return (
+    <span className={cn("min-w-5 rounded-full px-1.5 text-center text-2xs font-semibold leading-5 tabular-nums", tone)} aria-label={`${n.unacknowledged} new alerts`}>
+      {n.unacknowledged}
+    </span>
+  );
+}
 
 /** Changes applied on a server Lanvex runs on wait for an administrator to keep them in the browser. If
  * nobody does in time, the server undoes them, so they are shown on every page, not only their own. */

@@ -7,22 +7,21 @@ import { PageHeader, Section } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { EmptyState, Notice, Skeleton } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
-import type { NetBoxStatus, Overview } from "@/lib/types";
+import type { AlertList, Overview } from "@/lib/types";
 import { formatCount, relativeTime } from "@/lib/utils";
 import { NotConfigured, isNotConfigured } from "./networks";
 import { useNetBoxLabel } from "@/lib/system";
+import { SeverityIcon } from "./alerts";
 
 export function OverviewPage() {
   const nbName = useNetBoxLabel();
   const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api<Overview>("/dashboard/overview"), staleTime: 30_000 });
-  const nb = useQuery({ queryKey: ["netbox-status"], queryFn: () => api<NetBoxStatus>("/system/netbox"), staleTime: 30_000 });
   const o = q.data;
 
   return (
     <>
       <PageHeader
         title="Overview"
-        description={nb.data?.reachable ? `Documented state from ${nbName} ${nb.data.version} at ${nb.data.url}.` : `Documented state from ${nbName}.`}
         actions={
           <Button
             variant="ghost"
@@ -34,6 +33,7 @@ export function OverviewPage() {
           </Button>
         }
       />
+      <OpenAlerts />
       {isNotConfigured(q.error) ? (
         <NotConfigured />
       ) : q.error ? (
@@ -54,14 +54,14 @@ export function OverviewPage() {
                   </Button>
                 }
               >
-                Start by documenting a network. Devices and VLANs appear here as soon as they exist in {nbName}.
+                Start by documenting a network.
               </EmptyState>
             </div>
           ) : (
             <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
               <Section
                 title="Most utilized networks"
-                description={o ? `Among ${o.utilization_sampled} active and reserved prefixes sampled.` : undefined}
+                description={o ? `${o.utilization_sampled} prefixes` : undefined}
                 actions={
                   <Link to="/networks" className="text-xs text-accent hover:underline">
                     All networks
@@ -177,7 +177,7 @@ function RecentChanges({ o }: { o: Overview | undefined }) {
   return (
     <Section
       title="Recent changes"
-      description={source === "lanvex" ? "From the Lanvex audit log." : source === "netbox" ? `From the ${nbName} change log, including changes made outside Lanvex.` : undefined}
+      description={source === "lanvex" ? "Lanvex audit log" : source === "netbox" ? `${nbName} change log` : undefined}
       actions={
         <Link to="/activity" className="text-xs text-accent hover:underline">
           Activity log
@@ -215,5 +215,34 @@ function RecentChanges({ o }: { o: Overview | undefined }) {
         )}
       </div>
     </Section>
+  );
+}
+
+/** Open alerts, the most severe first; nothing when there are none. */
+function OpenAlerts() {
+  const q = useQuery({ queryKey: ["alerts", "open"], queryFn: () => api<AlertList>("/alerts?state=open"), refetchInterval: 30_000 });
+  const rank = { critical: 0, warning: 1, info: 2 } as const;
+  const open = [...(q.data?.alerts ?? [])].sort((a, b) => rank[a.severity] - rank[b.severity]);
+  if (open.length === 0) return null;
+  return (
+    <div className="mb-8 overflow-hidden rounded-[var(--radius-panel)] border border-line bg-surface">
+      <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+        <h2 className="text-[13px] font-medium">
+          {open.length} open alert{open.length === 1 ? "" : "s"}
+        </h2>
+        <Link to="/alerts" className="text-xs text-accent hover:underline">
+          All alerts
+        </Link>
+      </div>
+      <ul className="divide-y divide-line">
+        {open.slice(0, 5).map((a) => (
+          <li key={a.id} className="flex items-center gap-2.5 px-4 py-2 text-[13px]">
+            <SeverityIcon severity={a.severity} />
+            <span className="min-w-0 flex-1 truncate">{a.title}</span>
+            <span className="shrink-0 text-xs text-muted">{relativeTime(a.opened_at)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

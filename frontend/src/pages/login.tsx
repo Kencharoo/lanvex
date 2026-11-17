@@ -45,7 +45,6 @@ export function LoginPage() {
           </div>
         </div>
         <h1 className="mb-1 text-lg font-semibold">Sign in</h1>
-        <p className="mb-5 text-[13px] text-muted">Use the account your Lanvex administrator created for you.</p>
         <form onSubmit={onSubmit} className="grid gap-4" noValidate>
           {error && <Notice tone="danger">{error}</Notice>}
           <Field label="Username" htmlFor="username" error={form.formState.errors.username?.message}>

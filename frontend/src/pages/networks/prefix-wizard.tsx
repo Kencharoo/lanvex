@@ -138,7 +138,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="New network" description={`Document a prefix in ${nbName}.`} width="max-w-[720px]">
+      <DialogContent title="New network" width="max-w-[720px]">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -181,7 +181,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
 
               {step === 0 && (
                 <>
-                  <Field label="Name" htmlFor="pf-name" optional hint={`Stored as the prefix description in ${nbName}.`}>
+                  <Field label="Name" htmlFor="pf-name" optional >
                     <Input id="pf-name" value={draft.name} maxLength={200} placeholder="e.g. Office LAN, 3rd floor" onChange={(e) => set("name", e.target.value)} autoFocus />
                   </Field>
                   <Field
@@ -214,7 +214,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
 
               {step === 1 && (
                 <>
-                  <Field label="VRF" htmlFor="pf-vrf" hint="Duplicates and overlaps are checked within this routing table.">
+                  <Field label="VRF" htmlFor="pf-vrf" >
                     <Select id="pf-vrf" value={draft.vrf_id} onChange={(e) => set("vrf_id", e.target.value)}>
                       <option value="">Global table</option>
                       {vrfs.data?.map((o) => (
@@ -281,7 +281,7 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
                         label="Gateway"
                         htmlFor="pf-gateway"
                         error={gatewayError}
-                        hint={`Created as an IP address in ${nbName}, tagged lanvex-gateway. Include the prefix's mask.`}
+                        hint="With prefix length"
                       >
                         <Input
                           id="pf-gateway"
@@ -324,9 +324,6 @@ export function PrefixWizard({ open, onOpenChange, onCreated }: { open: boolean;
                     </dd>
                   </dl>
                   <ValidationFindings v={v} loading={validation.isFetching} error={validation.error} onlyLevels={["error", "warning", "info"]} />
-                  <Notice title="What this does">
-                    Lanvex records this network in {nbName}. It does not configure routers, switches, firewalls, or DHCP servers.
-                  </Notice>
                   {create.error && fieldError(create.error, "__all__", "prefix", "vlan", "vrf", "role", "gateway") && (
                     <Notice tone="danger" title={`${nbName} rejected the prefix`}>
                       {fieldError(create.error, "__all__", "prefix", "vlan", "vrf", "role", "gateway")}

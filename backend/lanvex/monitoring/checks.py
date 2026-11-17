@@ -49,7 +49,8 @@ class Finding:
 
 
 def read_failed(server: str, status: ConnectionStatus, message: str | None) -> list[Finding]:
-    if status == ConnectionStatus.OK:
+    # A server that does not answer at all is the probe's alert (unreachable), not a second one here.
+    if status in (ConnectionStatus.OK, ConnectionStatus.UNREACHABLE):
         return []
     return [
         Finding(

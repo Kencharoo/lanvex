@@ -18,7 +18,6 @@ const LIMIT = 50;
 type VLANWrite = WriteResult & { vlan: VLAN };
 
 export function VLANsPage() {
-  const nbName = useNetBoxLabel();
   const { isAdmin } = useSession();
   const { values, set, offset } = useUrlState(["q", "site", "group", "status"] as const);
   const [editing, setEditing] = React.useState<VLAN | "new" | null>(null);
@@ -72,7 +71,6 @@ export function VLANsPage() {
     <>
       <PageHeader
         title="VLANs"
-        description={`802.1Q VLANs documented in ${nbName}. Assign them to networks and interfaces from their detail views.`}
         actions={
           isAdmin && (
             <Button variant="primary" onClick={() => setEditing("new")}>
@@ -149,7 +147,6 @@ export function VLANsPage() {
 }
 
 function VLANDialog({ vlan, onClose }: { vlan: VLAN | "new" | null; onClose: () => void }) {
-  const nbName = useNetBoxLabel();
   const open = vlan !== null;
   const isNew = vlan === "new";
   const sites = useLookup("sites", undefined, open);
@@ -193,7 +190,7 @@ function VLANDialog({ vlan, onClose }: { vlan: VLAN | "new" | null; onClose: () 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       {open && (
-        <DialogContent title={isNew ? "New VLAN" : `Edit VLAN ${(vlan as VLAN).vid}`} description={`Saved as a VLAN record in ${nbName}. Switches are not configured.`}>
+        <DialogContent title={isNew ? "New VLAN" : `Edit VLAN ${(vlan as VLAN).vid}`} >
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -269,7 +266,7 @@ function DeleteVLANDialog({ vlan, onClose }: { vlan: VLAN | null; onClose: () =>
   return (
     <Dialog open={!!vlan} onOpenChange={(o) => !o && onClose()}>
       {vlan && (
-        <DialogContent title={`Delete VLAN ${vlan.vid} ${vlan.name}?`} description={`The VLAN record is removed from ${nbName}.`} role="alertdialog">
+        <DialogContent title={`Delete VLAN ${vlan.vid} ${vlan.name}?`} role="alertdialog">
           <DialogBody>
             {vlan.prefix_count > 0 && (
               <Notice tone="warn">

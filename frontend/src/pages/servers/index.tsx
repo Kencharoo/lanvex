@@ -79,7 +79,6 @@ export function ServersPage() {
     <>
       <PageHeader
         title="Servers"
-        description="Linux servers Lanvex reads over SSH: interfaces, addresses, routes and DNS as they actually are. Lanvex does not change server configuration."
         actions={
           isAdmin && (
             <Button variant="primary" onClick={() => setAdding(true)} disabled={!canStore}>
@@ -90,8 +89,7 @@ export function ServersPage() {
       />
       {!canStore && (
         <Notice tone="warn" title="Credential storage is not configured" className="mb-4">
-          Lanvex encrypts server credentials with <strong>LANVEX_SECRET_KEY</strong>. Generate one with <span className="addr">lanvex generate-secret-key</span>, set it in the server
-          environment, and restart Lanvex.
+          Set <strong>LANVEX_SECRET_KEY</strong> (<span className="addr">lanvex generate-secret-key</span>) and restart Lanvex.
         </Notice>
       )}
       <DataTable
@@ -116,7 +114,7 @@ export function ServersPage() {
               )
             }
           >
-            Add Ubuntu Server, Debian or Fedora Server hosts to see their live network configuration next to what {nbName} documents.
+            Linux servers reachable over SSH.
           </EmptyState>
         }
       />
@@ -229,7 +227,7 @@ function AddServerDialog({ open, onOpenChange, onDone }: { open: boolean; onOpen
 
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent title="Add server" description="Lanvex reads this server's network state over SSH. It never changes the server." width="max-w-[720px]">
+      <DialogContent title="Add server" width="max-w-[720px]">
         <div className="grid md:grid-cols-[168px_1fr]">
           <ol className="hidden border-r border-line px-3 py-4 md:block" aria-label="Steps">
             {STEPS.map((label, i) => (
@@ -251,24 +249,24 @@ function AddServerDialog({ open, onOpenChange, onDone }: { open: boolean; onOpen
                   if (conn.address.trim() && portOk) void doScan();
                 }}
               >
-                <Field label="Name" htmlFor="sv-name" optional hint="Defaults to the address." error={fieldErr("name")}>
+                <Field label="Name" htmlFor="sv-name" optional hint="Default: the address" error={fieldErr("name")}>
                   <Input id="sv-name" value={conn.name} onChange={(e) => setConn({ ...conn, name: e.target.value })} maxLength={100} placeholder="e.g. web-01" autoFocus />
                 </Field>
                 <div className="grid gap-4 sm:grid-cols-[1fr_7rem]">
-                  <Field label="Address" htmlFor="sv-address" hint="IP address or DNS name." error={fieldErr("address")}>
+                  <Field label="Address" htmlFor="sv-address"  error={fieldErr("address")}>
                     <Input id="sv-address" className="addr" value={conn.address} onChange={(e) => setConn({ ...conn, address: e.target.value })} placeholder="192.0.2.10" spellCheck={false} autoComplete="off" required />
                   </Field>
                   <Field label="SSH port" htmlFor="sv-port" error={!portOk ? "1 to 65535" : fieldErr("port")}>
                     <Input id="sv-port" inputMode="numeric" className="addr" value={conn.port} onChange={(e) => setConn({ ...conn, port: e.target.value.replace(/\D/g, "") })} />
                   </Field>
                 </div>
-                <p className="text-xs text-muted">Next, Lanvex fetches the server's SSH host key so you can confirm it is the right machine. It does not sign in yet.</p>
+                <p className="text-xs text-muted">The host key is verified next.</p>
               </form>
             )}
             {step === 1 && scan && <HostKeyVerification scan={scan} confirmed={confirmed} onConfirm={setConfirmed} />}
             {step === 2 && (
               <>
-                <Field label="User on the server" htmlFor="sv-user" hint="An ordinary account is enough. Lanvex only reads; it never uses sudo." error={fieldErr("username")}>
+                <Field label="User on the server" htmlFor="sv-user"  error={fieldErr("username")}>
                   <Input id="sv-user" className="addr" value={conn.username} onChange={(e) => setConn({ ...conn, username: e.target.value })} autoComplete="off" spellCheck={false} />
                 </Field>
                 <CredentialsForm

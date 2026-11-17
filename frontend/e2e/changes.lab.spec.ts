@@ -138,7 +138,7 @@ test("install the helper, prepare, approve and apply an address change, verified
   await expect(cmp.getByText("All 3 addresses match.")).toBeVisible();
   expect(br0()).toEqual(["10.11.0.1/24", "10.11.0.2/24"]); // documentation only: the server is unchanged
   await page.goto(changeUrl);
-  await expect(page.getByText("NetBox documents the addresses of br0 as the server has them now.")).toBeVisible();
+  await expect(page.getByText("NetBox matches the server")).toBeVisible();
   await page.getByRole("link", { name: "Open server" }).click();
 
   await page.getByRole("button", { name: "Server actions" }).click();

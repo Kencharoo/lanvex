@@ -47,7 +47,6 @@ test("creates a prefix through the wizard and persists it in NetBox", async ({ p
   await page.getByLabel("Gateway", { exact: true }).fill("10.10.40.1/24");
   await page.getByRole("button", { name: "Continue" }).click();
 
-  await expect(page.getByText("It does not configure routers, switches, firewalls, or DHCP servers.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Create network" }).click();
   await expect(page.getByText("Created 10.10.40.0/24")).toBeVisible();
   await expect(page.getByText("Recorded in NetBox. No device configuration was changed.")).toBeVisible();

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, CircleSlash, Plus, RefreshCw, XCircle } from "lucide-react";
 import * as React from "react";
+import { useLocation } from "react-router";
 import { toast } from "sonner";
 import { DataTable, type Column } from "@/components/data-table";
 import { PageHeader, Section } from "@/components/page";
@@ -15,17 +16,29 @@ import { fieldError } from "@/lib/hooks";
 import type { NetBoxStatus, Role, User } from "@/lib/types";
 import { cn, relativeTime } from "@/lib/utils";
 import { useNetBoxLabel } from "@/lib/system";
+import { MonitoringSection } from "@/pages/settings-monitoring";
 
 export function SettingsPage() {
   const { isAdmin } = useSession();
+  const { hash } = useLocation();
+  React.useEffect(() => {
+    if (!hash) return;
+    const t = setTimeout(() => document.getElementById(hash.slice(1))?.scrollIntoView({ block: "start" }), 50);
+    return () => clearTimeout(t);
+  }, [hash]);
   return (
     <>
-      <PageHeader title="Settings" description="Connection, appearance, your account, and who can use Lanvex." />
+      <PageHeader title="Settings" />
       <div className="grid max-w-4xl gap-10">
         <ConnectionSection />
         <AppearanceSection />
         <AccountSection />
         {isAdmin && <UsersSection />}
+        {isAdmin && (
+          <div id="monitoring" className="scroll-mt-6">
+            <MonitoringSection />
+          </div>
+        )}
       </div>
     </>
   );
@@ -48,7 +61,6 @@ function ConnectionSection() {
   return (
     <Section
       title={`${nbName} connection`}
-      description={`Lanvex reads and writes all infrastructure data through this ${nbName} instance. Credentials stay on the server.`}
       actions={
         <Button size="sm" onClick={() => void q.refetch()} loading={q.isFetching}>
           Test connection
@@ -92,7 +104,7 @@ function AppearanceSection() {
     { v: "system", label: "Match system" },
   ];
   return (
-    <Section title="Appearance" description="Saved in this browser.">
+    <Section title="Appearance">
       <div role="radiogroup" aria-label="Theme" className="inline-grid w-fit grid-cols-3 gap-1 rounded-[var(--radius-control)] bg-surface-2 p-1">
         {options.map((o) => (
           <button
@@ -137,7 +149,7 @@ function AccountSection() {
         <Field label="Current password" htmlFor="pw-current" error={fieldError(change.error, "current_password")}>
           <Input id="pw-current" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
         </Field>
-        <Field label="New password" htmlFor="pw-new" hint="At least 12 characters." error={fieldError(change.error, "password", "new_password")}>
+        <Field label="New password" htmlFor="pw-new" hint="12 characters or more" error={fieldError(change.error, "password", "new_password")}>
           <Input id="pw-new" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} required minLength={12} />
         </Field>
         <Field label="Repeat new password" htmlFor="pw-repeat" error={mismatch ? "Passwords do not match." : undefined}>
@@ -153,7 +165,6 @@ function AccountSection() {
 }
 
 function UsersSection() {
-  const nbName = useNetBoxLabel();
   const qc = useQueryClient();
   const { user: me } = useSession();
   const [adding, setAdding] = React.useState(false);
@@ -226,7 +237,6 @@ function UsersSection() {
   return (
     <Section
       title="Users"
-      description={`Administrators can change ${nbName} data through Lanvex. Read-only users can view everything but change nothing.`}
       actions={
         <Button size="sm" onClick={() => setAdding(true)}>
           <Plus /> Add user
@@ -256,7 +266,7 @@ function AddUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
   const err = create.error;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="Add user" description="They sign in with this username and password.">
+      <DialogContent title="Add user">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -272,7 +282,7 @@ function AddUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
                 <Input id="nu-display" value={f.display_name} onChange={(e) => setF({ ...f, display_name: e.target.value })} />
               </Field>
             </div>
-            <Field label="Initial password" htmlFor="nu-password" hint="At least 12 characters." error={fieldError(err, "password")}>
+            <Field label="Initial password" htmlFor="nu-password" hint="12 characters or more" error={fieldError(err, "password")}>
               <Input id="nu-password" type="password" autoComplete="new-password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} required />
             </Field>
             <Field label="Role" htmlFor="nu-role">

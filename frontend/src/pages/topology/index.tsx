@@ -205,7 +205,6 @@ export function TopologyPage() {
   const header = (
     <PageHeader
       title="Topology"
-      description={`Devices and the cables between them, as documented in ${nbName}. A line is a recorded cable, not a measured link.`}
     />
   );
   if (isNotConfigured(data.error)) {
@@ -258,7 +257,7 @@ export function TopologyPage() {
 
       {topo?.truncated && (
         <Notice tone="warn" title="Only part of the network is shown">
-          This view is limited to the first 2,000 devices and 5,000 cables. Choose a site to see all of it.
+          Limited to 2,000 devices and 5,000 cables. Choose a site.
         </Notice>
       )}
       {q && topo && (

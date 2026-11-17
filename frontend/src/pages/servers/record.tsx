@@ -104,7 +104,7 @@ export function RecordDialog({
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: ["servers", s.id, "comparison"] });
       if (!result.failed) {
-        toast.success(`Recorded in ${nbName}`, { description: `${result.done.length} update${result.done.length === 1 ? "" : "s"}. Nothing on the server was changed.` });
+        toast.success(`Recorded in ${nbName}`, { description: `${result.done.length} update${result.done.length === 1 ? "" : "s"}` });
         onClose();
       }
     },
@@ -123,7 +123,7 @@ export function RecordDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         title={`Record in ${nbName}`}
-        description={`Update ${nbName} so it documents what ${s.name} had when it was last read. This changes documentation only: nothing on the server is changed.`}
+        description={`From the last read of ${s.name}`}
         width="max-w-xl"
       >
         <DialogBody>

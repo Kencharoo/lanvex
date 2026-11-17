@@ -56,7 +56,7 @@ export function DevicesPage() {
 
   return (
     <>
-      <PageHeader title="Devices" description={`Device inventory documented in ${nbName}. Live operational data is not shown here yet.`} />
+      <PageHeader title="Devices" />
       {isNotConfigured(list.error) ? (
         <NotConfigured />
       ) : (
@@ -269,7 +269,6 @@ export function DeviceDetailPage() {
 }
 
 function InterfaceVlanDialog({ iface, onClose }: { iface: Interface | null; onClose: () => void }) {
-  const nbName = useNetBoxLabel();
   const vlans = useLookup("vlans", undefined, !!iface);
   const [mode, setMode] = React.useState("");
   const [untagged, setUntagged] = React.useState("");
@@ -296,7 +295,7 @@ function InterfaceVlanDialog({ iface, onClose }: { iface: Interface | null; onCl
   return (
     <Dialog open={!!iface} onOpenChange={(o) => !o && onClose()}>
       {iface && (
-        <DialogContent title={`VLANs on ${iface.name}`} description={`Documents the interface's 802.1Q mode in ${nbName}. The switch port is not changed.`}>
+        <DialogContent title={`VLANs on ${iface.name}`} >
           <form
             onSubmit={(e) => {
               e.preventDefault();
