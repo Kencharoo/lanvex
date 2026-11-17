@@ -507,7 +507,9 @@ async def test_failed_verification_rolls_back(
         "Lanvex had the server restore its previous configuration."
     )
     # An alert says so, for whoever was not watching; acknowledging it ends it.
-    (alert,) = [a for a in (await admin.get("/api/v1/alerts")).json()["alerts"] if a["kind"] == "change_failed"]
+    (alert,) = [
+        a for a in (await admin.get("/api/v1/alerts")).json()["alerts"] if a["kind"] == "change_failed"
+    ]
     assert alert["title"] == f"Change #{done['number']} on web-01 rolled back" and alert["key"] == done["id"]
     assert alert["detail"] == [done["outcome"]]
     r = await admin.post(f"/api/v1/alerts/{alert['id']}/acknowledge")
