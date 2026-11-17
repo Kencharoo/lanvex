@@ -13,6 +13,7 @@ commit=$(sed -n 's/^commit=//p' core.lock)
 if [ -n "$(git status --porcelain)" ]; then
   echo "Commit your changes first; the archive is built from HEAD." >&2; exit 1
 fi
+mkdir -p "$out"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 dir="$work/lanvex-$version"
