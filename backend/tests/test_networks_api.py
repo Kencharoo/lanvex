@@ -24,7 +24,8 @@ from .test_changes_api import NM_ADDRESS, FakeServer, approve_and_run, with_lanv
 from .test_linux_parsing import load
 from .test_servers_api import body as server_body
 
-DEVICE, SITE = 7, 1
+DEVICE, SITE, NAS = 7, 1, 8
+DEVICES = {DEVICE: "router-01", NAS: "nas"}
 # The scripted server, clock, runner and settings from the change tests, as fixtures here too.
 fake, clock, runner, automation = (
     test_changes_api.fake,
@@ -35,8 +36,9 @@ fake, clock, runner, automation = (
 
 
 class CoreStandIn:
-    """Device 7 (router-01, site 1) with eth0 and eth1; VLANs, prefixes, interfaces, IP addresses, IP ranges
-    and tags, with the custom fields Lanvex Core defines."""
+    """Device 7 (router-01, site 1) with eth0 and eth1, device 8 (nas) with eth0 and its MAC address; VLANs,
+    prefixes, interfaces, IP addresses, IP ranges (no two overlapping, as NetBox has it) and tags, with the
+    custom fields Lanvex Core defines."""
 
     def __init__(self) -> None:
         self.ids = count(100)
@@ -44,7 +46,15 @@ class CoreStandIn:
             "dcim/interfaces": {
                 11: {"id": 11, "name": "eth0", "device": DEVICE, "type": "1000base-t"},
                 12: {"id": 12, "name": "eth1", "device": DEVICE, "type": "1000base-t"},
+                21: {
+                    "id": 21,
+                    "name": "eth0",
+                    "device": NAS,
+                    "type": "1000base-t",
+                    "mac_addresses": [{"id": 1, "mac_address": "AA:BB:CC:00:00:05"}],
+                },
             },
+            "virtualization/interfaces": {},
             "ipam/ip-addresses": {},
             "ipam/ip-ranges": {},
             "ipam/vlans": {},
@@ -59,6 +69,8 @@ class CoreStandIn:
     def ser(self, kind: str, o: dict[str, Any]) -> dict[str, Any]:
         out = dict(o)
         if kind == "dcim/interfaces":
+            out["device"] = {"id": o["device"], "name": DEVICES[o["device"]]}
+            out["mac_addresses"] = o.get("mac_addresses", [])
             out["type"] = {"value": o["type"]}
             parent = self.t(kind).get(o.get("parent") or 0)
             out["parent"] = {"id": parent["id"], "name": parent["name"]} if parent else None
@@ -70,7 +82,16 @@ class CoreStandIn:
             out["custom_fields"] = {"lanvex_access": o.get("custom_fields", {}).get("lanvex_access")}
         if kind == "ipam/ip-addresses":
             iface = self.t("dcim/interfaces").get(o.get("assigned_object_id") or 0)
-            out["assigned_object"] = {"id": iface["id"], "name": iface["name"]} if iface else None
+            out["assigned_object"] = (
+                {
+                    "id": iface["id"],
+                    "name": iface["name"],
+                    "device": {"id": iface["device"], "name": DEVICES[iface["device"]]},
+                }
+                if iface
+                else None
+            )
+            out["assigned_object_type"] = "dcim.interface" if iface else None
             out["custom_fields"] = {"mac_address": o.get("custom_fields", {}).get("mac_address")}
             out["tags"] = [self.t("extras/tags")[i] for i in o.get("tags", [])]
             out["dns_name"] = o.get("dns_name", "")
@@ -87,6 +108,10 @@ class CoreStandIn:
             if not iface or iface["device"] != int(dev):
                 return False
         if (iid := qp.get("interface_id")) and o.get("assigned_object_id") != int(iid):
+            return False
+        if (mac := qp.get("mac_address")) and not any(
+            m["mac_address"].lower() == mac.lower() for m in o.get("mac_addresses", [])
+        ):
             return False
         if wanted := qp.get_list("address"):
             if not any(o["address"].split("/")[0] == w for w in wanted):
@@ -142,6 +167,19 @@ class CoreStandIn:
             return httpx.Response(200, json=self.ser(kind, o))
         if request.method == "POST":
             b = json.loads(request.content)
+            if kind == "ipam/ip-ranges":
+                lo, hi = (ipaddress.ip_interface(b[k]).ip for k in ("start_address", "end_address"))
+                for r in table.values():
+                    r_lo, r_hi = (ipaddress.ip_interface(r[k]).ip for k in ("start_address", "end_address"))
+                    if r_lo <= hi and lo <= r_hi:
+                        return httpx.Response(
+                            400,
+                            json={
+                                "__all__": [
+                                    f"Defined addresses overlap with range {r['start_address']}-{r_hi}"
+                                ]
+                            },
+                        )
             i = next(self.ids)
             table[i] = {"id": i, **b}
             return httpx.Response(201, json=self.ser(kind, table[i]))
@@ -243,6 +281,7 @@ async def test_a_new_network_is_documented_then_brought_to_the_server(
         "mac": "aa:bb:cc:00:00:02",
         "name": "drucker",
         "ip_id": None,
+        "device": None,
     }
     for bad, field in (({"ip": "192.168.51.20"}, "Not in"), ({"ip": "192.168.50.1"}, "own address")):
         r = await admin.put(
@@ -590,3 +629,175 @@ async def test_netzverwaltung_is_documented_then_taken_over(
     plan = [p for c, p in fake.calls if c == Cmd.HELPER_PLAN][-1]
     assert plan["takeover"] == "netzverwaltung" and [v["name"] for v in plan["vlans"]] == ["bw", "gast"]
     assert plan["access"]["rules"][0]["interface"] == "gast"
+
+
+def nv_found_with_nas() -> dict[str, Any]:
+    """Netzverwaltung's setup with gast's fixed address for the NAS (documented on its eth0 in Lanvex Core)."""
+    found = json.loads(json.dumps(NV_FOUND))
+    found["vlans"][0]["reservations"] = [{"mac": "AA:BB:CC:00:00:05", "ip": "192.168.50.20", "name": "nas"}]
+    return found
+
+
+async def test_netzverwaltung_into_networks_documented_before(
+    admin: httpx.AsyncClient, core: CoreStandIn, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    """As on a server documented in Lanvex Core before Lanvex served networks: gast is there without a pool,
+    fixed address or access rules, its pool is a plain IP range, and the NAS has its address on its eth0."""
+    sid = await router_01(admin, fake)
+    facts = with_lanvex_vlan(assemble(load("nm")), "192.168.50.1")
+    vlan = facts.interfaces[-1].model_copy(update={"name": "gast", "manager_profile": "vlan-gast"})
+    bw = vlan.model_copy(update={"name": "bw", "vlan_id": 60, "manager_profile": "vlan-bw", "addresses": []})
+    fake.facts = facts.model_copy(update={"interfaces": [*facts.interfaces[:-1], vlan, bw]})
+    await admin.post(f"/api/v1/servers/{sid}/collect")
+    r = await admin.post(
+        f"/api/v1/servers/{sid}/networks",
+        json=NEW | {"name": "gast", "pool_start": None, "pool_end": None, "lease": "12h"},
+    )
+    assert r.status_code == 201, r.text
+    core.t("ipam/ip-ranges")[61] = {
+        "id": 61,
+        "start_address": "192.168.50.100/24",
+        "end_address": "192.168.50.199/24",
+        "status": "active",
+        "tags": [],
+    }
+    core.t("ipam/ip-addresses")[62] = {
+        "id": 62,
+        "address": "192.168.50.20/24",
+        "status": "active",
+        "assigned_object_type": "dcim.interface",
+        "assigned_object_id": 21,
+    }
+    fake.inspected = nv_found_with_nas()
+
+    # Taking over now would leave gast without DHCP, the NAS without its address and nobody on the Internet.
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/change?takeover=netzverwaltung")
+    assert r.status_code == 422 and r.json()["error"]["code"] == "takeover_incomplete", r.text
+    for gap in (
+        "bw is not documented",
+        "gast: Netzverwaltung serves DHCP (192.168.50.100 to 192.168.50.199); Lanvex Core documents no pool.",
+        "the fixed address 192.168.50.20 for aa:bb:cc:00:00:05 (nas) is not documented",
+        "gast: Netzverwaltung lets its devices reach the Internet;",
+    ):
+        assert gap in r.json()["error"]["message"], r.text
+
+    # A pool overlapping the plain IP range is refused by name, not by NetBox's message.
+    r = await admin.put(
+        f"/api/v1/servers/{sid}/networks/gast/pool", json={"start": "192.168.50.150", "end": "192.168.50.250"}
+    )
+    assert r.status_code == 422 and "has the IP range 192.168.50.100 to 192.168.50.199" in r.text, r.text
+
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/import", json={"source": "netzverwaltung"})
+    assert r.status_code == 200, r.text
+    report = {n["name"]: n for n in r.json()["networks"]}
+    assert report["bw"]["result"] == "documented"
+    assert report["gast"]["result"] == "completed"
+    for note in (
+        "DHCP pool 192.168.50.100 to 192.168.50.199 added.",
+        "Fixed address 192.168.50.20 for aa:bb:cc:00:00:05 added.",
+        "Access rules added.",
+    ):
+        assert note in report["gast"]["notes"], report["gast"]
+    # The range Lanvex Core had became the pool; the NAS's address stays as documented, with its MAC.
+    assert not core.posted("ipam/ip-ranges")
+    assert [t["slug"] for t in core.ser("ipam/ip-ranges", core.t("ipam/ip-ranges")[61])["tags"]] == [
+        "lanvex-dhcp"
+    ]
+    nas = core.t("ipam/ip-addresses")[62]
+    assert nas["status"] == "active" and nas["assigned_object_id"] == 21
+    assert nas["custom_fields"]["mac_address"] == "aa:bb:cc:00:00:05" and nas["dns_name"] == "nas"
+    gast = next(n for n in r.json()["view"]["networks"] if n["name"] == "gast")
+    assert gast["pool"]["ip_range_id"] == 61
+    assert gast["fixed"] == [
+        {"ip": "192.168.50.20", "mac": "aa:bb:cc:00:00:05", "name": "nas", "ip_id": 62, "device": "nas eth0"}
+    ]
+    again = (
+        await admin.post(f"/api/v1/servers/{sid}/networks/import", json={"source": "netzverwaltung"})
+    ).json()
+    assert {n["result"] for n in again["networks"]} == {"already documented"}
+
+    r = await admin.post(f"/api/v1/servers/{sid}/networks/change?takeover=netzverwaltung")
+    assert r.status_code == 201, r.text
+    plan = [p for c, p in fake.calls if c == Cmd.HELPER_PLAN][-1]
+    (pool,) = plan["dhcp"]["pools"]
+    assert pool["interface"] == "gast" and pool["reservations"][0]["mac"] == "aa:bb:cc:00:00:05"
+
+
+async def test_fixed_addresses_on_documented_devices(
+    admin: httpx.AsyncClient, core: CoreStandIn, fake: FakeServer, automation: None
+) -> None:
+    sid = await router_01(admin, fake)
+    assert (await admin.post(f"/api/v1/servers/{sid}/networks", json=NEW)).status_code == 201
+    core.t("dcim/interfaces")[12]["mac_addresses"] = [{"id": 2, "mac_address": "aa:bb:cc:00:00:07"}]
+    core.t("dcim/interfaces")[22] = {"id": 22, "name": "eth1", "device": NAS, "type": "1000base-t"}
+    for i, (ip, iface) in enumerate((("192.168.50.30", 21), ("192.168.50.31", 12), ("192.168.50.34", 22))):
+        core.t("ipam/ip-addresses")[70 + i] = {
+            "id": 70 + i,
+            "address": f"{ip}/24",
+            "status": "active",
+            "assigned_object_type": "dcim.interface",
+            "assigned_object_id": iface,
+        }
+
+    async def fixed(ip: str, mac: str) -> httpx.Response:
+        return await admin.put(f"/api/v1/servers/{sid}/networks/vlan50/fixed", json={"ip": ip, "mac": mac})
+
+    r = await fixed("192.168.50.30", "aa:bb:cc:00:00:09")
+    assert (
+        r.status_code == 422 and "nas eth0, whose MAC address in" in r.text and "aa:bb:cc:00:00:05" in r.text
+    )
+    r = await fixed("192.168.50.31", "aa:bb:cc:00:00:09")
+    assert r.status_code == 422 and "router-01's own address on eth1" in r.text, r.text
+    r = await fixed("192.168.50.34", "aa:bb:cc:00:00:07")
+    assert r.status_code == 422 and "aa:bb:cc:00:00:07 is router-01 eth1" in r.text, r.text
+    r = await fixed("192.168.50.30", "AA:BB:CC:00:00:05")
+    assert r.status_code == 200, r.text
+    (f,) = r.json()["networks"][0]["fixed"]
+    assert f["ip"] == "192.168.50.30" and f["device"] == "nas eth0"
+    assert core.t("ipam/ip-addresses")[70]["status"] == "active"  # as documented
+    r = await fixed("192.168.50.34", "aa:bb:cc:00:00:08")  # nas eth1 has no MAC address in Lanvex Core
+    assert r.status_code == 200, r.text
+
+
+def test_what_a_takeover_would_drop() -> None:
+    from lanvex.changes.schemas import NetworksRequest
+    from lanvex.networks.service import takeover_gaps
+
+    found = nv_found_with_nas()
+    gast = {
+        "internet": True,
+        "destinations": [{"network": "192.168.60.0/24"}, {"network": "192.168.178.0/24"}],
+        "services": ["137-138/udp", "139/tcp", "445/tcp", "8080/tcp"],
+    }
+    req = NetworksRequest.model_validate(
+        {
+            "kind": "networks",
+            "takeover": "netzverwaltung",
+            "vlans": [
+                {"name": "gast", "parent": "eth0", "id": 50, "addresses": ["192.168.50.1/24"]},
+                {"name": "bw", "parent": "eth0", "id": 60, "addresses": ["192.168.60.1/24"]},
+            ],
+            "dhcp": {
+                "pools": [
+                    {
+                        "interface": "gast",
+                        "start": "192.168.50.100",
+                        "end": "192.168.50.199",
+                        "reservations": [{"mac": "aa:bb:cc:00:00:05", "ip": "192.168.50.20"}],
+                    }
+                ]
+            },
+            "access": {"rules": [{"interface": "gast", **gast}]},
+        }
+    )
+    missing, losses = takeover_gaps(found, req)
+    assert missing == []
+    assert losses == [
+        "Devices on gast no longer reach 192.168.178.3/32 on 80/tcp, 443/tcp; 22/tcp on the server: Lanvex Core "
+        "documents less than Netzverwaltung allows.",
+        "DNS on gast is no longer filtered: Lanvex Core documents no DNS filter for it.",
+    ]
+    # A fixed address with another MAC address is missing, not kept.
+    req.dhcp.pools[0].reservations[0].mac = "aa:bb:cc:00:00:06"  # type: ignore[union-attr]
+    missing, _ = takeover_gaps(found, req)
+    assert missing == ["gast: the fixed address 192.168.50.20 for aa:bb:cc:00:00:05 (nas) is not documented."]

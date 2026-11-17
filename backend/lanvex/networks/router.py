@@ -6,11 +6,11 @@ from pydantic import Field, model_validator
 
 from lanvex.changes.schemas import LEASE_RE, AccessSettings, ChangeDetail
 from lanvex.changes.service import ChangeService, to_detail
-from lanvex.core.errors import Conflict
+from lanvex.core.errors import Conflict, ValidationFailed
 from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
 from lanvex.netbox.client import NetBoxClient
 from lanvex.networks.schemas import FixedIn, ImportReport, NetworksView, NewNetwork
-from lanvex.networks.service import DEFAULT_LEASE, NetworksService
+from lanvex.networks.service import DEFAULT_LEASE, NetworksService, takeover_gaps
 from lanvex.schemas import ApiModel
 from lanvex.servers.service import ServerService
 
@@ -232,10 +232,22 @@ async def prepare_networks_change(
             code="no_change",
         )
     changes = ChangeService(db, settings, servers)
+    notes: list[str] = []
+    if takeover:
+        # Never let the takeover drop what Netzverwaltung does and Lanvex Core does not document.
+        missing, notes = takeover_gaps(await changes.inspect(s, takeover), view.change)
+        if missing:
+            raise ValidationFailed(
+                "Lanvex Core does not document everything Netzverwaltung does on this server, so the takeover would "
+                "drop it: "
+                + " ".join(missing)
+                + " Import from Netzverwaltung adds what is missing, or document it.",
+                code="takeover_incomplete",
+            )
     async with audit.track(
         "server.change.prepare", "server", target_id=s.id, target_repr=f"{s.name} networks"
     ) as t:
-        c = await changes.prepare(s, view.change, user)
+        c = await changes.prepare(s, view.change, user, notes=notes)
         await db.commit()
         t.target_type, t.target_id = "server_change", c.id
         t.target_repr = f"#{c.number} {s.name} networks"

@@ -276,6 +276,19 @@ jobs:
             id=$(podman ps -q --filter label=com.docker.compose.service=$s)
             podman healthcheck run "$id" && echo "$s: healthy"
           done
+      - name: Update with install.sh --update (rootless)
+        # The next release unpacked next to this one: podman-compose must replace the running containers
+        # even though the compose file is the same, and the boot unit must follow to the new directory.
+        shell: bash
+        run: |
+          mkdir ../lanvex-next && cp -a . ../lanvex-next/ && rm ../lanvex-next/.env
+          sed -i 's/^__version__ = "\(.*\)"/__version__ = "\1+next"/' ../lanvex-next/backend/lanvex/__init__.py
+          ../lanvex-next/install.sh --update "$PWD" < /dev/null | tee update.log
+          id=$(podman ps -q --filter label=com.docker.compose.service=lanvex)
+          podman exec "$id" python -c "import lanvex; print(lanvex.__version__)" | tee /dev/stderr | grep -q '+next$'
+          grep -qx "WorkingDirectory=$(cd ../lanvex-next && pwd)" ~/.config/systemd/user/lanvex.service
+          password=$(sed -n 's/^  Password:  //p' install.log)
+          ../lanvex-next/scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$password"
       - name: Container logs
         if: failure()
         run: |

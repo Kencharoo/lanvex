@@ -67,6 +67,34 @@ def _host(address: str) -> str:
     return str(ipaddress.ip_interface(address).ip)
 
 
+def _macs(iface: dict[str, Any]) -> set[str]:
+    """An interface's MAC addresses: NetBox 4.2 and later keep them as objects, earlier ones in a field."""
+    found = [m.get("mac_address") for m in iface.get("mac_addresses") or [] if isinstance(m, dict)]
+    found += [(iface.get("primary_mac_address") or {}).get("mac_address"), iface.get("mac_address")]
+    return {str(m).lower().replace("-", ":") for m in found if m}
+
+
+def _assigned_to(ip: dict[str, Any]) -> str | None:
+    """'BS001 eth0' for an IP address assigned to a device's (or virtual machine's) interface."""
+    a = ip.get("assigned_object")
+    if not isinstance(a, dict):
+        return None
+    owner = a.get("device") or a.get("virtual_machine") or {}
+    return f"{owner.get('name') or '?'} {a.get('name') or ''}".strip()
+
+
+def _documented_differs(n: ServerNetwork, v: dict[str, Any]) -> list[str]:
+    """Where Lanvex Core documents a network otherwise than Netzverwaltung runs it (Lanvex Core is kept)."""
+    out = []
+    if v.get("vlan_id") and n.vlan_id is not None and int(v["vlan_id"]) != n.vlan_id:
+        out.append(f"VLAN {n.vlan_id} kept as documented (Netzverwaltung: VLAN {v['vlan_id']}).")
+    if v.get("parent") and n.parent and v["parent"] != n.parent:
+        out.append(f"On {n.parent} as documented (Netzverwaltung: on {v['parent']}).")
+    if v.get("address") and n.addresses and v["address"] not in n.addresses:
+        out.append(f"Address {', '.join(n.addresses)} kept as documented (Netzverwaltung: {v['address']}).")
+    return out
+
+
 def _vid(iface: dict[str, Any]) -> tuple[int | None, str | None]:
     untagged = iface.get("untagged_vlan")
     tagged = iface.get("tagged_vlans") or []
@@ -193,6 +221,78 @@ def nv_access(
         dns_filter=dns_filter,
     )
     return access, notes
+
+
+def _losses(nv: AccessSettings, mine: AccessSettings) -> list[str]:
+    """What devices may reach under Netzverwaltung's rules but not under Lanvex Core's."""
+    out = []
+    if nv.internet and not mine.internet:
+        out.append("the Internet")
+    for d in nv.destinations:
+        if not any(
+            m.network == d.network and (not m.ports or (d.ports and set(d.ports) <= set(m.ports)))
+            for m in mine.destinations
+        ):
+            out.append(d.network + (f" on {', '.join(d.ports)}" if d.ports else ""))
+    gone = [p for p in nv.services if p not in mine.services]
+    if gone:
+        out.append(f"{', '.join(gone)} on the server")
+    return out
+
+
+def takeover_gaps(found: dict[str, Any], req: NetworksRequest) -> tuple[list[str], list[str]]:
+    """What Netzverwaltung does on the server that the takeover change would not do: (missing, losses).
+    Missing (a network, its DHCP pool, a fixed address, all its access rules) refuses the takeover; a
+    partial loss of access is shown in the preview."""
+    vlans = {v["name"]: v for v in found.get("vlans") or [] if isinstance(v, dict) and v.get("name")}
+    wanted = {v.name for v in req.vlans}
+    pools = {p.interface: p for p in (req.dhcp.pools if req.dhcp else [])}
+    rules = {
+        r.interface: AccessSettings.model_validate(r.model_dump(exclude={"interface"}))
+        for r in (req.access.rules if req.access else [])
+    }
+    missing: list[str] = []
+    losses: list[str] = []
+    for name, v in sorted(vlans.items()):
+        if name not in wanted:
+            missing.append(f"{name} is not documented in Lanvex Core.")
+            continue
+        dhcp = v.get("dhcp") or {}
+        pool = pools.get(name)
+        if dhcp.get("enabled") and pool is None:
+            missing.append(
+                f"{name}: Netzverwaltung serves DHCP ({dhcp.get('start')} to {dhcp.get('end')}); Lanvex Core "
+                "documents no pool."
+            )
+        have = {(r.ip, r.mac) for r in pool.reservations} if pool else set()
+        for r in v.get("reservations") or [] if dhcp.get("enabled") else []:
+            mac = str(r.get("mac") or "").lower().replace("-", ":")
+            if (r.get("ip"), mac) not in have:
+                label = f" ({r['name']})" if r.get("name") else ""
+                missing.append(f"{name}: the fixed address {r.get('ip')} for {mac}{label} is not documented.")
+        try:
+            nv, _ = nv_access(v, vlans, found.get("policies") or {})
+        except (ValidationError, ValueError):
+            continue
+        mine = rules.get(name) or AccessSettings()
+        lost = _losses(nv, mine)
+        unfiltered = nv.dns_filter is not None and mine.dns_filter is None
+        if mine.is_default and (lost or unfiltered):
+            does = ([f"lets its devices reach {'; '.join(lost)}"] if lost else []) + (
+                ["filters their DNS"] if unfiltered else []
+            )
+            missing.append(
+                f"{name}: Netzverwaltung {' and '.join(does)}; Lanvex Core documents no access rules."
+            )
+            continue
+        if lost:
+            losses.append(
+                f"Devices on {name} no longer reach {'; '.join(lost)}: Lanvex Core documents less than "
+                "Netzverwaltung allows."
+            )
+        if unfiltered:
+            losses.append(f"DNS on {name} is no longer filtered: Lanvex Core documents no DNS filter for it.")
+    return missing, losses
 
 
 class NetworksService:
@@ -543,7 +643,15 @@ class NetworksService:
             mac = ((ip.get("custom_fields") or {}).get(MAC_FIELD) or "").lower()
             host = _host(ip["address"])
             if mac and host not in own:
-                out.append(FixedAddress(ip=host, mac=mac, name=ip.get("dns_name") or None, ip_id=ip["id"]))
+                out.append(
+                    FixedAddress(
+                        ip=host,
+                        mac=mac,
+                        name=ip.get("dns_name") or None,
+                        ip_id=ip["id"],
+                        device=_assigned_to(ip),
+                    )
+                )
         return sorted(out, key=lambda f: ipaddress.ip_address(f.ip))
 
     # ---- documenting --------------------------------------------------------------------------------
@@ -678,10 +786,38 @@ class NetworksService:
         return int(raw["id"])
 
     async def _create_pool(self, address: str, start: str, end: str, lease: str, created: list[str]) -> None:
+        """The pool as a new IP range tagged lanvex-dhcp, or an IP range Lanvex Core already has with
+        exactly these bounds, tagged. A range overlapping it with other bounds is refused by name."""
         assert self.nb is not None
         start, end = check_pool(address, start, end)
-        plen = ipaddress.ip_interface(address).network.prefixlen
+        net = ipaddress.ip_interface(address).network
+        plen = net.prefixlen
         tag = await self._tag(DHCP_TAG_SLUG, "Lanvex DHCP", "An IP range Lanvex serves by DHCP.")
+        lo, hi = ipaddress.ip_address(start), ipaddress.ip_address(end)
+        for r in await self.nb.list_all(RANGES, {"parent": str(net)}, cap=1000):
+            r_lo, r_hi = (
+                ipaddress.ip_address(_host(r["start_address"])),
+                ipaddress.ip_address(_host(r["end_address"])),
+            )
+            if (r_lo, r_hi) == (lo, hi):
+                tags = [t["id"] for t in r.get("tags") or []]
+                await self.nb.patch(
+                    f"{RANGES}{r['id']}/",
+                    {
+                        "tags": tags if tag in tags else [*tags, tag],
+                        "custom_fields": {LEASE_FIELD: None if lease == DEFAULT_LEASE else lease},
+                    },
+                )
+                created.append(
+                    f"DHCP pool {start} to {end} (the IP range Lanvex Core had, tagged {DHCP_TAG_SLUG})"
+                )
+                return
+            if r_lo <= hi and lo <= r_hi:
+                raise ValidationFailed(
+                    f"Lanvex Core has the IP range {r_lo} to {r_hi} in {net}, which overlaps the pool {start} to {end}. "
+                    f"Give the pool exactly that range's bounds to use it, or change the range in Lanvex Core.",
+                    fields={"start": [f"Overlaps {r_lo} to {r_hi}."]},
+                )
         body: dict[str, Any] = {
             "start_address": f"{start}/{plen}",
             "end_address": f"{end}/{plen}",
@@ -738,51 +874,93 @@ class NetworksService:
 
     async def import_netzverwaltung(self, s: Server, found: dict[str, Any]) -> list[ImportedNetwork]:
         """Document Netzverwaltung's networks in Lanvex Core: VLAN, address, pool, fixed addresses and access
-        rules. Networks already documented are left as they are. The server does not change."""
+        rules. For a network already documented, what Lanvex Core lacks is added and what it has is kept, each
+        named in the report. The server does not change."""
         self._device(s)
         vlans = {v["name"]: v for v in found.get("vlans") or [] if isinstance(v, dict) and v.get("name")}
-        documented = {n.name for n in (await self.view(s)).networks if n.netbox_interface_id}
+        documented = {n.name: n for n in (await self.view(s)).networks if n.netbox_interface_id}
         report: list[ImportedNetwork] = []
         for name, v in vlans.items():
-            if name in documented:
-                report.append(ImportedNetwork(name=name, result="already documented"))
-                continue
             dhcp = v.get("dhcp") or {}
-            try:
-                await self.add(
-                    s,
-                    NewNetwork(
-                        name=name,
-                        parent=v.get("parent") or "",
-                        vlan_id=int(v.get("vlan_id") or 0),
-                        vlan_name=(v.get("description") or name)[:64],
-                        address=v.get("address") or "",
-                        pool_start=dhcp.get("start") if dhcp.get("enabled") else None,
-                        pool_end=dhcp.get("end") if dhcp.get("enabled") else None,
-                        lease=dhcp.get("lease") or DEFAULT_LEASE,
-                    ),
-                )
-            except (LanvexError, ValidationError, ValueError) as e:
-                report.append(
-                    ImportedNetwork(name=name, result="failed", notes=[getattr(e, "message", str(e))])
-                )
-                continue
+            pool = (dhcp.get("start"), dhcp.get("end")) if dhcp.get("enabled") else None
+            lease = dhcp.get("lease") or DEFAULT_LEASE
             notes: list[str] = []
+            n = documented.get(name)
+            if n is None:
+                try:
+                    await self.add(
+                        s,
+                        NewNetwork(
+                            name=name,
+                            parent=v.get("parent") or "",
+                            vlan_id=int(v.get("vlan_id") or 0),
+                            vlan_name=(v.get("description") or name)[:64],
+                            address=v.get("address") or "",
+                            pool_start=pool[0] if pool else None,
+                            pool_end=pool[1] if pool else None,
+                            lease=lease,
+                        ),
+                    )
+                except (LanvexError, ValidationError, ValueError) as e:
+                    report.append(
+                        ImportedNetwork(name=name, result="failed", notes=[getattr(e, "message", str(e))])
+                    )
+                    continue
+                result = "documented"
+                fixed: dict[str, str] = {}
+                access_documented = False
+            else:
+                result = "already documented"
+                notes += _documented_differs(n, v)
+                if pool and n.pool is None:
+                    try:
+                        await self.set_pool(s, name, pool[0], pool[1], lease)
+                        notes.append(f"DHCP pool {pool[0]} to {pool[1]} added.")
+                        result = "completed"
+                    except (LanvexError, ValidationError, ValueError) as e:
+                        notes.append(f"DHCP pool: {getattr(e, 'message', str(e))}")
+                elif pool and n.pool and (n.pool.start, n.pool.end) != pool:
+                    notes.append(
+                        f"DHCP pool kept as documented: {n.pool.start} to {n.pool.end} "
+                        f"(Netzverwaltung: {pool[0]} to {pool[1]})."
+                    )
+                fixed = {f.ip: f.mac for f in n.fixed}
+                access_documented = n.access is not None and not n.access.is_default
             for r in v.get("reservations") or []:
+                ip, mac = r.get("ip"), str(r.get("mac") or "").lower()
+                if fixed.get(ip) == mac:
+                    continue
+                if ip in fixed:
+                    notes.append(
+                        f"Fixed address {ip} kept as documented: {fixed[ip]} (Netzverwaltung: {mac})."
+                    )
+                    continue
                 try:
                     await self.set_fixed(
                         s, name, FixedIn(ip=r["ip"], mac=r["mac"], name=r.get("name") or None)
                     )
+                    if n is not None:
+                        notes.append(f"Fixed address {ip} for {mac} added.")
+                        result = "completed"
                 except (LanvexError, ValidationError, ValueError, KeyError) as e:
-                    notes.append(f"Fixed address {r.get('ip')}: {getattr(e, 'message', str(e))}")
+                    notes.append(f"Fixed address {ip}: {getattr(e, 'message', str(e))}")
             try:
                 access, more = nv_access(v, vlans, found.get("policies") or {})
                 notes += more
-                if not access.is_default:
+                if access.is_default:
+                    pass
+                elif access_documented:
+                    assert n is not None and n.access is not None
+                    if n.access != access:
+                        notes.append("Access rules kept as documented; they differ from Netzverwaltung's.")
+                else:
                     await self.set_access(s, name, access)
+                    if n is not None:
+                        notes.append("Access rules added.")
+                        result = "completed"
             except (LanvexError, ValidationError, ValueError) as e:
                 notes.append(f"Access rules: {getattr(e, 'message', str(e))}")
-            report.append(ImportedNetwork(name=name, result="documented", notes=notes))
+            report.append(ImportedNetwork(name=name, result=result, notes=notes))
         return report
 
     async def set_pool(self, s: Server, name: str, start: str | None, end: str | None, lease: str) -> None:
@@ -839,19 +1017,60 @@ class NetworksService:
             "dns_name": body.name or "",
             "custom_fields": {MAC_FIELD: body.mac},
         }
-        if existing:
-            assigned = existing[0].get("assigned_object")
-            if assigned:
-                raise ValidationFailed(
-                    f"{ip} is assigned to {assigned.get('name')} in {self.nb.name}; a fixed DHCP address must be free.",
-                    fields={"ip": ["Assigned to an interface."]},
-                )
+        if existing and existing[0].get("assigned_object"):
+            # A device documented with this address on its interface, which gets it by DHCP: the usual case.
+            # The address stays as documented (status, name); only its MAC address is added.
+            await self._check_device_mac(s, existing[0], body.mac)
+            data = {"custom_fields": {MAC_FIELD: body.mac}}
+            if body.name and not existing[0].get("dns_name"):
+                data["dns_name"] = body.name
+            await self.nb.patch(f"{IPS}{existing[0]['id']}/", data)
+        elif existing:
             await self.nb.patch(f"{IPS}{existing[0]['id']}/", data)
         else:
             await self.nb.post(
                 IPS,
                 {"address": f"{ip}/{net.prefixlen}", "description": "Fixed DHCP address (Lanvex)", **data},
             )
+
+    async def _check_device_mac(self, s: Server, ip: dict[str, Any], mac: str) -> None:
+        """A fixed address on an IP address assigned to an interface: not one of the server's own, and with
+        the MAC address that interface has in Lanvex Core (if it has one), which no other device has."""
+        assert self.nb is not None
+        assigned, kind = ip["assigned_object"], ip.get("assigned_object_type") or "dcim.interface"
+        address = _host(ip["address"])
+        owner = assigned.get("device") or assigned.get("virtual_machine") or {}
+        where = f"{owner.get('name') or 'a device'} {assigned.get('name') or ''}".strip()
+        if kind == "dcim.interface" and owner.get("id") == self._device(s):
+            raise ValidationFailed(
+                f"{address} is {s.name}'s own address on {assigned.get('name')} in {self.nb.name}; the server does "
+                "not give itself addresses by DHCP.",
+                fields={"ip": ["The server's own address."]},
+            )
+        path = "virtualization/interfaces/" if kind == "virtualization.vminterface" else INTERFACES
+        iface = await self.nb.get(f"{path}{assigned['id']}/")
+        known = _macs(iface)
+        if known and mac not in known:
+            raise ValidationFailed(
+                f"{address} is {where}, whose MAC address in {self.nb.name} is {', '.join(sorted(known))}. Give the "
+                f"fixed address that MAC address, or correct it on {where} in {self.nb.name}.",
+                fields={"mac": [f"{where} has {', '.join(sorted(known))}."]},
+            )
+        for other_path, other_kind in (
+            (INTERFACES, "dcim.interface"),
+            ("virtualization/interfaces/", "virtualization.vminterface"),
+        ):
+            try:
+                holders = await self.nb.list_all(other_path, {"mac_address": mac}, cap=10)
+            except ValidationFailed:  # a NetBox without that filter
+                continue
+            for h in holders:
+                h_owner = h.get("device") or h.get("virtual_machine") or {}
+                if other_kind != kind or h_owner.get("id") != owner.get("id"):
+                    raise ValidationFailed(
+                        f"{mac} is {h_owner.get('name')} {h.get('name')} in {self.nb.name}, but {address} is {where}.",
+                        fields={"mac": [f"{h_owner.get('name')} {h.get('name')} has it."]},
+                    )
 
     async def remove_fixed(self, s: Server, name: str, ip: str) -> None:
         """The address stays documented; it just no longer belongs to one device's MAC address."""

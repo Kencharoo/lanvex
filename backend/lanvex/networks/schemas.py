@@ -32,6 +32,7 @@ class FixedAddress(ApiModel):
     mac: str
     name: str | None = None
     ip_id: int | None = None
+    device: str | None = None  # the device interface the address is assigned to in Lanvex Core, if any
 
 
 class Lease(ApiModel):
@@ -88,7 +89,9 @@ class NetworksView(ApiModel):
 
 class ImportedNetwork(ApiModel):
     name: str
-    result: Literal["documented", "already documented", "failed"]
+    # documented: new in Lanvex Core; completed: documented before, what it lacked added; already
+    # documented: nothing to add; failed: nothing documented (notes say why)
+    result: Literal["documented", "completed", "already documented", "failed"]
     notes: list[str] = Field(default_factory=list)
 
 

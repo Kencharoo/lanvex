@@ -35,6 +35,13 @@ const DHCP: Record<DhcpStatus, { tone: Tone; label: string }> = {
 
 /** The server's VLAN networks and their DHCP, as documented, next to what the server has. Documenting is
  * immediate; the server changes only through the prepared, approved change. */
+const IMPORT_RESULT: Record<ImportReport["networks"][number]["result"], string> = {
+  documented: "documented",
+  completed: "already documented; what was missing was added",
+  "already documented": "already documented, nothing to add",
+  failed: "not documented",
+};
+
 export function NetworksSection({ server: s, facts, isAdmin }: { server: Server; facts: HostFacts | null; isAdmin: boolean }) {
   const nbName = useNetBoxLabel();
   const qc = useQueryClient();
@@ -124,7 +131,7 @@ export function NetworksSection({ server: s, facts, isAdmin }: { server: Server;
           <ul className="grid gap-1">
             {report.networks.map((n) => (
               <li key={n.name}>
-                <span className="font-medium">{n.name}</span>: {n.result}
+                <span className="font-medium">{n.name}</span>: {IMPORT_RESULT[n.result]}
                 {n.notes.length > 0 && <span className="text-muted"> ({n.notes.join(" ")})</span>}
               </li>
             ))}
@@ -308,6 +315,7 @@ function NetworkRow({
                         <span>
                           <span className="addr">{f.ip}</span> · <span className="addr">{f.mac}</span>
                           {f.name ? ` · ${f.name}` : ""}
+                          {f.device && f.device !== f.name ? <span className="text-muted"> · {f.device}</span> : null}
                         </span>
                         {isAdmin && managed && (
                           <button type="button" aria-label={`Remove the fixed address ${f.ip}`} onClick={() => onUnfix(f.ip)} className="rounded p-0.5 text-muted hover:text-danger">
@@ -633,7 +641,7 @@ function FixedDialog({
           }}
         >
           <DialogBody>
-            <Field label="Address" htmlFor="fx-ip" error={fieldError(save.error, "ip")}>
+            <Field label="Address" htmlFor="fx-ip" error={fieldError(save.error, "ip")} hint="Free, or the address of a device documented in Lanvex Core: it then gets that address by DHCP.">
               <Input id="fx-ip" className="addr" value={f.ip} onChange={(e) => setF({ ...f, ip: e.target.value })} placeholder={seed?.network.network?.replace(/0\/\d+$/, "20") ?? ""} required autoFocus />
             </Field>
             <Field label="MAC address" htmlFor="fx-mac" error={fieldError(save.error, "mac")}>

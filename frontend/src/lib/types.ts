@@ -730,7 +730,8 @@ export interface ServerNetwork {
   note: string | null;
   on_server: { parent: string | null; id: number | null; addresses: string[] } | null;
   pool: { start: string; end: string; lease: string; ip_range_id: number | null } | null;
-  fixed: { ip: string; mac: string; name: string | null; ip_id: number | null }[];
+  /** device: the device interface the address is assigned to in Lanvex Core ("nas eth0"), if any. */
+  fixed: { ip: string; mac: string; name: string | null; ip_id: number | null; device: string | null }[];
   dhcp: DhcpStatus | null;
   leases: NetworkLease[];
   access: AccessSettings | null;
@@ -742,7 +743,8 @@ export interface ServerNetwork {
 export interface ImportReport {
   found: boolean;
   source: string;
-  networks: { name: string; result: "documented" | "already documented" | "failed"; notes: string[] }[];
+  /** completed: documented before; what it lacked was added (the notes say what). */
+  networks: { name: string; result: "documented" | "completed" | "already documented" | "failed"; notes: string[] }[];
   view: NetworksView;
 }
 

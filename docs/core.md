@@ -165,17 +165,26 @@ docker compose run --rm core manage nbshell
 ### Updating
 
 Lanvex and Lanvex Core are released together: each Lanvex release names the Lanvex Core version it
-was tested with in `core.lock` and contains it in `./core`. To update:
+was tested with in `core.lock` and contains it in `./core`. To update, unpack the new release next to
+the running one and let its installer take over from there:
 
 ```bash
 # back up first (above), then:
-unzip lanvex-1.0.0.zip && cp lanvex-0.9.0/.env lanvex-1.0.0/
-cd lanvex-1.0.0 && docker compose up -d --build   # Podman: podman-compose up -d --build
+unzip lanvex-1.0.1.zip && cd lanvex-1.0.1
+./install.sh --update ../lanvex-1.0.0
 ```
 
-The Compose project is always called `lanvex`, so the new directory uses the same containers,
-networks and volumes; the old directory can be deleted once everything runs. Under Podman, the
-systemd unit that starts Lanvex at boot names the directory; point it at the new one first:
+`--update` copies `.env` from the old directory, builds the new version, replaces the running
+containers and waits until they are healthy. The Compose project is always called `lanvex`, so the
+new containers use the same volumes, and with them the same data. Under Podman it also points the
+systemd unit that starts Lanvex at boot to the new directory. Once everything runs, the old directory
+can be deleted. Unpacked over the old directory instead (`rsync`, say), run `./install.sh --update .`
+there.
+
+By hand, the one step that matters is replacing the containers: `docker compose up -d --build`
+does it whenever an image changed, but **podman-compose does not**: with an unchanged compose file it
+keeps the old containers running, so the old version stays. Under Podman, use
+`podman-compose up -d --build --force-recreate`. Then point the boot unit at the new directory:
 
 ```bash
 sed -i "s|^WorkingDirectory=.*|WorkingDirectory=$PWD|" ~/.config/systemd/user/lanvex.service
@@ -183,8 +192,8 @@ systemctl --user daemon-reload   # as root: /etc/systemd/system/lanvex.service a
 ```
 
 An installation from before 0.6.1 has no such unit; [operations.md](operations.md#podman) shows how to
-add it. Lanvex Core applies its
-database migrations when it starts; that can take a few minutes after a NetBox feature release.
+add it. Lanvex Core applies its database migrations when it starts; that can take a few minutes after a
+NetBox feature release.
 
 ### Switching between Lanvex Core and your own NetBox
 

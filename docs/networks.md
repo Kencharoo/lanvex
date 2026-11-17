@@ -27,8 +27,8 @@ services on the server, per network; since 1.0 with a [DNS filter](#dns-filter) 
 |---|---|
 | A virtual interface of the server's device, with a parent interface and one VLAN (802.1Q mode *Access*) | A VLAN interface, configured the way the server's network is (see below) |
 | An IPv4 address on that interface | The server's address in the network; devices get it as gateway and DNS server |
-| An IP range in that network, tagged `lanvex-dhcp`; custom field *DHCP lease time* (empty: 12h) | The DHCP pool (`/etc/dnsmasq.d/lanvex.conf`) |
-| An IP address in that network with the custom field *MAC address* | A fixed address: that device always gets this address |
+| An IP range in that network, tagged `lanvex-dhcp`; custom field *DHCP lease time* (empty: 12h) | The DHCP pool (`/etc/dnsmasq.d/lanvex.conf`). A pool given exactly the bounds of an IP range Lanvex Core already has tags that range |
+| An IP address in that network with the custom field *MAC address* | A fixed address: that device always gets this address. The address may be free or assigned to the device's interface in Lanvex Core (not the server's own); then the MAC address must be the one that interface has there, if it has one, and no other device's |
 | The custom field *Access (Lanvex)* on the interface | What devices on the network may reach (below) |
 
 The server page shows the leases devices hold (as of the last read), and *Make fixed* turns one into a
@@ -168,14 +168,18 @@ rebuilding the networks by hand, in two steps:
    addresses, and access rules (the Internet, the main LAN and the switch's web interface as
    destinations, other VLANs, services on the server as ports, the DNS filter). The report says what
    did not carry over: block lists by name, services Lanvex does not know by name. Nothing on the
-   server changes, and networks already documented stay as they are.
+   server changes. A network Lanvex Core already documents keeps what it has (VLAN, address, pool,
+   fixed addresses, access rules) and gets what it lacks; the report names each item added or kept.
 2. **Take over** (*Prepare takeover from Netzverwaltung*). One change replaces all of Netzverwaltung's
    networks at once: its NetworkManager profiles `vlan-<name>`, its zones `<name>`, its `nv-…`
    policies and `nv-…` dnsmasq files are deleted (and backed up), `netzverwaltung.service` and
    `dnsmasq-filter.service` are stopped and disabled, and Lanvex's own profiles, zones, policies,
    dnsmasq file and filters take their place. Approve it like any change; with *My browser confirms
    changes*, keep it from a browser on the LAN. If anything fails, or you undo it, the server puts
-   Netzverwaltung back exactly as it was.
+   Netzverwaltung back exactly as it was. Lanvex first compares Netzverwaltung's setup with Lanvex
+   Core and refuses the takeover, naming what is missing, if it would drop a network, a DHCP pool or
+   a fixed address, or leave a network with access in Netzverwaltung without any access rules. Access
+   rules narrower than Netzverwaltung's are shown in the preview.
 
 Before the takeover:
 

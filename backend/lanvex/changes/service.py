@@ -451,7 +451,10 @@ class ChangeService:
 
     # ---- preparing --------------------------------------------------------------------------------
 
-    async def prepare(self, s: Server, req: ChangeRequest | NetworksRequest, user: User) -> ServerChange:
+    async def prepare(
+        self, s: Server, req: ChangeRequest | NetworksRequest, user: User, notes: list[str] | None = None
+    ) -> ServerChange:
+        """notes: warnings the caller found, shown in the preview first."""
         readiness = await self.readiness(s)
         if readiness.open_change:
             raise Conflict(
@@ -471,6 +474,7 @@ class ChangeService:
         before: dict[str, Any]
         if isinstance(req, NetworksRequest):
             before, warnings = await self._prepare_networks(s, req, facts)
+            warnings = [*(notes or []), *warnings]
             summary = summarize_networks(req, before["vlans"])
         else:
             before, warnings = await self._prepare_interface(s, req, facts)
@@ -648,11 +652,19 @@ class ChangeService:
             f"Removing {name} disconnects every device on that network from {s.name}."
             for name in sorted(mine - set(wanted))
         ]
-        if req.dhcp is not None and req.dhcp.pools:
-            warnings.append(
-                "Devices on these networks get addresses and reach this server's DHCP and DNS. Reaching anything "
-                "beyond the server (other networks, the Internet) needs access rules, which come with Lanvex 0.9."
+        if req.dhcp is not None:
+            ruled = (
+                {r.interface for r in req.access.rules if not r.is_default}
+                if req.access is not None
+                # as last applied: the server lists non-default rules only
+                else {str(r.get("interface")) for r in facts.lanvex_access}
             )
+            bare = sorted(p.interface for p in req.dhcp.pools if p.interface not in ruled)
+            if bare:
+                warnings.append(
+                    f"Devices on {', '.join(bare)} reach only this server's DHCP and DNS: Lanvex Core documents no "
+                    "access rules for " + ("it." if len(bare) == 1 else "them.")
+                )
         return {"vlans": ours, "dhcp": None, "access": facts.lanvex_access}, warnings
 
     async def _safety(self, s: Server, req: ChangeRequest, before: dict[str, Any]) -> list[str]:

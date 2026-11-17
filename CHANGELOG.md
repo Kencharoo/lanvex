@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.1 — 2026-11-17
+
+Fixes from updating KlassenServer to 1.0.0, all of which stood between it and the takeover.
+
+- **A fixed address for a device documented with its address.** A device in Lanvex Core with the
+  address on its interface (a NAS with 192.168.10.5 on its eth0) can now get that address by DHCP: the
+  fixed address adds its MAC address to the documented address, which keeps its status and interface.
+  Refused only when the address is the server's own, when the interface has another MAC address in
+  Lanvex Core, or when the MAC address belongs to another device there. The network shows which
+  device a fixed address is documented on.
+- **The import completes networks documented before.** Netzverwaltung's networks that Lanvex Core
+  already documents get what they lack (DHCP pool, fixed addresses, access rules); what Lanvex Core
+  has is kept. The report names each item added or kept.
+- **The takeover refuses to drop anything.** Before preparing it, Lanvex compares Netzverwaltung's
+  setup with Lanvex Core: a network, DHCP pool or fixed address Lanvex Core lacks, or a network with
+  access in Netzverwaltung and none in Lanvex Core, refuses it by name; narrower access rules are
+  shown in the preview.
+- **An existing IP range becomes the DHCP pool.** A pool with exactly the bounds of an IP range Lanvex
+  Core already has tags that range instead of failing on NetBox's overlap check; a range overlapping
+  with other bounds is named.
+- **Updating with the installer:** `./install.sh --update ../lanvex-<old>` takes over `.env`, rebuilds,
+  replaces the containers (also under podman-compose, which kept the old ones running when the compose
+  file did not change) and points the Podman boot unit at the new directory. Tested in CI under
+  rootless Podman.
+- The preview's note about networks without access rules names them, instead of saying access rules
+  come with 0.9.
+
+**Updating:** `./install.sh --update ../lanvex-1.0.0` in the unpacked release. The helper is unchanged
+(version 5), and so is Lanvex Core (1.0.0).
+
 ## 1.0.0 — 2026-11-16
 
 The version that replaces Netzverwaltung: DNS filtering, and taking over a running setup

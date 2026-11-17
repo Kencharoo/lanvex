@@ -1,4 +1,4 @@
-# Status of Lanvex 1.0.0
+# Status of Lanvex 1.0.1
 
 Last updated 2026-11-16. "Verified" means it was run, not just written.
 
@@ -12,7 +12,7 @@ On every push, in the CI lab:
 |---|---|
 | DNS filter | A real client on VLAN 50 gets the filter (`10.99.53.1`) as its DNS server by DHCP. Asked over UDP from the client: the blocked domain and a name below it answer "no such name", the client's own name (known only to the main dnsmasq) resolves. Switched off: the filter's dnsmasq and `lxdns` are gone; that rolled back: the filter answers again. The helper's check asks the filter itself. On Fedora 44 (firewalld), Ubuntu 24.04 (Lanvex's table, and ufw) and Debian 12 |
 | Takeover | On Fedora 44, a stand-in of Netzverwaltung as on KlassenServer (its `netz.yaml`, NetworkManager profile `vlan-gast`, zone, `nv-` policy and dnsmasq file, a running `netzverwaltung.service`, and hand-kept neighbours `lan-to-switch.xml` and `switch-mgmt.conf`) serves a real client its fixed address. The helper reads it (*inspect*); a networks change for the same VLAN is refused without the takeover and planned with it (its files deleted, Lanvex's created, its service stopped first). Applied and verified: the client gets the same address from Lanvex, the neighbours are untouched. Rolled back: Netzverwaltung's profile, zone, files and service are back and serve the client again. Its first run found that dnsmasq, left on Fedora's default `local-service=host` once Netzverwaltung's file was gone, served no network while the check passed; fixed, and the check now asks for DNS in each network |
-| Import | API tests: `netz.yaml` and policies into Lanvex Core (VLANs, addresses, pools, lease times, fixed addresses, access rules incl. main LAN and switch interface from the policies, DNS filters); networks already documented are kept; the report lists what did not carry over; the takeover change carries every Netzverwaltung network. Helper unit tests: a takeover lacking one of its networks, on a server without NetworkManager, or with a hand-kept policy naming one of its zones is refused; its hand-kept files are never part of it |
+| Import | API tests: `netz.yaml` and policies into Lanvex Core (VLANs, addresses, pools, lease times, fixed addresses, access rules incl. main LAN and switch interface from the policies, DNS filters); networks already documented are kept; the report lists what did not carry over; the takeover change carries every Netzverwaltung network. Into networks documented before (1.0.1): the plain IP range becomes the pool, the NAS documented on its eth0 gets its fixed address, access rules are added, and the takeover is refused, naming each gap, until they are; fixed addresses on documented devices are refused for the server's own address, another MAC address on the interface, or a MAC address another device has. Helper unit tests: a takeover lacking one of its networks, on a server without NetworkManager, or with a hand-kept policy naming one of its zones is refused; its hand-kept files are never part of it |
 
 ### Access rules (0.9)
 
@@ -128,6 +128,11 @@ Fedora's registry settings (short image names refused), with Docker stopped: the
 pick Podman by itself, finish, remove the first administrator's password from `.env`, and every
 container must report healthy through `podman healthcheck run`.
 
+Since 1.0.1 that job then updates the installation: a copy with another version number, unpacked next
+to it, runs `install.sh --update` on the first. The new version must be the one running (podman-compose
+replaced the containers although the compose file is the same), the boot unit must name the new
+directory, and `check-install.sh` must pass again with the same administrator.
+
 ### First installation on a real server (0.4.0)
 
 On Ubuntu 24.04 with Docker Compose v2, from the release archive, Lanvex Core mode, plain HTTP on a
@@ -207,7 +212,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 371 tests: 323 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 40 SSH lab (6 reading, discovery and recording; 7 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Backend | 374 tests: 326 unit and API (real PostgreSQL, migrations up/down/up with no drift), 8 live NetBox, 40 SSH lab (6 reading, discovery and recording; 7 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
 | Frontend | Type check, 30 unit tests, production build; 10 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core) |
 | Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |

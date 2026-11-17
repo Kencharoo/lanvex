@@ -37,7 +37,7 @@ You need a Linux server with Docker and Docker Compose v2, or with Podman and po
 (Fedora Server's default; rootless works too, see [docs/operations.md](docs/operations.md#podman)).
 
 ```bash
-unzip lanvex-1.0.0.zip && cd lanvex-1.0.0
+unzip lanvex-1.0.1.zip && cd lanvex-1.0.1
 sudo ./install.sh
 ```
 
@@ -48,10 +48,10 @@ generates every password and key into `.env`, builds and starts the containers, 
 healthy and prints how to sign in. `./install.sh --help` lists options for installing without
 questions, such as `--port 100.64.0.5:8081`.
 
-To update, unpack the new release next to the old one, copy `.env` into it and run
-`docker compose up -d --build` (Podman: `podman-compose up -d --build`) there; the data stays in the
-volumes. Back up first
-([docs/core.md](docs/core.md#updating)). [CHANGELOG.md](CHANGELOG.md) lists what changed.
+To update, back up first, unpack the new release next to the old one and run
+`./install.sh --update ../lanvex-<old version>` in it: it takes over `.env`, replaces the containers
+and keeps the data in the volumes ([docs/core.md](docs/core.md#updating)).
+[CHANGELOG.md](CHANGELOG.md) lists what changed.
 
 Session cookies are HTTPS-only unless you choose plain HTTP. For HTTPS see
 [docs/operations.md](docs/operations.md). Setting up by hand instead: copy `.env.example` to `.env`,
