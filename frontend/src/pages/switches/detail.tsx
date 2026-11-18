@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cable, ExternalLink, MoreHorizontal, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import * as React from "react";
-import { useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { DataTable, type Column } from "@/components/data-table";
 import { PageHeader, Section } from "@/components/page";
@@ -13,8 +13,9 @@ import { useSession } from "@/app/session";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
 import { useNetBoxLabel } from "@/lib/system";
-import type { PortFinding, SnmpCredentials, Switch, SwitchDetail, SwitchFacts, SwitchPort } from "@/lib/types";
+import type { PortFinding, SnmpCredentials, Switch, SwitchChangeDetail, SwitchChanges, SwitchDetail, SwitchFacts, SwitchPort } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
+import { ChangeStatusBadge } from "../changes/shared";
 import { PlanDialog } from "../discovery";
 import { DevicePicker, EMPTY_SNMP, EndpointLine, PortStatusBadge, SnmpForm, SwitchStatusBadge, snmpComplete, snmpLabel, snmpPayload, speed, uptime } from "./shared";
 
@@ -25,6 +26,7 @@ export function SwitchDetailPage() {
   const qc = useQueryClient();
   const [dialog, setDialog] = React.useState<null | "edit" | "delete">(null);
   const q = useQuery({ queryKey: ["switches", id], queryFn: () => api<SwitchDetail>(`/switches/${id}`) });
+  const changes = useQuery({ queryKey: ["switches", id, "changes"], queryFn: () => api<SwitchChanges>(`/switches/${id}/changes`) });
   const read = useMutation({
     mutationFn: () => api<SwitchDetail>(`/switches/${id}/read`, { method: "POST" }),
     onSuccess: (d) => {
@@ -92,6 +94,20 @@ export function SwitchDetailPage() {
         }
       />
 
+      {changes.data?.open && (
+        <Notice
+          title={`Change #${changes.data.open.number}: ${changes.data.open.summary}`}
+          className="mb-6"
+          action={
+            <Button size="sm" variant="secondary" asChild>
+              <Link to={`/changes/switch/${changes.data.open.id}`}>Open</Link>
+            </Button>
+          }
+        >
+          <ChangeStatusBadge status={changes.data.open.status} />
+        </Notice>
+      )}
+
       {s && s.last_status && s.last_status !== "ok" && (
         <Notice tone="danger" title="Last read failed" className="mb-6">
           {s.last_status_message} {s.last_checked_at && <span className="text-faint">({relativeTime(s.last_checked_at)})</span>}
@@ -125,7 +141,7 @@ export function SwitchDetailPage() {
               </ul>
             </Notice>
           )}
-          <PortsSection sw={s} facts={s.facts} />
+          <PortsSection sw={s} facts={s.facts} changeable={isAdmin && !!changes.data?.automation_enabled && !!changes.data.changes_enabled && !changes.data.open} />
           <VlansSection facts={s.facts} />
         </div>
       )}
@@ -197,11 +213,17 @@ function vlanText(p: SwitchPort): React.ReactNode {
   );
 }
 
-function PortsSection({ sw, facts }: { sw: SwitchDetail; facts: SwitchFacts }) {
+/** A port whose VLANs Lanvex may change: a physical port of the bridge, not in a LAG, not to another switch. */
+function vlanChangeable(p: SwitchPort, f: PortFinding | undefined): boolean {
+  return p.kind === "ethernet" && p.lag == null && p.bridge_port != null && !f?.uplink;
+}
+
+function PortsSection({ sw, facts, changeable }: { sw: SwitchDetail; facts: SwitchFacts; changeable: boolean }) {
   const { isAdmin } = useSession();
   const nbName = useNetBoxLabel();
   const [all, setAll] = React.useState(false);
   const [recordKey, setRecordKey] = React.useState<string | null>(null);
+  const [vlanPort, setVlanPort] = React.useState<SwitchPort | null>(null);
   const findings = new Map<number, PortFinding>(sw.findings.map((f) => [f.if_index, f]));
   const byIndex = new Map(facts.ports.map((p) => [p.index, p]));
   const rows = facts.ports.filter((p) => all || p.kind === "ethernet" || p.kind === "lag" || findings.has(p.index));
@@ -230,7 +252,20 @@ function PortsSection({ sw, facts }: { sw: SwitchDetail; facts: SwitchFacts }) {
         </span>
       ),
     },
-    { key: "vlan", header: "VLANs", cell: (p) => vlanText(p) ?? <span className="text-faint">—</span> },
+    {
+      key: "vlan",
+      header: "VLANs",
+      cell: (p) => (
+        <span className="inline-flex items-center gap-1">
+          {vlanText(p) ?? <span className="text-faint">—</span>}
+          {changeable && vlanChangeable(p, findings.get(p.index)) && (
+            <Button size="icon-sm" variant="ghost" aria-label={`Change VLANs of ${p.name}`} title="Change VLANs" onClick={() => setVlanPort(p)}>
+              <Pencil />
+            </Button>
+          )}
+        </span>
+      ),
+    },
     {
       key: "seen",
       header: "Connected",
@@ -288,8 +323,98 @@ function PortsSection({ sw, facts }: { sw: SwitchDetail; facts: SwitchFacts }) {
         description="Added as a connected cable."
         refresh={["switches", sw.id]}
       />
+      <VlanDialog sw={sw} facts={facts} port={vlanPort} onClose={() => setVlanPort(null)} />
     </Section>
   );
+}
+
+/** Choose a port's VLANs; Lanvex reads the port, checks the change and shows the writes for approval. */
+function VlanDialog({ sw, facts, port, onClose }: { sw: SwitchDetail; facts: SwitchFacts; port: SwitchPort | null; onClose: () => void }) {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [untagged, setUntagged] = React.useState("");
+  const [tagged, setTagged] = React.useState<Set<number>>(new Set());
+  React.useEffect(() => {
+    if (!port) return;
+    setUntagged(String(port.untagged[0] ?? port.pvid ?? ""));
+    setTagged(new Set(port.tagged));
+    prepare.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [port]);
+  const prepare = useMutation({
+    mutationFn: () =>
+      api<SwitchChangeDetail>(`/switches/${sw.id}/ports/${port!.index}/vlans`, {
+        method: "POST",
+        body: { untagged: Number(untagged), tagged: [...tagged].filter((v) => v !== Number(untagged)).sort((a, b) => a - b) },
+      }),
+    onSuccess: (c) => {
+      void qc.invalidateQueries({ queryKey: ["switches", sw.id, "changes"] });
+      onClose();
+      navigate(`/changes/switch/${c.id}`);
+    },
+  });
+  const label = (v: { id: number; name: string | null }) => (v.name ? `${v.id} · ${v.name}` : String(v.id));
+  const others = facts.vlans.filter((v) => String(v.id) !== untagged);
+  return (
+    <Dialog open={port !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent title={port ? `VLANs of ${port.name}` : "VLANs"} description={port ? `Now: ${vlanSummary(port)}` : undefined}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            prepare.mutate();
+          }}
+        >
+          <DialogBody>
+            <Field label="Untagged VLAN (PVID)" htmlFor="pv-untagged">
+              <Select id="pv-untagged" value={untagged} onChange={(e) => setUntagged(e.target.value)}>
+                {untagged === "" && <option value="">Choose…</option>}
+                {facts.vlans.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {label(v)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {others.length > 0 && (
+              <fieldset className="grid gap-1.5">
+                <legend className="mb-1.5 text-[13px] font-medium">Tagged VLANs</legend>
+                <div className="grid max-h-48 grid-cols-2 gap-x-4 gap-y-1.5 overflow-y-auto sm:grid-cols-3">
+                  {others.map((v) => (
+                    <Checkbox
+                      key={v.id}
+                      id={`pv-tagged-${v.id}`}
+                      label={label(v)}
+                      checked={tagged.has(v.id)}
+                      onChange={(e) => {
+                        const next = new Set(tagged);
+                        if (e.target.checked) next.add(v.id);
+                        else next.delete(v.id);
+                        setTagged(next);
+                      }}
+                    />
+                  ))}
+                </div>
+              </fieldset>
+            )}
+            {prepare.error && <Notice tone="danger">{errorMessage(prepare.error)}</Notice>}
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" disabled={untagged === ""} loading={prepare.isPending}>
+              Preview change
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function vlanSummary(p: SwitchPort): string {
+  const parts = [p.untagged.length ? `untagged ${p.untagged.join(", ")}` : null, p.tagged.length ? `tagged ${p.tagged.join(", ")}` : null].filter(Boolean);
+  return parts.join(", ") || (p.pvid ? `PVID ${p.pvid}` : "no VLAN");
 }
 
 function VlansSection({ facts }: { facts: SwitchFacts }) {
@@ -327,8 +452,17 @@ function EditDialog({ sw, open, onClose }: { sw: Switch; open: boolean; onClose:
   const [device, setDevice] = React.useState<{ id: number; name: string | null } | null>(null);
   const [replace, setReplace] = React.useState(false);
   const [creds, setCreds] = React.useState<Required<SnmpCredentials>>(EMPTY_SNMP);
+  const [allow, setAllow] = React.useState(false);
+  const [ownWrite, setOwnWrite] = React.useState(false);
+  const [replaceWrite, setReplaceWrite] = React.useState(false);
+  const [writeCreds, setWriteCreds] = React.useState<Required<SnmpCredentials>>(EMPTY_SNMP);
   React.useEffect(() => {
     if (!open) return;
+    setAllow(sw.changes_enabled);
+    setOwnWrite(!!sw.write_snmp);
+    setReplaceWrite(false);
+    const w = sw.write_snmp ?? sw.snmp;
+    setWriteCreds({ ...EMPTY_SNMP, version: w.version, username: w.username ?? "", auth_protocol: w.auth_protocol ?? "sha", priv_protocol: w.priv_protocol ?? "aes" });
     setForm({
       name: sw.name,
       description: sw.description,
@@ -352,6 +486,9 @@ function EditDialog({ sw, open, onClose }: { sw: Switch; open: boolean; onClose:
           netbox_device_id: device?.id ?? null,
           read_interval_minutes: form.interval === "" ? null : Number(form.interval),
           ...(replace ? { credentials: snmpPayload(creds) } : {}),
+          changes_enabled: allow,
+          ...(!ownWrite && sw.write_snmp ? { write_credentials: null } : {}),
+          ...(ownWrite && (!sw.write_snmp || replaceWrite) ? { write_credentials: snmpPayload(writeCreds) } : {}),
         },
       }),
     onSuccess: () => {
@@ -400,13 +537,28 @@ function EditDialog({ sw, open, onClose }: { sw: Switch; open: boolean; onClose:
             <DevicePicker value={device} onChange={setDevice} />
             <Checkbox id="esw-replace" label="Change SNMP credentials" checked={replace} onChange={(e) => setReplace(e.target.checked)} />
             {replace && <SnmpForm value={creds} onChange={setCreds} />}
+            <div className="grid gap-3 border-t border-line pt-4">
+              <Checkbox id="esw-allow" label="Allow VLAN changes from Lanvex" checked={allow} onChange={(e) => setAllow(e.target.checked)} />
+              {allow && (
+                <>
+                  <Checkbox id="esw-own-write" label="Separate credentials for changes" checked={ownWrite} onChange={(e) => setOwnWrite(e.target.checked)} />
+                  {ownWrite && sw.write_snmp && (
+                    <p className="flex flex-wrap items-center gap-3 text-[13px] text-muted">
+                      {snmpLabel(sw.write_snmp)}
+                      <Checkbox id="esw-replace-write" label="Replace" checked={replaceWrite} onChange={(e) => setReplaceWrite(e.target.checked)} />
+                    </p>
+                  )}
+                  {ownWrite && (!sw.write_snmp || replaceWrite) && <SnmpForm value={writeCreds} onChange={setWriteCreds} idPrefix="esw-w" />}
+                </>
+              )}
+            </div>
             {save.error && !err("name") && !err("address") && <Notice tone="danger">{errorMessage(save.error)}</Notice>}
           </DialogBody>
           <DialogFooter>
             <Button type="button" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary" loading={save.isPending} disabled={!form.name.trim() || !form.address.trim() || (replace && !snmpComplete(creds))}>
+            <Button type="submit" variant="primary" loading={save.isPending} disabled={!form.name.trim() || !form.address.trim() || (replace && !snmpComplete(creds)) || (allow && ownWrite && (!sw.write_snmp || replaceWrite) && !snmpComplete(writeCreds))}>
               Save
             </Button>
           </DialogFooter>

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -53,6 +53,8 @@ class SwitchUpdate(ApiModel):
     credentials: SnmpCredentials | None = None
     netbox_device_id: int | None = Field(default=None, ge=1)  # null unlinks
     read_interval_minutes: Interval | None = None
+    changes_enabled: bool | None = None
+    write_credentials: SnmpCredentials | None = None  # null: changes use the reading credentials
 
     _addr = field_validator("address")(lambda cls, v: v if v is None else valid_address(v))
     _names = field_validator("name", "description", mode="before")(lambda cls, v: _strip(v))
@@ -91,7 +93,62 @@ class SwitchOut(ApiModel):
     ports_total: int | None
     ports_up: int | None
     mac_count: int | None
+    changes_enabled: bool = False
+    write_snmp: SnmpSummary | None = None  # credentials of their own for changes
     created_at: datetime
+
+
+# ---- changes ------------------------------------------------------------------------------------------
+
+VlanId = Annotated[int, Field(ge=1, le=4094)]
+
+
+class PortVlanRequest(ApiModel):
+    untagged: VlanId
+    tagged: list[VlanId] = Field(default_factory=list, max_length=4094)
+
+
+class SwitchChangeOut(ApiModel):
+    id: uuid.UUID
+    number: int
+    switch_id: uuid.UUID
+    switch_name: str
+    if_index: int
+    port: str
+    summary: str
+    status: str  # changes/models.py ChangeStatus
+    requested_by: str
+    created_at: datetime
+    approved_by: str | None
+    approved_at: datetime | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    outcome: str | None
+
+
+class SwitchWrite(ApiModel):
+    text: str
+    oids: list[str]
+
+
+class SwitchChangeDetail(SwitchChangeOut):
+    request: dict[str, Any]
+    before: dict[str, Any]
+    writes: list[SwitchWrite]
+    warnings: list[str]
+    log: list[dict[str, Any]]
+    approve_blocker: str | None = None  # why this user cannot approve it
+
+
+class SwitchApprove(ApiModel):
+    confirm_name: str = Field(min_length=1, max_length=100)
+
+
+class SwitchChanges(ApiModel):
+    automation_enabled: bool  # LANVEX_AUTOMATION_ENABLED
+    changes_enabled: bool  # for this switch
+    open: SwitchChangeOut | None = None
+    recent: list[SwitchChangeOut] = Field(default_factory=list)
 
 
 # ---- what is connected to each port --------------------------------------------------------------------

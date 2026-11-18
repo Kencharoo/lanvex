@@ -27,10 +27,10 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 | `backend/lanvex/ipam`, `vlans`, `devices`, `dashboard` | Domain services: validation, overlap checks, utilization, mapping NetBox payloads to Lanvex models | Raw HTTP |
 | `backend/lanvex/auth` | Local users, Argon2 hashing, server-side sessions, roles, CSRF | — |
 | `backend/lanvex/audit` | Append-only audit trail of every write Lanvex performs | — |
-| `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; `snmp` reads switches (GET and GETBULK, v2c and v3); others plug in the same way | Run arbitrary commands; send SNMP SET requests |
+| `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; `snmp` reads switches (GET and GETBULK, v2c and v3) and writes a port's VLANs (SET, Q-BRIDGE-MIB) for an approved switch change; others plug in the same way | Run arbitrary commands; send SNMP SET outside an approved switch change |
 | `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state and their history, scheduled reads, comparison with NetBox, recording differences in NetBox | Write to servers |
 | `backend/lanvex/core_proxy.py` | Serves Lanvex Core at `/core/` to signed-in users: checks the Lanvex session, sends who they are and their role with the shared proxy secret, strips anything the browser sent under those names, serves Lanvex Core's static files | Let anyone without a Lanvex session through; forward `Authorization` or Lanvex's session cookie |
-| `backend/lanvex/switches` | Switch registry, encrypted SNMP credentials, the latest read and MAC addresses seen per port, scheduled reads; which port each device is on, compared with the documented cables | Write to switches |
+| `backend/lanvex/switches` | Switch registry, encrypted SNMP credentials, the latest read and MAC addresses seen per port, scheduled reads; which port each device is on, compared with the documented cables; port VLAN changes (`switches/changes.py`): preview, approval, writing, read back, undo | Write to a switch without an approved, previewed change |
 | `backend/lanvex/discovery` | What servers and switches see around them (neighbour tables, LLDP, switch ports) compared with NetBox; recording hosts and cables through a previewed plan | Write to NetBox without an administrator's confirmed plan |
 | `backend/lanvex/topology` | The topology map's data: devices and circuits as nodes, documented cables as links, one site or all, Lanvex servers marked | Claim a cable exists because it is drawn: links are documented state |
 | `backend/lanvex/changes` | Server changes: preparation and safety rules, approval, the runner that applies, verifies, confirms or rolls back | Change anything without an approved, previewed change |
@@ -40,7 +40,8 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 1. **Documented (desired)** — objects in NetBox. Every IPAM, VLAN and device write lands here only.
 2. **Actual (running)** — what servers really run: snapshots read over SSH (`server_snapshots`); what
    switches report over SNMP (`switch_facts`, `switch_macs`).
-3. **Pending** — server changes awaiting approval or being applied (`server_changes`).
+3. **Pending** — server and switch changes awaiting approval or being applied (`server_changes`,
+   `switch_changes`).
 
 The UI labels NetBox writes as "Recorded in NetBox", never "deployed". A server change is shown as
 applied only after the server confirmed it and Lanvex verified it; it never updates NetBox by itself,
@@ -115,6 +116,31 @@ token over the plan) or *change* (documented → actual: a server change prepare
   mid-change; stale heartbeats are picked up after 120 s), the change is `needs_attention`, never
   "succeeded". Every outcome is audited (`server.change.execute`).
 
+## Switch management: port VLAN changes
+
+```
+ UI ── prepare ──▶ API: fresh read of the port, safety rules ──SNMP──▶ planned SET requests
+ UI ── approve ──▶ switch_changes: approved (typed port name; optionally a second admin)
+                     │
+ SwitchChangeRunner ◀┘  (in-process loop; SELECT … FOR UPDATE SKIP LOCKED)
+   ├─SNMP─▶ read the port again: stop if anything to be written changed since the preview
+   ├─SNMP─▶ SET, step by step (join new VLANs → PVID → leave old VLANs)
+   ├─SNMP─▶ read the port back: exactly the requested VLANs and PVID?
+   ├─SNMP─▶ on a refused step or a different result: undo the written steps, last first
+   └─SNMP─▶ read the switch again
+```
+
+- **The plan is the preview.** Each step is one SET of whole Q-BRIDGE-MIB port lists
+  (`dot1qVlanStaticEgressPorts`, `dot1qVlanStaticUntaggedPorts`) or `dot1qPvid`, as read just before
+  with only this port changed, and records the value it replaces, so undoing is writing that back.
+- **Refused:** uplinks to a switch Lanvex reads, link aggregations and their members, other than
+  physical ports, VLANs the switch does not have, and the port the switch reaches Lanvex through (the
+  port where it learned the MAC address of Lanvex's address or of its default gateway).
+- **Off by default**: `LANVEX_AUTOMATION_ENABLED` and the switch's own `changes_enabled`. Changes can
+  use write credentials of their own, so scheduled reads keep a read-only user.
+- **Status is what Lanvex knows.** A switch that stops answering after a write leaves the change
+  `needs_attention`, never "succeeded" or "rolled back". Failures raise a `change_failed` alert.
+
 ## Data flow: create a prefix
 
 1. UI wizard validates CIDR (Zod) → `POST /api/v1/prefixes/validate` for server-side checks
@@ -168,7 +194,9 @@ five NetBox files carry small, listed changes (`FORK.md`). It adds no database m
 `switch_facts` (a switch's latest successful read) ·
 `switch_macs` (switch, MAC, VLAN, port, first and last seen; one row per switch, MAC and VLAN) ·
 `server_changes` (number, server, interface, request, state before, helper preview, status, approvals,
-deadline, checks, log, outcome; one open change per server).
+deadline, checks, log, outcome; one open change per server) ·
+`switch_changes` (number from the same sequence, switch, port, request, state before, planned writes
+with their undo, warnings, status, approvals, log, outcome; one open change per switch).
 Migrations: Alembic in `backend/alembic`.
 
 ## Security model

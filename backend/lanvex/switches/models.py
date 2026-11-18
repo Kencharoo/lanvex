@@ -4,7 +4,19 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    false,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,6 +37,15 @@ class Switch(TimestampMixin, Base):
     snmp_version: Mapped[str] = mapped_column(String(4), nullable=False)
     snmp_username: Mapped[str | None] = mapped_column(String(64))
     credential_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Changes (port VLANs): off until an administrator allows them, and only with
+    # LANVEX_AUTOMATION_ENABLED. Optionally with credentials of their own (a user that may write), so
+    # reads keep a read-only one.
+    changes_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    write_credential_ciphertext: Mapped[str | None] = mapped_column(Text)
+    write_username: Mapped[str | None] = mapped_column(String(64))
 
     netbox_device_id: Mapped[int | None] = mapped_column(Integer)  # the switch's dcim.device
     # Scheduled reads: None = the installation's default interval, 0 = never on a schedule.
@@ -95,3 +116,52 @@ class SwitchMac(Base):
     port: Mapped[str] = mapped_column(String(64), nullable=False)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SwitchChange(TimestampMixin, Base):
+    """A change to one switch port's VLANs, from preparation to its verified outcome. Statuses are those of
+    server changes (changes/models.py ChangeStatus)."""
+
+    __tablename__ = "switch_changes"
+    __table_args__ = (
+        Index("ix_switch_changes_switch_created", "switch_id", "created_at"),
+        Index("ix_switch_changes_status", "status"),
+        Index(
+            "uq_switch_changes_one_open",
+            "switch_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending_approval', 'approved', 'running', 'verifying')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # From the server changes' sequence: change numbers are unique across servers and switches.
+    number: Mapped[int] = mapped_column(
+        Integer, server_default=text("nextval('server_changes_number_seq')"), unique=True, nullable=False
+    )
+    switch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("switches.id", ondelete="CASCADE"), nullable=False
+    )
+    switch_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    if_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    port: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(String(500), nullable=False)
+    request: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)  # {"untagged", "tagged"}
+    before: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)  # {"pvid", "untagged", "tagged"}
+    plan: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)  # integrations/snmp/vlans.py
+    warnings: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending_approval", nullable=False)
+    requested_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    requested_by_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    approved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_by_name: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by_name: Mapped[str | None] = mapped_column(String(64))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    log: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(1000))

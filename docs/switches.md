@@ -2,9 +2,10 @@
 
 Lanvex reads managed switches over SNMP: their ports, VLANs, MAC address table and LLDP neighbours.
 From that it shows which device is plugged into which port, and compares it with the cables the
-documentation (Lanvex Core or NetBox) records. Reading is all it does: Lanvex only sends SNMP GET
-requests, never SET, and nothing is written to the documentation unless an administrator records it
-after a preview.
+documentation (Lanvex Core or NetBox) records. Lanvex reads with SNMP GET requests; it writes to a
+switch (SNMP SET) only to change a port's VLANs, where that is allowed, after an administrator
+approved the change. Nothing is written to the documentation unless an administrator records it after
+a preview.
 
 ## Adding a switch
 
@@ -98,6 +99,36 @@ the documentation. The topology draws connections switches see that no cable rec
 (amber: no cable recorded; red: recorded differently), apart from the documented cables, and marks the
 switches Lanvex reads.
 
+## Changing a port's VLANs
+
+Off unless both are on: `LANVEX_AUTOMATION_ENABLED=true` for the installation, and *Allow VLAN changes
+from Lanvex* in the switch's settings. Then the pencil next to a port's VLANs sets its untagged VLAN
+(which is also its PVID) and its tagged VLANs.
+
+1. **Preview.** Lanvex reads the port and lists the SNMP SET requests it would send, in order: join the
+   new VLANs, move the PVID, leave the old ones. Nothing is written yet.
+2. **Approval.** An administrator types the port's name (another administrator than the one who
+   prepared it, with `LANVEX_CHANGES_REQUIRE_SECOND_ADMIN=true`).
+3. **Writing.** Lanvex reads the port again first and stops if anything it would write changed since
+   the preview, then sends one SET request per step.
+4. **Read back.** The port must have exactly the requested VLANs and PVID. If the switch refuses a step
+   or the result differs, the steps already written are undone, last first; the change ends as *Rolled
+   back*, with an alert.
+
+Not changed from Lanvex: uplinks to another switch Lanvex reads, link aggregations and their member
+ports, anything but physical ports, and the port the switch reaches Lanvex through (where it learned
+the MAC address of Lanvex's address, or of its default gateway). VLANs must exist on the switch. One
+open change per switch.
+
+Shown before approval: the devices on the port that lose their connection, a switch or access point
+behind the port, and that the switch may forget the change on restart: Lanvex does not save the
+switch's configuration.
+
+**On the switch:** changes need SNMP write access to the Q-BRIDGE-MIB (`1.3.6.1.2.1.17.7`): on
+SNMPv3 a user whose write view includes it, on v2c a read-write community. *Separate credentials for
+changes* keeps the scheduled reads on a read-only user. Switches without writable Q-BRIDGE VLAN
+tables (Cisco IOS among them, which uses its own MIBs) cannot be changed from Lanvex.
+
 ## Monitoring
 
 | Alert | When | Ends |
@@ -107,6 +138,7 @@ switches Lanvex reads.
 | **Port down** (critical for an uplink, else warning) | A port that led to another device went down: an uplink to another switch Lanvex reads, or a port with an LLDP neighbour. Ports turned off on the switch are not reported | When the port is up again, or when acknowledged: then the port is no longer watched (unplugged on purpose) |
 | **Unknown device** (info) | A device appeared on a port after the switch's first read and is documented nowhere (no interface with its MAC address, no fixed address, not a server Lanvex reads). A device already reported by a server or another switch is not reported again | When documented, or acknowledged |
 | **Device moved** (info) | A documented device is now on another port than at the switch's last read | When acknowledged |
+| **Change failed** (warning) | A port VLAN change was not applied, was undone, or ended in an unknown state | When acknowledged |
 
 Unknown devices in some VLANs can be left out with `vlan:<id>` in the exclusions under *Settings,
 Monitoring* (a guest VLAN, say). What a switch shows on its first read is its starting point: those

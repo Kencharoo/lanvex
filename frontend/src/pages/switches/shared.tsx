@@ -78,29 +78,30 @@ export function snmpComplete(c: Required<SnmpCredentials>): boolean {
   return c.priv_protocol === "none" || c.priv_password.length >= 8;
 }
 
-export function SnmpForm({ value: c, onChange }: { value: Required<SnmpCredentials>; onChange: (c: Required<SnmpCredentials>) => void }) {
+export function SnmpForm({ value: c, onChange, idPrefix = "snmp" }: { value: Required<SnmpCredentials>; onChange: (c: Required<SnmpCredentials>) => void; idPrefix?: string }) {
+  const id = (name: string) => `${idPrefix}-${name}`;
   const set = (patch: Partial<SnmpCredentials>) => onChange({ ...c, ...patch } as Required<SnmpCredentials>);
   const short = (v: string) => (v.length > 0 && v.length < 8 ? "At least 8 characters" : undefined);
   return (
     <div className="grid gap-4">
-      <Field label="SNMP version" htmlFor="snmp-version">
-        <Select id="snmp-version" value={c.version} onChange={(e) => set({ version: e.target.value as "2c" | "3" })}>
+      <Field label="SNMP version" htmlFor={id("version")}>
+        <Select id={id("version")} value={c.version} onChange={(e) => set({ version: e.target.value as "2c" | "3" })}>
           <option value="3">SNMPv3</option>
           <option value="2c">SNMPv2c (community sent unencrypted)</option>
         </Select>
       </Field>
       {c.version === "2c" ? (
-        <Field label="Community" htmlFor="snmp-community">
-          <Input id="snmp-community" type="password" value={c.community} onChange={(e) => set({ community: e.target.value })} autoComplete="off" spellCheck={false} />
+        <Field label="Community" htmlFor={id("community")}>
+          <Input id={id("community")} type="password" value={c.community} onChange={(e) => set({ community: e.target.value })} autoComplete="off" spellCheck={false} />
         </Field>
       ) : (
         <>
-          <Field label="User" htmlFor="snmp-user">
-            <Input id="snmp-user" className="addr" value={c.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" spellCheck={false} />
+          <Field label="User" htmlFor={id("user")}>
+            <Input id={id("user")} className="addr" value={c.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" spellCheck={false} />
           </Field>
           <div className="grid gap-4 sm:grid-cols-[10rem_1fr]">
-            <Field label="Authentication" htmlFor="snmp-auth">
-              <Select id="snmp-auth" value={c.auth_protocol} onChange={(e) => set({ auth_protocol: e.target.value as SnmpAuthProtocol })}>
+            <Field label="Authentication" htmlFor={id("auth")}>
+              <Select id={id("auth")} value={c.auth_protocol} onChange={(e) => set({ auth_protocol: e.target.value as SnmpAuthProtocol })}>
                 {AUTH.map(([v, l]) => (
                   <option key={v} value={v}>
                     {l}
@@ -109,15 +110,15 @@ export function SnmpForm({ value: c, onChange }: { value: Required<SnmpCredentia
               </Select>
             </Field>
             {c.auth_protocol !== "none" && (
-              <Field label="Authentication password" htmlFor="snmp-auth-pw" error={short(c.auth_password)}>
-                <Input id="snmp-auth-pw" type="password" value={c.auth_password} onChange={(e) => set({ auth_password: e.target.value })} autoComplete="off" />
+              <Field label="Authentication password" htmlFor={id("auth-pw")} error={short(c.auth_password)}>
+                <Input id={id("auth-pw")} type="password" value={c.auth_password} onChange={(e) => set({ auth_password: e.target.value })} autoComplete="off" />
               </Field>
             )}
           </div>
           {c.auth_protocol !== "none" && (
             <div className="grid gap-4 sm:grid-cols-[10rem_1fr]">
-              <Field label="Privacy" htmlFor="snmp-priv">
-                <Select id="snmp-priv" value={c.priv_protocol} onChange={(e) => set({ priv_protocol: e.target.value as SnmpPrivProtocol })}>
+              <Field label="Privacy" htmlFor={id("priv")}>
+                <Select id={id("priv")} value={c.priv_protocol} onChange={(e) => set({ priv_protocol: e.target.value as SnmpPrivProtocol })}>
                   {PRIV.map(([v, l]) => (
                     <option key={v} value={v}>
                       {l}
@@ -126,8 +127,8 @@ export function SnmpForm({ value: c, onChange }: { value: Required<SnmpCredentia
                 </Select>
               </Field>
               {c.priv_protocol !== "none" && (
-                <Field label="Privacy password" htmlFor="snmp-priv-pw" error={short(c.priv_password)}>
-                  <Input id="snmp-priv-pw" type="password" value={c.priv_password} onChange={(e) => set({ priv_password: e.target.value })} autoComplete="off" />
+                <Field label="Privacy password" htmlFor={id("priv-pw")} error={short(c.priv_password)}>
+                  <Input id={id("priv-pw")} type="password" value={c.priv_password} onChange={(e) => set({ priv_password: e.target.value })} autoComplete="off" />
                 </Field>
               )}
             </div>

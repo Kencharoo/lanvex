@@ -117,11 +117,15 @@ def access_switch() -> dict[str, Any]:
         (1, "default", {6, 9}, {6, 9}),
         (10, "office", {1, 2, 3, 4, 9}, {1, 2, 3, 4}),
         (20, "voice", {5, 9}, {5}),
+        (30, "lab", set(), set()),
     ):
         t[f"1.3.6.1.2.1.17.7.1.4.3.1.1.{vlan}"] = name
         t[f"1.3.6.1.2.1.17.7.1.4.2.1.3.0.{vlan}"] = vlan
         t[f"1.3.6.1.2.1.17.7.1.4.2.1.4.0.{vlan}"] = portlist(members)
         t[f"1.3.6.1.2.1.17.7.1.4.2.1.5.0.{vlan}"] = portlist(plain)
+        # configured (static) membership: what a change writes
+        t[f"1.3.6.1.2.1.17.7.1.4.3.1.2.{vlan}"] = portlist(members)
+        t[f"1.3.6.1.2.1.17.7.1.4.3.1.4.{vlan}"] = portlist(plain)
     for bp, pvid in ((1, 10), (2, 10), (3, 10), (4, 10), (5, 20), (6, 1), (9, 1)):
         t[f"1.3.6.1.2.1.17.7.1.4.5.1.1.{bp}"] = pvid
     t |= qfdb(10, A, 1) | qfdb(10, B, 2) | qfdb(10, D, 3) | qfdb(20, E, 5) | qfdb(20, F, 5)

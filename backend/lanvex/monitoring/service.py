@@ -350,7 +350,9 @@ class MonitoringService:
         )
         return await self.reconcile(sw, {"unreachable"}, findings)
 
-    async def change_failed(self, s: Server, change_id: uuid.UUID, title: str, detail: list[str]) -> None:
+    async def change_failed(
+        self, s: Server | Switch, change_id: uuid.UUID, title: str, detail: list[str]
+    ) -> None:
         f = Finding("change_failed", str(change_id), Severity.WARNING, title, detail)
         cfg = await self.config()
         if not cfg.change_failed:
@@ -358,7 +360,7 @@ class MonitoringService:
         now = datetime.now(UTC)
         a = Alert(
             kind=f.kind,
-            server_id=s.id,
+            **({"switch_id": s.id} if isinstance(s, Switch) else {"server_id": s.id}),
             server_name=s.name,
             key=f.key,
             severity=f.severity,
@@ -429,11 +431,13 @@ async def check_after_read(
     """Monitoring after a read, in the read's transaction; a failing check never fails the read."""
     if not settings.monitor_enabled:
         return
+    name = s.name
     try:
         async with db.begin_nested():
             await MonitoringService(db, settings, nb).after_read(s, snap)
     except Exception:
-        log.exception("monitor_checks_failed", server=s.name)
+        log.exception("monitor_checks_failed", server=name)
+        await db.refresh(s)  # the savepoint's rollback expired what the checks had changed
 
 
 async def check_after_switch_read(
@@ -447,8 +451,10 @@ async def check_after_switch_read(
     """Monitoring after a switch read, in the read's transaction; a failing check never fails the read."""
     if not settings.monitor_enabled:
         return
+    name = sw.name
     try:
         async with db.begin_nested():
             await MonitoringService(db, settings, nb).after_switch_read(sw, facts, moves)
     except Exception:
-        log.exception("monitor_checks_failed", switch=sw.name)
+        log.exception("monitor_checks_failed", switch=name)
+        await db.refresh(sw)  # the savepoint's rollback expired what the checks had changed

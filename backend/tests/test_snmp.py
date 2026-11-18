@@ -69,7 +69,7 @@ async def test_reads_a_switch(access: Agent) -> None:
     assert (po.kind, po.pvid, po.untagged, sorted(po.tagged)) == ("lag", 1, [1], [10, 20])
     assert ports["Gi1/0/7"].lag == po.index and ports["Gi1/0/1"].lag is None
     assert ports["Vlan10"].kind == "vlan"
-    assert [(v.id, v.name) for v in f.vlans] == [(1, "default"), (10, "office"), (20, "voice")]
+    assert [(v.id, v.name) for v in f.vlans] == [(1, "default"), (10, "office"), (20, "voice"), (30, "lab")]
 
     fdb = {(e.mac, e.vlan, e.port) for e in f.fdb}
     assert fdb == {

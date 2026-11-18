@@ -23,6 +23,7 @@ import { AutomationPage } from "@/pages/changes";
 import { ChangeDetailPage } from "@/pages/changes/detail";
 import { ServersPage } from "@/pages/servers";
 import { SwitchesPage } from "@/pages/switches";
+import { SwitchChangePage } from "@/pages/switches/change";
 import { SwitchDetailPage } from "@/pages/switches/detail";
 import { ServerDetailPage } from "@/pages/servers/detail";
 import { SettingsPage } from "@/pages/settings";
@@ -69,6 +70,7 @@ const router = createBrowserRouter([
       { path: "topology", element: <Suspense fallback={<Skeleton className="h-96 w-full" />}><TopologyPage /></Suspense> },
       { path: "automation", element: <AutomationPage /> },
       { path: "changes/:id", element: <ChangeDetailPage /> },
+      { path: "changes/switch/:id", element: <SwitchChangePage /> },
       { path: "activity", element: <ActivityPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "*", element: <NotFound /> },

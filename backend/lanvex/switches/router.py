@@ -9,19 +9,28 @@ from lanvex.deps import DB, AdminUser, Audit, CurrentUser, SettingsDep
 from lanvex.integrations.snmp.switch import SwitchFacts
 from lanvex.monitoring.service import check_after_switch_read
 from lanvex.netbox.client import NetBoxClient
-from lanvex.switches.models import Switch
+from lanvex.switches.changes import SwitchChangeService
+from lanvex.switches.changes import to_out as change_out
+from lanvex.switches.models import Switch, SwitchChange
 from lanvex.switches.ports import PortLocator
 from lanvex.switches.schemas import (
+    PortVlanRequest,
+    SwitchApprove,
+    SwitchChangeDetail,
+    SwitchChangeOut,
+    SwitchChanges,
     SwitchCreate,
     SwitchDetail,
     SwitchOut,
     SwitchTestRequest,
     SwitchTestResult,
     SwitchUpdate,
+    SwitchWrite,
 )
 from lanvex.switches.service import SwitchService, to_out
 
 router = APIRouter(tags=["switches"], prefix="/switches")
+changes_router = APIRouter(tags=["switches"], prefix="/switch-changes")
 log = get_logger("lanvex.switches")
 
 
@@ -141,3 +150,126 @@ async def delete_switch(
     async with audit.track("switch.delete", "switch", target_id=sw.id, target_repr=sw.name):
         await db.delete(sw)
         await db.commit()
+
+
+# ---- changes (port VLANs) ---------------------------------------------------------------------------
+
+
+def _changes(request: Request, db: DB, settings: SettingsDep) -> SwitchChangeService:
+    return SwitchChangeService(db, settings, request.app.state.netbox)
+
+
+def _change_detail(svc: SwitchChangeService, c: SwitchChange, user: Any) -> SwitchChangeDetail:
+    return SwitchChangeDetail(
+        **change_out(c),
+        request=c.request,
+        before=c.before,
+        writes=[SwitchWrite(text=op["text"], oids=[b[0] for b in op["binds"]]) for op in c.plan],
+        warnings=c.warnings,
+        log=c.log,
+        approve_blocker=svc.approve_blocker(c, user) if user.role == "admin" else None,
+    )
+
+
+def _wake(request: Request) -> None:
+    runner = getattr(request.app.state, "switch_change_runner", None)
+    if runner is not None:
+        runner.wake()
+
+
+@router.get("/{switch_id}/changes", response_model=SwitchChanges)
+async def switch_changes(
+    switch_id: uuid.UUID, request: Request, db: DB, settings: SettingsDep, _: CurrentUser
+) -> SwitchChanges:
+    sw = await _svc(request, db, settings).get(switch_id)
+    svc = _changes(request, db, settings)
+    current = await svc.open_change(sw.id)
+    return SwitchChanges(
+        automation_enabled=settings.automation_enabled,
+        changes_enabled=sw.changes_enabled,
+        open=SwitchChangeOut(**change_out(current)) if current else None,
+        recent=[SwitchChangeOut(**change_out(c)) for c in await svc.recent(sw.id, limit=20)],
+    )
+
+
+@router.post("/{switch_id}/ports/{if_index}/vlans", response_model=SwitchChangeDetail, status_code=201)
+async def prepare_port_vlans(
+    switch_id: uuid.UUID,
+    if_index: int,
+    body: PortVlanRequest,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    user: AdminUser,
+    audit: Audit,
+) -> SwitchChangeDetail:
+    """Prepare a change of the port's VLANs: read it fresh, check it is safe, plan the writes. Nothing is
+    written to the switch until the change is approved."""
+    sw = await _svc(request, db, settings).get(switch_id)
+    svc = _changes(request, db, settings)
+    detail = {"if_index": if_index, **body.model_dump()}
+    async with audit.track(
+        "switch.change.prepare", "switch", target_id=sw.id, target_repr=sw.name, detail=detail
+    ) as t:
+        c = await svc.prepare(sw, if_index, body.untagged, body.tagged, user)
+        await db.commit()
+        t.detail.update(change=c.number, summary=c.summary)
+    return _change_detail(svc, c, user)
+
+
+@changes_router.get("", response_model=list[SwitchChangeOut])
+async def list_switch_changes(
+    request: Request, db: DB, settings: SettingsDep, _: CurrentUser
+) -> list[SwitchChangeOut]:
+    return [SwitchChangeOut(**change_out(c)) for c in await _changes(request, db, settings).recent()]
+
+
+@changes_router.get("/{change_id}", response_model=SwitchChangeDetail)
+async def get_switch_change(
+    change_id: uuid.UUID, request: Request, db: DB, settings: SettingsDep, user: CurrentUser
+) -> SwitchChangeDetail:
+    svc = _changes(request, db, settings)
+    return _change_detail(svc, await svc.get(change_id), user)
+
+
+@changes_router.post("/{change_id}/approve", response_model=SwitchChangeDetail)
+async def approve_switch_change(
+    change_id: uuid.UUID,
+    body: SwitchApprove,
+    request: Request,
+    db: DB,
+    settings: SettingsDep,
+    user: AdminUser,
+    audit: Audit,
+) -> SwitchChangeDetail:
+    svc = _changes(request, db, settings)
+    c = await svc.get(change_id)
+    async with audit.track(
+        "switch.change.approve",
+        "switch",
+        target_id=c.switch_id,
+        target_repr=c.switch_name,
+        detail={"change": c.number},
+    ):
+        await svc.approve(c, user, body.confirm_name)
+        await db.commit()
+    _wake(request)
+    return _change_detail(svc, c, user)
+
+
+@changes_router.post("/{change_id}/cancel", response_model=SwitchChangeDetail)
+async def cancel_switch_change(
+    change_id: uuid.UUID, request: Request, db: DB, settings: SettingsDep, user: AdminUser, audit: Audit
+) -> SwitchChangeDetail:
+    svc = _changes(request, db, settings)
+    c = await svc.get(change_id)
+    async with audit.track(
+        "switch.change.cancel",
+        "switch",
+        target_id=c.switch_id,
+        target_repr=c.switch_name,
+        detail={"change": c.number},
+    ):
+        await svc.cancel(c, user)
+        await db.commit()
+    return _change_detail(svc, c, user)

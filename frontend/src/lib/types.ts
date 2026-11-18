@@ -895,7 +895,42 @@ export interface Switch {
   ports_total: number | null;
   ports_up: number | null;
   mac_count: number | null;
+  /** VLAN changes may be made on this switch (LANVEX_AUTOMATION_ENABLED must be on too). */
+  changes_enabled: boolean;
+  /** Credentials of their own for changes; null: changes use the reading credentials. */
+  write_snmp: SnmpSummary | null;
   created_at: string;
+}
+export interface SwitchChangeOut {
+  id: string;
+  number: number;
+  switch_id: string;
+  switch_name: string;
+  if_index: number;
+  port: string;
+  summary: string;
+  status: ChangeStatus;
+  requested_by: string;
+  created_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  outcome: string | null;
+}
+export interface SwitchChangeDetail extends SwitchChangeOut {
+  request: { untagged: number; tagged: number[] };
+  before: { pvid: number | null; untagged: number[]; tagged: number[] };
+  writes: { text: string; oids: string[] }[];
+  warnings: string[];
+  log: { at: string; level: "info" | "warning" | "error"; message: string }[];
+  approve_blocker: string | null;
+}
+export interface SwitchChanges {
+  automation_enabled: boolean;
+  changes_enabled: boolean;
+  open: SwitchChangeOut | null;
+  recent: SwitchChangeOut[];
 }
 export interface SwitchSystem {
   name: string | null;

@@ -23,6 +23,19 @@ switch over SNMPv3 after a failed test, its ports, Discovery, removing it.
 
 Not verified against real switches yet (see below).
 
+### Switch port VLAN changes (unreleased)
+
+Against the SNMP agent in the test process, which takes SET requests into its tables: a port moved to
+another untagged VLAN with a tagged one, written in the planned order (members before untagged
+members when joining, the other way round when leaving) and read back, the other ports' bits
+unchanged, the switch read again afterwards; refused without permission, on a LAG member, a non-
+physical port, a VLAN the switch lacks, the port the switch reaches Lanvex through, and with
+automation off; a refused write undoing the steps before it so the tables are byte for byte as
+before, with an alert; a switch that acknowledges a write without taking it, undone after the read
+back; a change made on the switch since the preview, not written at all; a switch that takes no
+writes; readers, approval by the wrong port name, cancelling. In the browser (Playwright, with the lab
+specs): allowing changes, a change and its reversal through preview, approval and read back.
+
 ### Monitoring (new in 1.1)
 
 API tests with real PostgreSQL and the Lanvex Core stand-in: after reads, a full pool (critical at
@@ -256,8 +269,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 403 tests: 355 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 40 SSH lab (6 reading, discovery and recording; 7 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
-| Frontend | Type check, 30 unit tests, production build; 12 Playwright tests in Chrome (2 against the lab, in CI; 1 against Lanvex Core; 1 against two SNMP switches in software) |
+| Backend | 413 tests: 365 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 40 SSH lab (6 reading, discovery and recording; 7 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Frontend | Type check, 30 unit tests, production build; 13 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 reading two SNMP switches in software) |
 | Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
@@ -266,6 +279,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 | What | Why | How to close it |
 |---|---|---|
 | Switches from real vendors | The tests use agents built from what the MIBs specify; real switches differ (LLDP port numbering, VLAN tables, Cisco's per-VLAN contexts, AES-192/256 variants, slow agents on large MAC tables) | Add a switch of each kind at hand and compare its page with the switch's own view |
+| VLAN changes on real switches | The test agent takes any SET it is given; real switches may refuse some (a VLAN's whole port list in one request, PVID before membership), keep the change only until restart, or need a write view set up | Allow changes on a test switch, move an unused port and back, and compare with the switch's own view |
 | Access rules with real users | The lab's client is a container; a phone or laptop on a real VLAN was not used | Allow a network the Internet on a test server and try it |
 | Reading and interface changes on Debian | The Debian 12 lab host (0.8) runs the networks tests through the helper; Lanvex's SSH reads and interface changes run on the Ubuntu hosts | Read a Debian server with Lanvex before relying on it |
 | Interface changes on Fedora; networks on other versions | Networks are tested on Fedora 44, Ubuntu 24.04 and Debian 12; interface changes on the Ubuntu hosts. Older netplan (Ubuntu 20.04/22.04), ifupdown and NetworkManager versions, RHEL, and Ubuntu with NetworkManager for networks are untested | Run a change on a test server of each kind before relying on it |
@@ -287,7 +301,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 - **Kea** as an alternative DHCP server; block lists by name for the DNS filter.
 - **More kinds of server change.** Bonds and bridges; IPv6; static routes; interface settings on
   ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
-- Changing switches (port VLANs); discovery of devices no server or switch sees; a deployment wizard.
+- Other switch changes (creating VLANs, port names, saving the configuration); discovery of devices no
+  server or switch sees; a deployment wizard.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
 - Editing prefix tenant and scopes other than a site, and IP tenant/role/NAT; device creation.
 

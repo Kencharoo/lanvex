@@ -192,7 +192,7 @@ jobs:
         run: |
           psql -h localhost -U lanvex -d lanvex_test -c "CREATE DATABASE lanvex_e2e"
           npm ci && npx playwright install --with-deps chromium
-          npx playwright test e2e/servers.lab.spec.ts e2e/changes.lab.spec.ts
+          npx playwright test e2e/servers.lab.spec.ts e2e/changes.lab.spec.ts e2e/switches.lab.spec.ts
       - name: Lab state and logs
         if: failure()
         run: |

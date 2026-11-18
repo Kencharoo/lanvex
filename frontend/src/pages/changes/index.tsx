@@ -8,14 +8,58 @@ import { Select } from "@/components/ui/form";
 import { EmptyState, Notice } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import { useUrlState } from "@/lib/hooks";
-import type { ChangeOut, ChangeStatus } from "@/lib/types";
+import type { ChangeOut, ChangeStatus, SwitchChangeOut } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
 import { useSystemInfo } from "../servers";
 import { CHANGE_STATUS, ChangeStatusBadge, isActive } from "./shared";
 
 const LIMIT = 200;
 
-/** Server configuration changes, across all servers: what waits for approval, what runs, and how each one ended. */
+/** A server or a switch change, as one row. */
+interface Row {
+  id: string;
+  to: string;
+  number: number;
+  target: string;
+  part: string;
+  summary: string;
+  status: ChangeStatus;
+  requested_by: string;
+  approved_by: string | null;
+  at: string;
+}
+
+function serverRow(c: ChangeOut): Row {
+  return {
+    id: c.id,
+    to: `/changes/${c.id}`,
+    number: c.number,
+    target: c.server_name,
+    part: c.interface,
+    summary: c.summary.replace(`${c.interface}: `, ""),
+    status: c.status,
+    requested_by: c.requested_by,
+    approved_by: c.approved_by,
+    at: c.finished_at ?? c.started_at ?? c.approved_at ?? c.created_at,
+  };
+}
+
+function switchRow(c: SwitchChangeOut): Row {
+  return {
+    id: c.id,
+    to: `/changes/switch/${c.id}`,
+    number: c.number,
+    target: c.switch_name,
+    part: c.port,
+    summary: c.summary.replace(`${c.port}: `, ""),
+    status: c.status,
+    requested_by: c.requested_by,
+    approved_by: c.approved_by,
+    at: c.finished_at ?? c.started_at ?? c.approved_at ?? c.created_at,
+  };
+}
+
+/** Server and switch changes: what waits for approval, what runs, and how each one ended. */
 export function AutomationPage() {
   const navigate = useNavigate();
   const info = useSystemInfo();
@@ -28,8 +72,18 @@ export function AutomationPage() {
     placeholderData: keepPreviousData,
     refetchInterval: (q) => (q.state.data?.some((c) => isActive(c.status)) ? 3000 : false),
   });
+  const switches = useQuery({
+    queryKey: ["switch-changes", "list"],
+    queryFn: ({ signal }) => api<SwitchChangeOut[]>("/switch-changes", { signal }),
+    refetchInterval: (q) => (q.state.data?.some((c) => isActive(c.status)) ? 3000 : false),
+  });
+  const keep = (c: { status: ChangeStatus }) => (show === "all" ? true : show === "open" ? c.status === "pending_approval" || isActive(c.status) : c.status === show);
+  const rows =
+    list.data && switches.data
+      ? [...list.data.map(serverRow), ...switches.data.filter(keep).map(switchRow)].sort((a, b) => b.at.localeCompare(a.at))
+      : undefined;
 
-  const columns: Column<ChangeOut>[] = [
+  const columns: Column<Row>[] = [
     { key: "number", header: "#", cell: (c) => <span className="addr text-muted">{c.number}</span>, headerClassName: "w-12" },
     {
       key: "what",
@@ -37,9 +91,9 @@ export function AutomationPage() {
       cell: (c) => (
         <span className="grid">
           <span className="font-medium">
-            {c.server_name} · <span className="addr">{c.interface}</span>
+            {c.target} · <span className="addr">{c.part}</span>
           </span>
-          <span className="text-xs text-muted">{c.summary.replace(`${c.interface}: `, "")}</span>
+          <span className="text-xs text-muted">{c.summary}</span>
         </span>
       ),
     },
@@ -57,10 +111,7 @@ export function AutomationPage() {
     {
       key: "when",
       header: "Last update",
-      cell: (c) => {
-        const at = c.finished_at ?? c.started_at ?? c.approved_at ?? c.created_at;
-        return <span title={absoluteTime(at)}>{relativeTime(at)}</span>;
-      },
+      cell: (c) => <span title={absoluteTime(c.at)}>{relativeTime(c.at)}</span>,
       className: "whitespace-nowrap text-muted",
     },
   ];
@@ -93,16 +144,19 @@ export function AutomationPage() {
       </Toolbar>
       <DataTable
         columns={columns}
-        rows={list.data}
+        rows={rows}
         rowKey={(c) => c.id}
-        loading={list.isPending}
-        error={list.error}
-        onRetry={() => void list.refetch()}
-        onRowClick={(c) => navigate(`/changes/${c.id}`)}
+        loading={list.isPending || switches.isPending}
+        error={list.error ?? switches.error}
+        onRetry={() => {
+          void list.refetch();
+          void switches.refetch();
+        }}
+        onRowClick={(c) => navigate(c.to)}
         rowLabel={(c) => `Open change #${c.number}`}
         empty={
           <EmptyState icon={Workflow} title={show === "all" ? "No changes yet" : "No changes match"}>
-            {show === "all" ? "Open a server and choose Change IP settings to prepare one." : "Try another filter."}
+            {show === "all" ? "Prepare one from a server's network settings or a switch port's VLANs." : "Try another filter."}
           </EmptyState>
         }
       />

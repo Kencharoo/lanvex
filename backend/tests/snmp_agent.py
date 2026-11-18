@@ -1,4 +1,4 @@
-"""TEST DOUBLE: an SNMP agent in this process, answering GET, GETNEXT and GETBULK from a table.
+"""TEST DOUBLE: an SNMP agent in this process, answering GET, GETNEXT, GETBULK and SET from a table.
 
 Built on pysnmp's own command responder, so requests and answers (v2c communities, SNMPv3 users with
 authentication and privacy) go over UDP exactly as with a switch. It is NOT a switch: it answers what
@@ -14,6 +14,7 @@ from pysnmp.entity import config, engine
 from pysnmp.entity.rfc3413 import cmdrsp, context
 from pysnmp.proto import rfc1902, rfc1905
 from pysnmp.proto.api import v2c
+from pysnmp.smi import error as smi_error
 from pysnmp.smi import instrum
 
 COMMUNITY = "lanvex-test"
@@ -38,10 +39,46 @@ def snmp_value(v: Any) -> Any:
     return v
 
 
+# Q-BRIDGE-MIB dot1qVlanStaticEgressPorts / UntaggedPorts -> dot1qVlanCurrentEgressPorts / UntaggedPorts
+CURRENT = {
+    (1, 3, 6, 1, 2, 1, 17, 7, 1, 4, 3, 1, 2): (1, 3, 6, 1, 2, 1, 17, 7, 1, 4, 2, 1, 4),
+    (1, 3, 6, 1, 2, 1, 17, 7, 1, 4, 3, 1, 4): (1, 3, 6, 1, 2, 1, 17, 7, 1, 4, 2, 1, 5),
+}
+
+
 class Table(instrum.AbstractMibInstrumController):
-    def __init__(self, table: dict[str, Any]) -> None:
+    """Answers from `table`. SET changes existing objects when `writable`: `refuse` lists OIDs it refuses
+    (inconsistentValue), `ignore` OIDs it acknowledges without changing, like a switch that does not
+    really take a setting."""
+
+    def __init__(self, table: dict[str, Any], writable: bool = True) -> None:
         self.table = {tuple(int(x) for x in k.split(".")): snmp_value(v) for k, v in table.items()}
         self.oids = sorted(self.table)
+        self.writable = writable
+        self.refuse: set[str] = set()
+        self.ignore: set[str] = set()
+        self.writes: list[tuple[str, Any]] = []
+
+    def write_variables(self, *binds: Any, **ctx: Any) -> list[Any]:
+        if not self.writable:
+            raise smi_error.NotWritableError(name=binds[0][0])
+        for oid, _ in binds:
+            if tuple(oid) not in self.table:
+                raise smi_error.NotWritableError(name=oid)
+            if str(oid) in self.refuse:
+                raise smi_error.InconsistentValueError(name=oid)
+        for oid, v in binds:
+            self.writes.append((str(oid), v))
+            if str(oid) not in self.ignore:
+                self.table[tuple(oid)] = v
+                # As on a switch, the configured (static) VLAN membership is also the current one.
+                key = tuple(oid)
+                if key[:-1] in CURRENT and CURRENT[key[:-1]] + (0, key[-1]) in self.table:
+                    self.table[CURRENT[key[:-1]] + (0, key[-1])] = v
+        return list(binds)
+
+    def __getitem__(self, oid: str) -> Any:
+        return self.table[tuple(int(x) for x in oid.split("."))]
 
     def read_variables(self, *binds: Any, **ctx: Any) -> list[Any]:
         return [(o, self.table.get(tuple(o), rfc1905.noSuchInstance)) for o, _ in binds]
@@ -67,7 +104,11 @@ class Agent:
     """Start inside a running event loop; stop when done."""
 
     def __init__(
-        self, table: dict[str, Any], vlans: dict[int, dict[str, Any]] | None = None, port: int | None = None
+        self,
+        table: dict[str, Any],
+        vlans: dict[int, dict[str, Any]] | None = None,
+        port: int | None = None,
+        writable: bool = True,
     ) -> None:
         self.port = port or free_port()
         self.engine = e = engine.SnmpEngine()
@@ -86,8 +127,12 @@ class Agent:
             config.add_vacm_user(e, 3, USER, "authPriv", (1,), (1,), contextName=name)
             if not name:
                 ctx.unregister_context_name(v2c.OctetString(""))
-            ctx.register_context_name(v2c.OctetString(name), Table(rows))
+            table_ = Table(rows, writable)
+            if not name:
+                self.table = table_
+            ctx.register_context_name(v2c.OctetString(name), table_)
         cmdrsp.GetCommandResponder(e, ctx)
+        cmdrsp.SetCommandResponder(e, ctx)
         cmdrsp.NextCommandResponder(e, ctx)
         cmdrsp.BulkCommandResponder(e, ctx)
         e.transport_dispatcher.job_started(1)

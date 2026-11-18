@@ -45,15 +45,17 @@ def read_interval(sw: Switch, settings: Settings) -> int:
     )
 
 
-def snmp_summary(sw: Switch, settings: Settings) -> SnmpSummary:
+def snmp_summary(sw: Switch, settings: Settings, write: bool = False) -> SnmpSummary:
     """The SNMP settings that may be shown. Without the passwords' protocols if the stored credentials
     cannot be decrypted (the secret key changed): the switch's read says so."""
+    cipher = sw.write_credential_ciphertext if write else sw.credential_ciphertext
     try:
-        creds = SnmpCredentials.model_validate(
-            Vault.from_settings(settings).decrypt(sw.credential_ciphertext)
-        )
+        creds = SnmpCredentials.model_validate(Vault.from_settings(settings).decrypt(cipher or ""))
     except LanvexError:
-        return SnmpSummary(version=sw.snmp_version, username=sw.snmp_username)  # type: ignore[arg-type]
+        return SnmpSummary(
+            version=sw.snmp_version,  # type: ignore[arg-type]
+            username=sw.write_username if write else sw.snmp_username,
+        )
     return SnmpSummary.model_validate(creds.summary())
 
 
@@ -80,6 +82,8 @@ def to_out(sw: Switch, netbox: SwitchNetBox | None = None) -> SwitchOut:
         ports_total=sw.ports_total,
         ports_up=sw.ports_up,
         mac_count=sw.mac_count,
+        changes_enabled=sw.changes_enabled,
+        write_snmp=snmp_summary(sw, settings, write=True) if sw.write_credential_ciphertext else None,
         created_at=sw.created_at,
     )
 
@@ -159,6 +163,14 @@ class SwitchService:
             sw.port = body.port
         if body.credentials is not None:
             self._store_credentials(sw, body.credentials)
+        if "write_credentials" in sent:
+            creds = body.write_credentials
+            sw.write_credential_ciphertext = (
+                Vault.from_settings(self.settings).encrypt(creds.model_dump()) if creds else None
+            )
+            sw.write_username = creds.username if creds else None
+        if body.changes_enabled is not None:
+            sw.changes_enabled = body.changes_enabled
         if "netbox_device_id" in sent:
             await self._check_device(body.netbox_device_id)
             sw.netbox_device_id = body.netbox_device_id

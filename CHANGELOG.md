@@ -6,6 +6,14 @@
   neighbour; acknowledging one stops watching that port), a device documented nowhere appearing on a
   port, a documented device found on another port. Unknown devices in some VLANs can be left out
   (`vlan:<id>`), and a device reported by a server or another switch is not reported twice.
+- **Changing a switch port's VLANs** (untagged VLAN and PVID, tagged VLANs) as an approved change:
+  a preview of the SNMP SET requests in order, approval by typing the port, a check that nothing
+  changed on the switch since the preview, writing step by step, reading the port back, and undoing
+  the written steps when the switch refuses one or the result differs. Off unless allowed for the
+  installation and the switch; uplinks, link aggregations and the port the switch reaches Lanvex
+  through are refused. A switch can use separate credentials for changes. Switch changes are listed
+  under *Automation* with the server changes and numbered with them
+  ([docs/switches.md](docs/switches.md#changing-a-ports-vlans)).
 - **Makers from MAC addresses** on switch ports, in Discovery and in unknown-device alerts (the IEEE
   registry, through netaddr); random addresses of phones and laptops are marked as such.
 - **lanvexctl finds installations set up before it**, in any directory, by the directory their

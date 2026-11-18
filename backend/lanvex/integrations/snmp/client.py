@@ -1,4 +1,5 @@
-"""SNMP reads: GET and GETBULK walks over SNMPv2c or SNMPv3. Lanvex never sends SET requests.
+"""SNMP over v2c or v3: GET and GETBULK walks for reads; SET only for an approved change
+(integrations/snmp/vlans.py), never otherwise.
 
 pysnmp does the protocol, including SNMPv3's user-based security (authentication and privacy). No MIB
 files are loaded: Lanvex asks for numeric OIDs and interprets the values itself (switch.py).
@@ -23,6 +24,7 @@ from pysnmp.hlapi.v3arch.asyncio import (
     UsmUserData,
     bulk_walk_cmd,
     get_cmd,
+    set_cmd,
 )
 from pysnmp.hlapi.v3arch.asyncio import auth as usm
 from pysnmp.proto import errind, rfc1902, rfc1905
@@ -229,6 +231,26 @@ class SnmpSession:
         if status:  # noSuchName and friends: nothing to read here
             return dict.fromkeys(oids)
         return {".".join(str(x) for x in name): value(v) for name, v in binds}
+
+    async def set(self, *binds: tuple[str, bytes | int]) -> None:
+        """SET in one request: bytes as OCTET STRING (port lists), int as Unsigned32 (VLAN IDs). The
+        switch applies all or none of them."""
+        self.requests += 1
+        objects = [
+            ObjectType(
+                ObjectIdentity(oid),
+                rfc1902.OctetString(v) if isinstance(v, bytes) else rfc1902.Unsigned32(v),
+            )
+            for oid, v in binds
+        ]
+        indication, status, index, _ = await set_cmd(
+            self.engine, self._auth(None), self.target, self._context(None), *objects, lookupMib=False
+        )
+        if indication:
+            raise _failure(indication, self.creds.version)
+        if status:
+            where = binds[int(index) - 1][0] if index and 0 < int(index) <= len(binds) else binds[0][0]
+            raise SnmpError("refused", f"The switch refused the change ({status.prettyPrint()} on {where}).")
 
     async def walk(self, oid: str, vlan: int | None = None) -> list[tuple[Oid, Any]]:
         """Every (OID, value) under `oid`, in order. An agent without that subtree gives an empty list."""
