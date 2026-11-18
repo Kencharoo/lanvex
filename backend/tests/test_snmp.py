@@ -163,3 +163,13 @@ async def test_cisco_without_per_vlan_tables(creds: SnmpCredentials) -> None:
         agent.stop()
     assert len(f.vlans) == 12 and f.fdb == []
     assert any("per-VLAN MAC address tables do not answer" in n for n in f.notes)
+
+
+def test_vendors() -> None:
+    from lanvex.core.vendors import RANDOMIZED, tidy, vendor
+
+    assert vendor("FC:EC:DA:00:00:01") == "Ubiquiti" and vendor("3c-22-fb-00-00-00") == "Apple"
+    assert vendor("02:00:00:00:00:0a") == RANDOMIZED  # phones choosing a random address
+    assert vendor("52:54:00:12:34:56") == "QEMU/KVM virtual machine"
+    assert vendor("01:00:5e:00:00:01") is None and vendor("") is None and vendor("not a mac") is None
+    assert tidy("Shenzhen Example Co.,Ltd") == "Shenzhen Example" and tidy("Apple, Inc.") == "Apple"

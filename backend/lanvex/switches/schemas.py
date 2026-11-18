@@ -107,6 +107,7 @@ class Endpoint(ApiModel):
     name: str | None = None  # server, device or VM name; the LLDP system name
     interface: str | None = None  # its interface, when known
     mac: str | None = None
+    vendor: str | None = None  # who made it, from its MAC address
     vlan: int | None = None
     addresses: list[str] = Field(default_factory=list)
     server_id: uuid.UUID | None = None

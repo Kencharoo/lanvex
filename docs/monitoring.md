@@ -14,8 +14,9 @@ NetBox) says, so they work on any server Lanvex can read over SSH. Switches get 
 | **Read failed** (warning) | A read was refused: sign-in rejected, host key changed, address not allowed, connections refused | With the next successful read |
 | **Drift** (warning) | The server's addresses differ from what its device or virtual machine documents, or its Lanvex networks (VLAN, DHCP, access rules) are not as documented. Interfaces of containers, VMs and VPNs (`docker*`, `veth*`, `tailscale*`, …) are ignored; the list is editable | When server and documentation match. More differences while open send a new message |
 | **DHCP pool** (warning; critical when full) | Leases fill a Lanvex DHCP pool to the threshold (default 90%) | When usage drops below it |
-| **Unknown device** (info) | A device holds a lease and its MAC address is documented nowhere: not on a device's or virtual machine's interface, not as a fixed address. Networks or prefixes can be excluded (guest networks) | When the device is documented, or acknowledged. A device is reported once per server |
+| **Unknown device** (info) | A device holds a lease and its MAC address is documented nowhere: not on a device's or virtual machine's interface, not as a fixed address. Networks, prefixes or switch VLANs (`vlan:30`) can be excluded (guest networks) | When the device is documented, or acknowledged. A device is reported once per server |
 | **Change failed** (warning) | A change was rolled back, failed, or needs attention | When acknowledged |
+| **Port down**, **Device moved** | On switches: [switches.md](switches.md#monitoring). Unknown devices on switch ports are reported too | |
 
 Checks that need a read run after every read, scheduled or by hand: with the default schedule, once an
 hour per server (`LANVEX_SERVER_READ_INTERVAL_MINUTES`, or per server). A failed read keeps what the last

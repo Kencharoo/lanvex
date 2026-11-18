@@ -14,7 +14,11 @@ access and a trunk port and per-VLAN MAC tables (v2c `community@vlan` and v3 con
 without bridge or LLDP MIBs. Through the API with two switches joined by an uplink and the
 documentation as a stand-in: every MAC on the one port it is plugged into, each comparison result,
 recording a cable after a preview, Discovery's switch ports, the topology, alerts for refused reads
-and unanswered probes that end by themselves, scheduled reads. In the browser (Playwright): adding a
+and unanswered probes that end by themselves, scheduled reads. Switch alerts: an uplink and a port
+with an LLDP neighbour going down (critical and warning), a new undocumented device (with its maker)
+while one in an excluded VLAN and the devices of the first read are not reported, a documented device
+moving ports, devices only placed better by a second switch's first read not counted as moves,
+acknowledging a port that was unplugged on purpose, the uplink's alert ending when it is back. In the browser (Playwright): adding a
 switch over SNMPv3 after a failed test, its ports, Discovery, removing it.
 
 Not verified against real switches yet (see below).

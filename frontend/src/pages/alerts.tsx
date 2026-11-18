@@ -19,6 +19,8 @@ export const KIND_LABEL: Record<AlertKind, string> = {
   pool_full: "DHCP pool",
   unknown_device: "Unknown device",
   change_failed: "Change",
+  port_down: "Port down",
+  device_moved: "Device moved",
 };
 
 const SEVERITY_ICON: Record<Severity, { icon: typeof Info; className: string; label: string }> = {

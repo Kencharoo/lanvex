@@ -8,13 +8,23 @@ from pydantic import Field, field_validator
 
 from lanvex.schemas import ApiModel
 
-Kind = Literal["unreachable", "read_failed", "drift", "pool_full", "unknown_device", "change_failed"]
+Kind = Literal[
+    "unreachable",
+    "read_failed",
+    "drift",
+    "pool_full",
+    "unknown_device",
+    "change_failed",
+    "port_down",
+    "device_moved",
+]
 SeverityName = Literal["critical", "warning", "info"]
 WebhookFormat = Literal["generic", "ntfy", "gotify", "slack", "discord", "teams"]
 
 EMAIL_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
 PATTERN_RE = re.compile(r"^[A-Za-z0-9_.:@*?\[\]-]{1,32}$")
 NETWORK_NAME_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,32}$")
+VLAN_RE = re.compile(r"^vlan:(\d{1,4})$", re.IGNORECASE)
 
 # Interfaces whose addresses come and go with containers, VMs and VPNs: not compared with the documentation.
 DEFAULT_DRIFT_IGNORE = [
@@ -40,6 +50,8 @@ class MonitoringSettings(ApiModel):
     pool_full: bool = True
     unknown_device: bool = True
     change_failed: bool = True
+    port_down: bool = True  # a switch port that led to another device went down
+    device_moved: bool = True  # a documented device is now on another switch port
     unreachable_after: int = Field(default=3, ge=1, le=60)  # failed probes in a row
     pool_threshold: int = Field(default=90, ge=50, le=100)  # percent of the pool leased
     drift_ignore_interfaces: list[str] = Field(
@@ -47,7 +59,7 @@ class MonitoringSettings(ApiModel):
     )
     unknown_device_ignore: list[str] = Field(
         default_factory=list, max_length=100
-    )  # network names or prefixes
+    )  # network names, prefixes, or vlan:<id> (on switch ports)
     email_enabled: bool = False
     email_to: list[str] = Field(default_factory=list, max_length=20)
     email_min_severity: SeverityName = "info"
@@ -72,8 +84,11 @@ class MonitoringSettings(ApiModel):
                     ipaddress.ip_network(p, strict=False)
                 except ValueError as e:
                     raise ValueError(f"{p!r} is not a prefix.") from e
+            elif m := VLAN_RE.match(p):
+                if not 1 <= int(m.group(1)) <= 4094:
+                    raise ValueError(f"{p!r}: VLAN IDs go from 1 to 4094.")
             elif not NETWORK_NAME_RE.match(p):
-                raise ValueError(f"{p!r} is not a network name or prefix.")
+                raise ValueError(f"{p!r} is not a network name, prefix or vlan:<id>.")
         return list(dict.fromkeys(out))
 
     @field_validator("email_to")

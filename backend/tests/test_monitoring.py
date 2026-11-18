@@ -117,7 +117,7 @@ def test_pool_usage_and_unknown_devices_from_a_read() -> None:
 def test_settings_are_checked() -> None:
     with pytest.raises(ValueError, match="not an email address"):
         MonitoringSettings(email_to=["ops at example.net"])
-    with pytest.raises(ValueError, match="not a network name or prefix"):
+    with pytest.raises(ValueError, match="not a network name, prefix or vlan:<id>"):
         MonitoringSettings(unknown_device_ignore=["guest wifi"])
     with pytest.raises(ValueError, match="not an interface name or pattern"):
         MonitoringSettings(drift_ignore_interfaces=["docker 0"])

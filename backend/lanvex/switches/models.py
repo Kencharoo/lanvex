@@ -43,6 +43,14 @@ class Switch(TimestampMixin, Base):
     ports_up: Mapped[int | None] = mapped_column(Integer)
     mac_count: Mapped[int | None] = mapped_column(Integer)
 
+    # The first successful read: MAC addresses seen then are the switch's starting point, not new devices.
+    first_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Ports that led to another device (LLDP, or another switch Lanvex reads) when last up: their going
+    # down is an alert. [{"index", "name", "peer", "uplink"}]
+    watched_ports: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+
     # Monitoring: SNMP answers to a GET of sysUpTime (consecutive failures).
     probe_failures: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
     last_probe_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

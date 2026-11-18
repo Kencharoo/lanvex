@@ -71,8 +71,10 @@ sits in between), it goes to the port with the fewest devices.
 
 The device is then named from what Lanvex knows: a server it reads (by the MAC addresses of the
 server's interfaces), a device or virtual machine whose interface has that MAC address in the
-documentation, and the addresses servers and switches saw it with. Hosts in *Discovery* show the
-switch port too.
+documentation, and the addresses servers and switches saw it with. Devices nobody documented show
+who made them, from their MAC address (the IEEE registry); phones and laptops that use a random MAC
+address per network show *Randomized address*. Hosts in *Discovery* show the switch port and maker
+too.
 
 ## Compared with the documentation
 
@@ -98,12 +100,17 @@ switches Lanvex reads.
 
 ## Monitoring
 
-| Alert | When |
-|---|---|
-| **Unreachable** (critical) | The switch did not answer the last *n* checks (default 3). Lanvex asks every switch for its uptime every two minutes |
-| **Read failed** (warning) | A read was refused: credentials rejected, address not allowed, or the switch let the sign-in see nothing |
+| Alert | When | Ends |
+|---|---|---|
+| **Unreachable** (critical) | The switch did not answer the last *n* checks (default 3). Lanvex asks every switch for its uptime every two minutes | When it answers again |
+| **Read failed** (warning) | A read was refused: credentials rejected, address not allowed, or the switch let the sign-in see nothing | With the next successful read |
+| **Port down** (critical for an uplink, else warning) | A port that led to another device went down: an uplink to another switch Lanvex reads, or a port with an LLDP neighbour. Ports turned off on the switch are not reported | When the port is up again, or when acknowledged: then the port is no longer watched (unplugged on purpose) |
+| **Unknown device** (info) | A device appeared on a port after the switch's first read and is documented nowhere (no interface with its MAC address, no fixed address, not a server Lanvex reads). A device already reported by a server or another switch is not reported again | When documented, or acknowledged |
+| **Device moved** (info) | A documented device is now on another port than at the switch's last read | When acknowledged |
 
-Both end by themselves, like the servers' ([monitoring.md](monitoring.md)).
+Unknown devices in some VLANs can be left out with `vlan:<id>` in the exclusions under *Settings,
+Monitoring* (a guest VLAN, say). What a switch shows on its first read is its starting point: those
+devices are not reported as new.
 
 ## Settings
 

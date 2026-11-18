@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lanvex.core.config import Settings
 from lanvex.core.errors import Conflict, LanvexError, ValidationFailed
+from lanvex.core.vendors import vendor
 from lanvex.integrations.linux.facts import HostFacts, LldpNeighbor
 from lanvex.netbox.cables import cableable as _cableable
 from lanvex.netbox.cables import describe_ends
@@ -72,6 +73,7 @@ class DiscoveredHost(ApiModel):
     address: str
     family: int
     mac: str | None
+    vendor: str | None = None  # who made it, from its MAC address
     router: bool
     first_seen: datetime
     last_seen: datetime
@@ -224,6 +226,7 @@ class DiscoveryService:
                     address=address,
                     family=newest.family,
                     mac=newest.mac,
+                    vendor=vendor(newest.mac),
                     router=any(d.router for d, _ in seen),
                     first_seen=min(d.first_seen for d, _ in seen),
                     last_seen=newest.last_seen,

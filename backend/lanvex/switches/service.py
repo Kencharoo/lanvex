@@ -19,6 +19,7 @@ from lanvex.integrations.snmp.client import SnmpCredentials, SnmpError, connect
 from lanvex.integrations.snmp.switch import SYS_UPTIME, SwitchFacts, read_switch
 from lanvex.netbox.client import NetBoxClient
 from lanvex.switches.models import Switch, SwitchMac, SwitchRead
+from lanvex.switches.ports import Move, moves, port_map
 from lanvex.switches.schemas import (
     SnmpSummary,
     SwitchCreate,
@@ -86,6 +87,7 @@ def to_out(sw: Switch, netbox: SwitchNetBox | None = None) -> SwitchOut:
 class SwitchService:
     def __init__(self, db: AsyncSession, settings: Settings, nb: NetBoxClient | None = None) -> None:
         self.db, self.settings, self.nb = db, settings, nb
+        self.moves: list[Move] = []  # devices the last read found on another port
 
     # ---- storage --------------------------------------------------------------------------------------
 
@@ -259,7 +261,11 @@ class SwitchService:
             await self.db.flush()
             return None
         duration = int((time.monotonic() - started) * 1000)
+        pm = await port_map(self.db)  # where each device was, as plain values: the rows change below
+        before = {mac: (m.switch_id, m.if_index, m.port, pm.current(m)) for mac, m in pm.placed.items()}
+        first = sw.first_read_at is None  # what a first read shows is new knowledge, not moves
         await self._keep(sw, facts, duration)
+        self.moves = [] if first else moves(before, await port_map(self.db), {e.mac for e in facts.fdb})
         return facts
 
     async def _keep(self, sw: Switch, facts: SwitchFacts, duration_ms: int) -> None:
@@ -274,6 +280,7 @@ class SwitchService:
         sw.last_status = "ok"
         sw.last_status_message = None
         sw.last_read_at = now
+        sw.first_read_at = sw.first_read_at or now
         sw.sys_name = (facts.system.name or "")[:255] or None
         sw.sys_description = (facts.system.description or "")[:500] or None
         sw.ports_total = len(physical)

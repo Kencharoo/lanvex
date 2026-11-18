@@ -139,12 +139,16 @@ export function MonitoringSection() {
             <Input
               value={ignoreNets}
               onChange={(e) => setIgnoreNets(e.target.value)}
-              placeholder="Ignored networks or prefixes"
+              placeholder="Ignored networks, prefixes or vlan:ID"
               aria-label="Networks without unknown-device alerts"
-              title="Network names or prefixes, e.g. guest, 10.20.0.0/16"
+              title="Network names, prefixes or switch VLANs, e.g. guest, 10.20.0.0/16, vlan:30"
             />
             <Checkbox id="m-change" label="Failed changes" checked={form.change_failed} onChange={(e) => set("change_failed", e.target.checked)} />
             <span />
+            <Checkbox id="m-port" label="Switch port down" checked={form.port_down} onChange={(e) => set("port_down", e.target.checked)} />
+            <span className="text-[13px] text-muted">Uplinks and ports with an LLDP neighbour</span>
+            <Checkbox id="m-moved" label="Device moved" checked={form.device_moved} onChange={(e) => set("device_moved", e.target.checked)} />
+            <span className="text-[13px] text-muted">Documented devices only</span>
           </div>
           {fieldError(save.error, "drift_ignore_interfaces", "unknown_device_ignore", "unreachable_after", "pool_threshold") && (
             <p role="alert" className="text-xs text-danger">

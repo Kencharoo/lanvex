@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lanvex.core.config import Settings
 from lanvex.core.errors import LanvexError
+from lanvex.core.vendors import vendor
 from lanvex.integrations.linux.facts import HostFacts
 from lanvex.integrations.snmp.switch import SwitchFacts, SwitchNeighbor, SwitchPort
 from lanvex.netbox.cables import cableable, describe_ends, far_ends, iface_type, not_cableable
@@ -94,7 +95,15 @@ async def port_map(db: AsyncSession) -> PortMap:
             if n.port is not None and other is not None and other != sid:
                 pm.uplinks[(sid, n.port)] = other
 
-    rows = list((await db.scalars(select(SwitchMac).order_by(SwitchMac.last_seen.desc()))).all())
+    rows = list(
+        (
+            await db.scalars(
+                select(SwitchMac)
+                .order_by(SwitchMac.last_seen.desc())
+                .execution_options(populate_existing=True)  # rows a read just updated
+            )
+        ).all()
+    )
     for m in rows:
         other = own.get(m.mac)
         if other is not None and other != m.switch_id and pm.current(m):
@@ -122,6 +131,32 @@ async def port_map(db: AsyncSession) -> PortMap:
             if (e.switch_id, e.if_index) == (best.switch_id, best.if_index):
                 pm.by_port[(e.switch_id, e.if_index)].append(e)
     return pm
+
+
+@dataclass
+class Move:
+    """A device now plugged into another port than at the last read."""
+
+    mac: str
+    vlan: int | None
+    from_switch: uuid.UUID
+    from_port: str
+    to_switch: uuid.UUID
+    to_port: str
+
+
+def moves(before: dict[str, tuple[uuid.UUID, int, str, bool]], after: PortMap, macs: set[str]) -> list[Move]:
+    """MAC addresses among `macs` that were on one port in the reads before and are on another now."""
+    out = []
+    for mac in sorted(macs):
+        was, now = before.get(mac), after.placed.get(mac)
+        if was is None or now is None or not was[3] or not after.current(now):
+            continue
+        if (was[0], was[1]) in after.uplinks:  # it was placed there for want of knowing better
+            continue
+        if (was[0], was[1]) != (now.switch_id, now.if_index):
+            out.append(Move(mac, now.vlan or None, was[0], was[2], now.switch_id, now.port))
+    return out
 
 
 # ---- who a MAC address belongs to -------------------------------------------------------------------
@@ -352,7 +387,10 @@ class PortLocator:
                             interface=n.port_id
                             if n.port_id and not _is_mac(n.port_id)
                             else n.port_description,
-                            mac=next((m for m in (n.port_id, n.chassis_id) if _is_mac(m)), None),
+                            mac=(
+                                lldp_mac := next((m for m in (n.port_id, n.chassis_id) if _is_mac(m)), None)
+                            ),
+                            vendor=vendor(lldp_mac),
                             addresses=n.management_addresses,
                             server_id=server.id if server else None,
                             switch_id=other,
@@ -406,6 +444,7 @@ class PortLocator:
                             name=ident.name,
                             interface=ident.interface,
                             mac=m.mac,
+                            vendor=vendor(m.mac),
                             vlan=m.vlan or None,
                             addresses=ident.addresses,
                             server_id=ident.server_id,

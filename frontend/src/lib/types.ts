@@ -416,6 +416,7 @@ export interface DiscoveredHost {
   address: string;
   family: 4 | 6;
   mac: string | null;
+  vendor: string | null;
   router: boolean;
   first_seen: string;
   last_seen: string;
@@ -774,7 +775,7 @@ export interface NetworksView {
 
 // ---- monitoring ----------------------------------------------------------------------------------------
 
-export type AlertKind = "unreachable" | "read_failed" | "drift" | "pool_full" | "unknown_device" | "change_failed";
+export type AlertKind = "unreachable" | "read_failed" | "drift" | "pool_full" | "unknown_device" | "change_failed" | "port_down" | "device_moved";
 export type Severity = "critical" | "warning" | "info";
 export type WebhookFormat = "generic" | "ntfy" | "gotify" | "slack" | "discord" | "teams";
 
@@ -816,6 +817,8 @@ export interface MonitoringSettings {
   pool_full: boolean;
   unknown_device: boolean;
   change_failed: boolean;
+  port_down: boolean;
+  device_moved: boolean;
   unreachable_after: number;
   pool_threshold: number;
   drift_ignore_interfaces: string[];
@@ -949,6 +952,7 @@ export interface PortEndpoint {
   name: string | null;
   interface: string | null;
   mac: string | null;
+  vendor: string | null;
   vlan: number | null;
   addresses: string[];
   server_id: string | null;

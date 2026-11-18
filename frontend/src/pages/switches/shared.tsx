@@ -192,7 +192,9 @@ export function EndpointLine({ e }: { e: PortEndpoint }) {
         )}
       </span>
       <span className="addr text-xs text-muted">
-        {[e.via === "lldp" ? "LLDP" : null, e.name ? e.mac : null, e.vlan != null ? `VLAN ${e.vlan}` : null, ...e.addresses.slice(0, 2)].filter(Boolean).join(" · ")}
+        {[e.via === "lldp" ? "LLDP" : null, e.name ? e.mac : null, e.name ? null : e.vendor, e.vlan != null ? `VLAN ${e.vlan}` : null, ...e.addresses.slice(0, 2)]
+          .filter(Boolean)
+          .join(" · ")}
       </span>
     </span>
   );

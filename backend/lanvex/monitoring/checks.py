@@ -1,11 +1,15 @@
-"""What monitoring finds on a server, from its latest read and the documentation. Pure functions."""
+"""What monitoring finds on a server or switch, from its latest read and the documentation. Pure
+functions."""
 
 import fnmatch
 import ipaddress
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
+from lanvex.core.vendors import vendor
 from lanvex.integrations.linux.facts import HostFacts
+from lanvex.integrations.snmp.switch import SwitchFacts
 from lanvex.monitoring.models import Severity
 from lanvex.monitoring.schemas import MonitoringSettings
 from lanvex.networks.schemas import NetworksView
@@ -13,8 +17,8 @@ from lanvex.servers.models import ConnectionStatus
 from lanvex.servers.schemas import Comparison
 
 # Alerts about events rather than conditions: they end when acknowledged (or, for unknown devices,
-# when the device is documented), and a device is reported once per server.
-EVENT_KINDS = {"unknown_device", "change_failed"}
+# when the device is documented), and each is reported once per server or switch.
+EVENT_KINDS = {"unknown_device", "change_failed", "device_moved"}
 
 READ_FAILED = {
     ConnectionStatus.AUTH_FAILED: "sign-in rejected",
@@ -230,7 +234,8 @@ def unknown_devices(
         if network in names or any(address in p for p in prefixes):
             continue
         seen.add(mac)
-        label = f"{lease.hostname} ({mac})" if lease.hostname else mac
+        maker = vendor(mac)
+        label = f"{lease.hostname} ({mac})" if lease.hostname else f"{mac} ({maker})" if maker else mac
         out.append(
             Finding(
                 "unknown_device",
@@ -241,3 +246,95 @@ def unknown_devices(
             )
         )
     return out
+
+
+# ---- switches ------------------------------------------------------------------------------------------
+
+
+def ignored_vlans(cfg: MonitoringSettings) -> set[int]:
+    return {int(p.split(":", 1)[1]) for p in cfg.unknown_device_ignore if p.lower().startswith("vlan:")}
+
+
+def watch(
+    old: list[dict[str, Any]], facts: SwitchFacts, peers: dict[int, tuple[str, bool]]
+) -> list[dict[str, Any]]:
+    """The ports to watch: those that led to another device when last up. `peers` names, for each port up
+    now, what it leads to (an LLDP neighbour or another switch) and whether it is an uplink. A watched
+    port stays watched while it is down; one that is up with nothing on it any more is dropped."""
+    ports = {p.index: p for p in facts.ports}
+    out: dict[int, dict[str, Any]] = {}
+    for w in old:
+        p = ports.get(w.get("index", -1))
+        if p is not None and not (p.oper_up and p.index not in peers):
+            known = {"peer": peers[p.index][0], "uplink": peers[p.index][1]} if p.index in peers else {}
+            out[p.index] = {**w, "name": p.name, **known}
+    for idx, (peer, uplink) in peers.items():
+        p = ports.get(idx)
+        if p is not None and p.oper_up:
+            out[idx] = {"index": idx, "name": p.name, "peer": peer, "uplink": uplink}
+    return [out[i] for i in sorted(out)]
+
+
+def ports_down(switch: str, facts: SwitchFacts, watched: list[dict[str, Any]]) -> list[Finding]:
+    """Watched ports that are down now. A port turned off on purpose (admin down) is not an alert."""
+    ports = {p.index: p for p in facts.ports}
+    out = []
+    for w in watched:
+        p = ports.get(w.get("index", -1))
+        if p is None or p.admin_up is False or p.oper_up is not False:
+            continue
+        out.append(
+            Finding(
+                "port_down",
+                p.name,
+                Severity.CRITICAL if w.get("uplink") else Severity.WARNING,
+                f"{switch} {p.name} is down",
+                [f"It led to {w['peer']}." if w.get("peer") else "It led to another device."],
+            )
+        )
+    return out
+
+
+@dataclass
+class SeenDevice:
+    mac: str
+    port: str
+    vlan: int | None
+    addresses: list[str]
+    vendor: str | None
+
+
+def switch_unknown_devices(switch: str, devices: list[SeenDevice], cfg: MonitoringSettings) -> list[Finding]:
+    """Devices that appeared on the switch's ports after its first read and are documented nowhere."""
+    vlans = ignored_vlans(cfg)
+    prefixes = [ipaddress.ip_network(p, strict=False) for p in cfg.unknown_device_ignore if "/" in p]
+    out = []
+    for d in devices:
+        if d.vlan in vlans:
+            continue
+        addresses = []
+        for a in d.addresses:
+            try:
+                addresses.append(ipaddress.ip_address(a))
+            except ValueError:
+                continue
+        if any(a in p for a in addresses for p in prefixes if a.version == p.version):
+            continue
+        label = f"{d.mac} ({d.vendor})" if d.vendor else d.mac
+        detail = [f"On {switch} {d.port}" + (f", VLAN {d.vlan}" if d.vlan else "") + "."]
+        if d.addresses:
+            detail.append(f"Seen with {', '.join(d.addresses)}.")
+        out.append(
+            Finding(
+                "unknown_device", d.mac, Severity.INFO, f"Unknown device {label} on {switch} {d.port}", detail
+            )
+        )
+    return out
+
+
+def device_moves(moves: list[tuple[str, str, str, str]]) -> list[Finding]:
+    """(who, key, now on, was on) for documented devices now plugged into another port."""
+    return [
+        Finding("device_moved", key, Severity.INFO, f"{who} moved to {now}", [f"Was on {was}."])
+        for who, key, now, was in moves
+    ]

@@ -119,7 +119,7 @@ async def read_switch(
     svc = _svc(request, db, settings)
     sw = await svc.get(switch_id)
     facts = await svc.read(sw)
-    await check_after_switch_read(db, settings, request.app.state.netbox, sw)
+    await check_after_switch_read(db, settings, request.app.state.netbox, sw, facts, svc.moves)
     await db.commit()
     await audit.record(
         "switch.read",

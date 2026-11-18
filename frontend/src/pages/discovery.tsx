@@ -72,7 +72,12 @@ function HostsSection() {
       cell: (h) => (
         <span className="grid">
           <span className="addr font-medium">{h.address}</span>
-          {h.mac && <span className="addr text-xs text-muted">{h.mac}</span>}
+          {h.mac && (
+            <span className="text-xs text-muted">
+              <span className="addr">{h.mac}</span>
+              {h.vendor && ` · ${h.vendor}`}
+            </span>
+          )}
         </span>
       ),
     },

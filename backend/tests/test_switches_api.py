@@ -24,7 +24,7 @@ from lanvex.switches.ports import port_map
 from lanvex.switches.scheduler import SwitchReadScheduler
 
 from .snmp_agent import AUTH_KEY, COMMUNITY, PRIV_KEY, USER, Agent
-from .switch_tables import A, B, C, D, E, F, access_switch, core_switch
+from .switch_tables import A, B, C, D, E, F, access_switch, core_switch, oid, qfdb
 
 V2 = {"version": "2c", "community": COMMUNITY}
 V3 = {
@@ -448,3 +448,60 @@ async def test_deleting_a_switch(admin: httpx.AsyncClient, nb: NetBox, agents: d
     assert (await admin.delete(f"/api/v1/switches/{sid}")).status_code == 204
     assert (await admin.get(f"/api/v1/switches/{sid}")).status_code == 404
     assert (await admin.get("/api/v1/discovery/ports")).json()["ports"] == []
+
+
+async def test_switch_alerts(admin: httpx.AsyncClient, nb: NetBox, agents: dict[str, Agent]) -> None:
+    """Ports that led somewhere going down, devices new on a port, documented devices moving."""
+    port = agents["access"].port
+    access = await add(admin, "sw-access", port, netbox_device_id=30)
+    core = await add(admin, "sw-core", agents["core"].port, netbox_device_id=31)
+    await read(admin, access)
+    await read(admin, core)
+    alerts = lambda: admin.get("/api/v1/alerts", params={"state": "open"})  # noqa: E731
+    assert (await alerts()).json()["alerts"] == []  # what the first read finds (B) is the starting point
+
+    cfg = (await admin.get("/api/v1/monitoring")).json()["settings"]
+    r = await admin.put("/api/v1/monitoring", json={**cfg, "unknown_device_ignore": ["vlan:20"]})
+    assert r.status_code == 200, r.text
+    bad = await admin.put("/api/v1/monitoring", json={**cfg, "unknown_device_ignore": ["vlan:5000"]})
+    assert bad.status_code == 422
+
+    # Po1 (the uplink) and Gi1/0/3 (web-01) go down, Gi1/0/4 stays down (nothing was on it), pc-a moves
+    # from Gi1/0/1 to Gi1/0/6, two new devices appear: one in VLAN 10, one in the ignored VLAN 20.
+    t = access_switch()
+    t["1.3.6.1.2.1.2.2.1.8.9"] = 2
+    t["1.3.6.1.2.1.2.2.1.8.3"] = 2
+    t[f"1.3.6.1.2.1.17.7.1.2.2.1.2.10.{oid(A)}"] = 6
+    t |= qfdb(10, "fc:ec:da:11:22:33", 6) | qfdb(20, "fc:ec:da:11:22:44", 5)
+    agents["access"].stop()
+    agents["access"] = Agent(t, port=port)
+    await read(admin, access)
+
+    found = {a["title"]: a for a in (await alerts()).json()["alerts"]}
+    assert {(a["kind"], t, a["severity"]) for t, a in found.items()} == {
+        ("port_down", "sw-access Po1 is down", "critical"),
+        ("port_down", "sw-access Gi1/0/3 is down", "warning"),
+        ("unknown_device", "Unknown device fc:ec:da:11:22:33 (Ubiquiti) on sw-access Gi1/0/6", "info"),
+        ("device_moved", "pc-a / eth0 moved to sw-access Gi1/0/6", "info"),
+    }
+    assert found["sw-access Po1 is down"]["detail"] == ["It led to sw-core."]
+    assert found["sw-access Gi1/0/3 is down"]["detail"] == ["It led to web-01."]
+    assert found["pc-a / eth0 moved to sw-access Gi1/0/6"]["detail"] == ["Was on sw-access Gi1/0/1."]
+    assert all(a["switch_id"] == access for a in found.values())
+    ports = (await admin.get(f"/api/v1/switches/{access}")).json()["findings"]
+    new = next(e for p in ports for e in p["endpoints"] if e["mac"] == "fc:ec:da:11:22:33")
+    assert new["vendor"] == "Ubiquiti"
+
+    # Gi1/0/3 was unplugged on purpose: acknowledging ends the alert, and the port is no longer watched.
+    gi3 = found["sw-access Gi1/0/3 is down"]
+    assert (await admin.post(f"/api/v1/alerts/{gi3['id']}/acknowledge")).status_code == 200
+    await read(admin, access)
+    titles = {a["title"] for a in (await alerts()).json()["alerts"]}
+    assert "sw-access Gi1/0/3 is down" not in titles and "sw-access Po1 is down" in titles
+
+    # The uplink is back: its alert ends; the events stay until acknowledged.
+    agents["access"].stop()
+    agents["access"] = Agent({**t, "1.3.6.1.2.1.2.2.1.8.9": 1}, port=port)
+    await read(admin, access)
+    open_kinds = sorted(a["kind"] for a in (await alerts()).json()["alerts"])
+    assert open_kinds == ["device_moved", "unknown_device"]

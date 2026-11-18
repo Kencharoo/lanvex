@@ -77,8 +77,8 @@ class SwitchReadScheduler:
             svc = SwitchService(session, self.settings, self.netbox())
             try:
                 sw = await svc.get(switch_id)
-                await svc.read(sw)
-                await check_after_switch_read(session, self.settings, self.netbox(), sw)
+                facts = await svc.read(sw)
+                await check_after_switch_read(session, self.settings, self.netbox(), sw, facts, svc.moves)
                 await session.commit()
                 log.info("scheduled_switch_read", switch=sw.name, status=sw.last_status)
             except Exception:

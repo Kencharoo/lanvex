@@ -19,6 +19,7 @@ dependencies = [
     "asyncssh[bcrypt]>=2.17",
     "cryptography>=43",
     "pysnmp>=7.1.33",
+    "netaddr>=1.3.0",
 ]
 
 [dependency-groups]

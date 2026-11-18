@@ -1,11 +1,12 @@
 """Alerts: found by the checks, kept one per condition, queued for delivery to email and webhooks."""
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lanvex.auth.models import User
@@ -13,6 +14,8 @@ from lanvex.core.config import Settings
 from lanvex.core.errors import LanvexError, NotFound, ValidationFailed
 from lanvex.core.logging import get_logger
 from lanvex.core.secrets import Vault
+from lanvex.core.vendors import vendor
+from lanvex.integrations.snmp.switch import SwitchFacts
 from lanvex.monitoring import checks
 from lanvex.monitoring.checks import EVENT_KINDS, Finding
 from lanvex.monitoring.models import (
@@ -28,6 +31,7 @@ from lanvex.monitoring.schemas import AlertCount, MonitoringSettings, WebhookIn
 from lanvex.netbox.client import NetBoxClient
 from lanvex.servers.models import ConnectionStatus, Server, ServerSnapshot
 from lanvex.switches.models import Switch
+from lanvex.switches.ports import Move, PortLocator, PortMap, port_map
 
 log = get_logger("lanvex.monitoring")
 
@@ -104,6 +108,12 @@ class MonitoringService:
         a.acknowledged_at, a.acknowledged_by = now, user.username
         if a.kind in EVENT_KINDS and a.state == AlertState.OPEN:
             a.state, a.resolved_at = AlertState.RESOLVED, now
+        if a.kind == "port_down" and a.state == AlertState.OPEN and a.switch_id:
+            # Unplugged on purpose: stop watching the port, so the alert does not come back.
+            sw = await self.db.get(Switch, a.switch_id)
+            if sw is not None:
+                sw.watched_ports = [w for w in sw.watched_ports or [] if w.get("name") != a.key]
+            a.state, a.resolved_at = AlertState.RESOLVED, now
         await self.db.flush()
         return a
 
@@ -159,7 +169,7 @@ class MonitoringService:
             await self._queue(a, "opened", cfg)
             opened.append(a)
         for (kind, key), a in current.items():
-            if (kind, key) in found or kind == "change_failed":
+            if (kind, key) in found or kind in ("change_failed", "device_moved"):
                 continue
             if kind == "unknown_device" and not await self._documented(key):
                 continue  # the lease ended, the device is still not documented
@@ -227,7 +237,18 @@ class MonitoringService:
                 findings += checks.pool_usage(s.name, facts, cfg.pool_threshold, now)
             if cfg.unknown_device and self.nb is not None and facts.dhcp:
                 try:
-                    known = await self.known_macs([lease.mac for lease in facts.dhcp.leases])
+                    leased = [lease.mac.lower() for lease in facts.dhcp.leases]
+                    known = await self.known_macs(leased)
+                    # A device already reported by a switch or another server is not reported again.
+                    known |= set(
+                        await self.db.scalars(
+                            select(Alert.key).where(
+                                Alert.kind == "unknown_device",
+                                Alert.key.in_(leased),
+                                or_(Alert.server_id.is_(None), Alert.server_id != s.id),
+                            )
+                        )
+                    )
                     findings += checks.unknown_devices(s.name, facts, known, cfg, now)
                 except LanvexError as e:
                     log.warning("monitor_devices_skipped", server=s.name, error=e.message)
@@ -241,10 +262,86 @@ class MonitoringService:
         findings = checks.unreachable(s.name, probe.failures, cfg.unreachable_after, probe.last_error)
         return await self.reconcile(s, {"unreachable"}, findings)
 
-    async def after_switch_read(self, sw: Switch) -> list[Alert]:
-        """A failed read of a switch (other than no answer, which the probe reports)."""
+    async def after_switch_read(
+        self, sw: Switch, facts: SwitchFacts | None = None, moves: Sequence[Move] = ()
+    ) -> list[Alert]:
+        """A failed read (other than no answer, which the probe reports); after a successful one, ports
+        that went down, devices new on its ports, and documented devices on another port than before."""
+        cfg = await self.config()
         findings = checks.switch_read_failed(sw.name, sw.last_status, sw.last_status_message)
-        return await self.reconcile(sw, {"read_failed"}, findings)
+        kinds = {"read_failed"}
+        if sw.last_status == "ok" and facts is not None:
+            pm = await port_map(self.db)
+            peers = {
+                n.port: (n.system_name or n.chassis_id or "an LLDP neighbour", False)
+                for n in facts.neighbors
+                if n.port is not None
+            }
+            for (sid, idx), other in pm.uplinks.items():
+                if sid == sw.id:
+                    peers[idx] = (pm.switches[other].name if other in pm.switches else "another switch", True)
+            sw.watched_ports = checks.watch(sw.watched_ports or [], facts, peers)
+            kinds.add("port_down")
+            findings += checks.ports_down(sw.name, facts, sw.watched_ports)
+            if self.nb is not None and (cfg.unknown_device or cfg.device_moved):
+                try:
+                    findings += await self._switch_devices(sw, pm, moves, cfg)
+                    kinds |= {"unknown_device", "device_moved"}
+                except LanvexError as e:  # the documentation cannot be read now: keep what is open
+                    log.warning("monitor_switch_devices_skipped", switch=sw.name, error=e.message)
+        return await self.reconcile(sw, kinds, findings)
+
+    async def _switch_devices(
+        self, sw: Switch, pm: PortMap, moves: Sequence[Move], cfg: MonitoringSettings
+    ) -> list[Finding]:
+        placed = {
+            m.mac: m for (sid, _), rows in pm.by_port.items() if sid == sw.id for m in rows if pm.current(m)
+        }
+        macs = sorted(set(placed) | {mv.mac for mv in moves})
+        if not macs:
+            return []
+        locator = PortLocator(self.db, self.settings, self.nb)
+        servers, _ = await locator._servers()
+        idents = await locator.identities(pm, macs, servers)
+        out: list[Finding] = []
+        if cfg.unknown_device and sw.first_read_at is not None:
+            unknown = [m for m in placed if idents[m].kind == "unknown"]
+            fixed = await self.known_macs(unknown)  # fixed DHCP addresses
+            alerted = set(
+                await self.db.scalars(
+                    select(Alert.key).where(Alert.kind == "unknown_device", Alert.key.in_(unknown))
+                )
+            )
+            new = [
+                checks.SeenDevice(
+                    mac, placed[mac].port, placed[mac].vlan or None, idents[mac].addresses, vendor(mac)
+                )
+                for mac in unknown
+                if mac not in fixed and mac not in alerted and placed[mac].first_seen > sw.first_read_at
+            ]
+            out += checks.switch_unknown_devices(sw.name, new, cfg)
+        if cfg.device_moved:
+            names = {sid: s.name for sid, s in pm.switches.items()}
+            moved = []
+            for mv in moves:
+                ident = idents.get(mv.mac)
+                if ident is None or ident.kind == "unknown":
+                    continue
+                who = (
+                    f"{ident.name} / {ident.interface}"
+                    if ident.name and ident.interface
+                    else ident.name or mv.mac
+                )
+                moved.append(
+                    (
+                        who,
+                        f"{mv.mac}@{mv.to_switch}:{mv.to_port}"[:200],
+                        f"{names.get(mv.to_switch, '?')} {mv.to_port}",
+                        f"{names.get(mv.from_switch, '?')} {mv.from_port}",
+                    )
+                )
+            out += checks.device_moves(moved)
+        return out
 
     async def after_switch_probe(self, sw: Switch) -> list[Alert]:
         cfg = await self.config()
@@ -340,13 +437,18 @@ async def check_after_read(
 
 
 async def check_after_switch_read(
-    db: AsyncSession, settings: Settings, nb: NetBoxClient | None, sw: Switch
+    db: AsyncSession,
+    settings: Settings,
+    nb: NetBoxClient | None,
+    sw: Switch,
+    facts: SwitchFacts | None = None,
+    moves: Sequence[Move] = (),
 ) -> None:
     """Monitoring after a switch read, in the read's transaction; a failing check never fails the read."""
     if not settings.monitor_enabled:
         return
     try:
         async with db.begin_nested():
-            await MonitoringService(db, settings, nb).after_switch_read(sw)
+            await MonitoringService(db, settings, nb).after_switch_read(sw, facts, moves)
     except Exception:
         log.exception("monitor_checks_failed", switch=sw.name)

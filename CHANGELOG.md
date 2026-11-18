@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+- **Switch alerts**: a port that led to another device going down (an uplink, or a port with an LLDP
+  neighbour; acknowledging one stops watching that port), a device documented nowhere appearing on a
+  port, a documented device found on another port. Unknown devices in some VLANs can be left out
+  (`vlan:<id>`), and a device reported by a server or another switch is not reported twice.
+- **Makers from MAC addresses** on switch ports, in Discovery and in unknown-device alerts (the IEEE
+  registry, through netaddr); random addresses of phones and laptops are marked as such.
 - **lanvexctl finds installations set up before it**, in any directory, by the directory their
   containers were started from, and takes them over on their first update (backup, the release into
   `~/lanvex/releases/`, itself into `~/.local/bin`). Before, it looked only in `~/lanvex` and
   `/opt/lanvex`. Run from a download, it installs itself even when there is nothing to update. Tested
   in CI under rootless Podman.
+
+New dependency: netaddr (BSD), for the IEEE registry of MAC address makers.
 
 ## 1.2.0 — 2026-11-17
 
