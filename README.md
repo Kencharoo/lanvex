@@ -49,7 +49,7 @@ you already run), whether Lanvex will be reached over HTTPS through a reverse pr
 which port it listens on, and the first administrator's name. It generates every password and key into
 `.env`, builds and starts the containers, waits until they are healthy and prints how to sign in.
 Options after `--` go to the installer (`lanvexctl install -- --help` lists them). From a release
-archive instead: `lanvexctl install --file lanvex-1.2.0.zip`, or unzip it and run `./install.sh`.
+archive instead: `lanvexctl install --file lanvex-1.3.0.zip`, or unzip it and run `./install.sh`.
 
 | Command | |
 |---|---|

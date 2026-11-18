@@ -1,6 +1,6 @@
 # Roadmap: Lanvex as the router's console
 
-Last updated 2026-11-17.
+Last updated 2026-11-18.
 
 **Goal:** any Linux server Lanvex manages can be the router for its networks: VLANs, DHCP, who may
 reach what, DNS filtering. On the server systems people actually run (Ubuntu Server, Debian, Fedora,
@@ -129,11 +129,16 @@ cables in Discovery, on the switch page and in the topology; cables recorded aft
 unreachable and failed-read alerts ([switches.md](switches.md)). Release files are built and attached
 to each GitHub release by CI.
 
+### 1.3: Switch changes and more server changes (released 2026-11-18)
+
+Built: alerts for switch ports and devices that move or appear, makers from MAC addresses; a switch
+port's VLANs set as an approved change with preview, read back and undo ([switches.md](switches.md));
+IPv6 and static routes in server changes, bridges and bonds ([changes.md](changes.md)); Kea as the DHCP
+server where it runs ([networks.md](networks.md#kea-instead-of-dnsmasq)). Each with lab tests in CI.
+
 ### Next
 
-- **Port VLANs**: setting a switch port's VLANs as an approved change, with the same preview,
-  verification and rollback as server changes.
-- **More server changes**: static routes, bridges and bonds, then IPv6, each with a lab test.
 - **Sign-in with LDAP, Active Directory or OpenID Connect.**
 - **The manual** (German and English), from the docs as they are now.
-- **Kea** as an alternative DHCP server, for servers that already run it.
+- **On real hardware**: port VLANs on real switches, bridges and bonds on physical servers, Kea outside
+  the lab.

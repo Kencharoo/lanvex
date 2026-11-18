@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-11-18
+
+Changes on switches and more kinds of server change.
 
 - **Switch alerts**: a port that led to another device going down (an uplink, or a port with an LLDP
   neighbour; acknowledging one stops watching that port), a device documented nowhere appearing on a
@@ -37,6 +39,13 @@
   in CI under rootless Podman.
 
 New dependency: netaddr (BSD), for the IEEE registry of MAC address makers.
+
+**Updating:** `lanvexctl update` (downloads 1.3.0 from GitHub), or
+`lanvexctl update --file lanvex-1.3.0.zip`. The database gets its new columns and table on start; no new
+settings. **Every server's helper shows as outdated (version 6)**: copy the new file to the server from
+its page and have an administrator run the commands shown, as before. Lanvex Core (1.0.0) is unchanged.
+Port VLAN changes stay off until allowed per switch; not yet tried against real switches, nor bridges,
+bonds and Kea on real servers: see [docs/status.md](docs/status.md).
 
 ## 1.2.0 — 2026-11-17
 

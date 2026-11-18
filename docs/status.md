@@ -1,6 +1,6 @@
-# Status of Lanvex 1.2.0
+# Status of Lanvex 1.3.0
 
-Last updated 2026-11-17. "Verified" means it was run, not just written.
+Last updated 2026-11-18. "Verified" means it was run, not just written.
 
 ## Verified
 
@@ -23,7 +23,7 @@ switch over SNMPv3 after a failed test, its ports, Discovery, removing it.
 
 Not verified against real switches yet (see below).
 
-### Switch port VLAN changes (unreleased)
+### Switch port VLAN changes (new in 1.3)
 
 Against the SNMP agent in the test process, which takes SET requests into its tables: a port moved to
 another untagged VLAN with a tagged one, written in the planned order (members before untagged
@@ -36,7 +36,7 @@ back; a change made on the switch since the preview, not written at all; a switc
 writes; readers, approval by the wrong port name, cancelling. In the browser (Playwright, with the lab
 specs): allowing changes, a change and its reversal through preview, approval and read back.
 
-### IPv6 and static routes in server changes (unreleased)
+### IPv6 and static routes in server changes (new in 1.3)
 
 Helper unit tests: validation (methods, addresses, link-local and on-link gateways and next hops,
 families, default routes, networks with host bits, duplicates, metrics); netplan definitions with IPv6
@@ -50,7 +50,7 @@ gateway and for routes that go, an IPv6 management address that must stay static
 NetworkManager profile's route replaced and the old one gone from the kernel, a route added on
 netplan, IPv6 static with an IPv6 route on NetworkManager where the runner's kernel has IPv6.
 
-### Kea (unreleased)
+### Kea (new in 1.3)
 
 Helper unit tests: Kea's configuration read past its comments and includes, whether Kea is set up for
 Lanvex, which DHCP server a server's pools go to (never both), the shared networks written (pool,
@@ -60,7 +60,7 @@ after its dnsmasq file, Kea's lease file (released and declined leases left out)
 checked with `kea-dhcp4 -t`, Kea reloaded and asked over its control socket, a real client gets its
 fixed address and Kea's lease file has it; the pool removed and that rolled back.
 
-### Bridges and bonds on servers (unreleased)
+### Bridges and bonds on servers (new in 1.3)
 
 Helper unit tests: requests (names, members, modes, methods, gateways), the netplan file (members
 defined elsewhere referred to by their netplan ID, the others defined in it), the NetworkManager
