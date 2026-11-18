@@ -34,12 +34,28 @@ usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ---- where Lanvex is --------------------------------------------------------------------------------
 
-# The running installation: HOME_DIR/current (a link to a release), or an installation unpacked by
-# hand straight into HOME_DIR (before lanvexctl).
+# The running installation: HOME_DIR/current (a link to a release), or one unpacked by hand (before
+# lanvexctl): straight into HOME_DIR, or anywhere else, found by the directory its containers were
+# started from.
 current_dir() {
   if [ -L "$HOME_DIR/current" ]; then readlink -f "$HOME_DIR/current"
   elif [ -f "$HOME_DIR/.env" ]; then printf '%s\n' "$HOME_DIR"
+  else started_from
   fi
+}
+started_from() {
+  local rt id dir
+  for rt in docker podman; do
+    command -v "$rt" >/dev/null || continue
+    id=$("$rt" ps -aq --filter "label=com.docker.compose.project=lanvex" \
+      --filter "label=com.docker.compose.service=lanvex" 2>/dev/null | head -n 1)
+    [ -n "$id" ] || continue
+    dir=$("$rt" inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$id" 2>/dev/null || true)
+    if [ -n "$dir" ] && [ -f "$dir/.env" ] && [ -f "$dir/install.sh" ]; then
+      printf '%s\n' "$dir"
+      return
+    fi
+  done
 }
 require_installed() {
   CUR=$(current_dir)
@@ -181,7 +197,8 @@ cmd_install() {
     esac
     shift
   done
-  [ -z "$(current_dir)" ] || fail "Lanvex is already installed in $HOME_DIR. Use lanvexctl update."
+  local existing; existing=$(current_dir)
+  [ -z "$existing" ] || fail "Lanvex is already installed in $existing. Use lanvexctl update."
   mkdir -p "$HOME_DIR"
   local dir; dir=$(fetch_release "$version" "$zip")
   bold "Installing Lanvex $(version_of "$dir") in $dir"
@@ -206,7 +223,11 @@ cmd_update() {
   local old=$CUR from_version; from_version=$(version_of "$old")
   if [ -z "$zip" ] && [ -z "$version" ]; then
     version=$(latest_version)
-    [ "$version" != "$from_version" ] || { say "Lanvex $from_version is the latest release."; return 0; }
+    if [ "$version" = "$from_version" ]; then
+      say "Lanvex $from_version is the latest release."
+      install_self "$0"  # run from a download: from now on, as lanvexctl
+      return 0
+    fi
   fi
   local dir; dir=$(fetch_release "$version" "$zip")
   bold "Updating Lanvex $from_version to $(version_of "$dir")"
@@ -217,8 +238,14 @@ cmd_update() {
   fi
   ln -sfn "releases/$(basename "$dir")" "$HOME_DIR/current"
   install_self "$dir/lanvexctl"
-  case "$old" in "$HOME_DIR"/releases/*) prune_releases "$old" ;; esac
-  say "Lanvex $(version_of "$dir") is running. The previous release stays in $old until the next update."
+  case "$old" in
+    "$HOME_DIR"/releases/*)
+      prune_releases "$old"
+      say "Lanvex $(version_of "$dir") is running. The previous release stays in $old until the next update." ;;
+    *)
+      say "Lanvex $(version_of "$dir") is running from $dir; lanvexctl manages it from now on."
+      [ "$old" = "$HOME_DIR" ] || say "$old is no longer used (the data is in the containers' volumes); delete it once all is well." ;;
+  esac
 }
 
 cmd_status() {

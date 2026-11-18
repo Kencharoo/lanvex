@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **lanvexctl finds installations set up before it**, in any directory, by the directory their
+  containers were started from, and takes them over on their first update (backup, the release into
+  `~/lanvex/releases/`, itself into `~/.local/bin`). Before, it looked only in `~/lanvex` and
+  `/opt/lanvex`. Run from a download, it installs itself even when there is nothing to update. Tested
+  in CI under rootless Podman.
+
 ## 1.2.0 — 2026-11-17
 
 Switches: which device is plugged into which port.

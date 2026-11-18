@@ -363,6 +363,29 @@ jobs:
           grep -qx "WorkingDirectory=$(cd ../lanvex-next && pwd)" ~/.config/systemd/user/lanvex.service
           password=$(sed -n 's/^  Password:  //p' install.log)
           ../lanvex-next/scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$password"
+      - name: lanvexctl takes over an installation unpacked by hand (rootless)
+        # Like a server set up before lanvexctl: Lanvex runs from ../lanvex-next, not ~/lanvex. lanvexctl,
+        # run from a download, must find it by its containers, back it up, update it into
+        # ~/lanvex/releases/ and install itself.
+        shell: bash
+        run: |
+          stage=$(mktemp -d) && mkdir "$stage/lanvex-take"
+          tar -C ../lanvex-next --exclude=.git --exclude=node_modules --exclude=.env -cf - . | tar -C "$stage/lanvex-take" -xf -
+          sed -i 's/^__version__ = "\(.*\)"/__version__ = "\1+take"/' "$stage/lanvex-take/backend/lanvex/__init__.py"
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$stage/lanvex-take/backend/lanvex/__init__.py")
+          (cd "$stage" && zip -qr take.zip lanvex-take)
+          cp lanvexctl "$stage/lanvexctl"
+          out=$(cd /tmp && bash "$stage/lanvexctl" status) && echo "$out"
+          grep -q "Directory:  $(cd ../lanvex-next && pwd)" <<<"$out"
+          (cd /tmp && bash "$stage/lanvexctl" update --file "$stage/take.zip" < /dev/null)
+          [ "$(readlink ~/lanvex/current)" = "releases/$version" ]
+          ls ~/lanvex/backups/lanvex-*-before-update-*.tar.gz
+          ~/.local/bin/lanvexctl status
+          grep -qx "WorkingDirectory=$HOME/lanvex/releases/$version" ~/.config/systemd/user/lanvex.service
+          id=$(podman ps -q --filter label=com.docker.compose.service=lanvex)
+          podman exec "$id" python -c "import lanvex; print(lanvex.__version__)" | grep -q '+take$'
+          password=$(sed -n 's/^  Password:  //p' install.log)
+          ~/lanvex/current/scripts/check-install.sh http://127.0.0.1:8080 ci-admin "$password"
       - name: Container logs
         if: failure()
         run: |

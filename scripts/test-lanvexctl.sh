@@ -24,7 +24,7 @@ case "$1" in
   info) ;;
   compose) if [ "${2:-}" = version ]; then echo "Docker Compose version v2.29.0"; fi ;;
   ps) all="$*"; svc=${all##*service=}; echo "${svc%% *}-id" ;;
-  inspect) echo healthy ;;
+  inspect) case "$*" in *working_dir*) echo "${STARTED_FROM:-}" ;; *) echo healthy ;; esac ;;
   logs) echo "log line" ;;
   exec)
     shift; [ "$1" = -i ] && shift; shift
@@ -128,5 +128,22 @@ printf 'LANVEX_POSTGRES_PASSWORD=old\n' > "$LANVEX_HOME/.env"
 grep -q "install.sh --update $LANVEX_HOME in $LANVEX_HOME/releases/1.2.0" "$log" || no "updates from the hand-made directory"
 [ "$(readlink "$LANVEX_HOME/current")" = releases/1.2.0 ] && cmp -s "$LANVEX_HOME/.env" "$LANVEX_HOME/current/.env" || no "takes its .env along"
 ok "update of an installation unpacked by hand: taken over into releases/"
+
+# an installation unpacked by hand somewhere else: found by the directory its containers started from
+old="$work/elsewhere/lanvex-1.0.1"
+mkdir -p "$old/backend/lanvex" && printf '__version__ = "1.0.1"\n' > "$old/backend/lanvex/__init__.py"
+printf 'LANVEX_POSTGRES_PASSWORD=elsewhere\n' > "$old/.env" && touch "$old/install.sh"
+export LANVEX_HOME="$work/fresh/lanvex" STARTED_FROM="$old"
+"$ctl" status > "$work/out" 2>&1 || true
+grep -q "Directory:  $old" "$work/out" || { cat "$work/out"; no "status finds an installation by its containers"; }
+if "$ctl" install --file "$work/dist/lanvex-1.2.0.zip" > "$work/out" 2>&1; then no "install next to a running installation is refused"; fi
+grep -q "already installed in $old" "$work/out" || no "says where Lanvex is installed"
+"$ctl" update --file "$work/dist/lanvex-1.2.0.zip" > "$work/out" 2>&1 || { cat "$work/out"; no "update of an installation elsewhere"; }
+grep -q "install.sh --update $old in $LANVEX_HOME/releases/1.2.0" "$log" || no "updates from where it was started"
+[ "$(readlink "$LANVEX_HOME/current")" = releases/1.2.0 ] && cmp -s "$old/.env" "$LANVEX_HOME/current/.env" || no "takes it into releases/"
+ls "$LANVEX_HOME"/backups/lanvex-1.0.1-before-update-*.tar.gz >/dev/null || no "backs it up first"
+grep -q "$old is no longer used" "$work/out" || no "says the old directory can go"
+unset STARTED_FROM
+ok "update of an installation unpacked elsewhere: found by its containers, taken over into releases/"
 
 printf '%s passed\n' "$pass"

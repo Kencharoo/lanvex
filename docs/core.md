@@ -179,8 +179,18 @@ lanvexctl update            # the latest release; or: lanvexctl update 1.2.0, la
 
 lanvexctl backs up, unpacks the release next to the running one (`releases/<version>`), runs its
 installer with `--update`, and points `current` at it once the containers are healthy. The previous
-release stays until the next update. An installation unpacked by hand (before lanvexctl) is taken over
-the same way: the update goes into `releases/` beside it.
+release stays until the next update.
+
+An installation set up before lanvexctl (unpacked by hand, in any directory) is found by the directory
+its containers were started from, and taken over on its first update:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/Kencharoo/lanvex/main/lanvexctl
+bash lanvexctl update       # as the user Lanvex runs as; sudo if it was installed as root
+```
+
+The new release goes into `~/lanvex/releases/` (as root, `/opt/lanvex/releases/`), and lanvexctl into
+`~/.local/bin` (`/usr/local/bin`). The old directory is no longer used afterwards.
 
 Without lanvexctl: unpack the new release next to the old one and run `./install.sh --update
 ../lanvex-<old>` in it. It copies `.env`, builds, replaces the containers, waits until they are healthy
