@@ -12,6 +12,8 @@ What it does, and nothing else:
                               addresses and gateway and its static routes
               networks        the VLAN interfaces Lanvex manages, their firewalld zones, and the DHCP
                               service for them (dnsmasq), all in one change
+              link            create one bridge or bond from free interfaces, or remove one Lanvex
+                              created
   apply     back up the affected configuration, arm a rollback timer, then make the change
   verify    check the result (addresses, default route, gateway reachable, DNS)
   confirm   keep the change: stop the rollback timer
@@ -99,6 +101,20 @@ IFUPDOWN_LANVEX = "/etc/network/interfaces.d/lanvex"  # the VLANs Lanvex manages
 # server reads it to tell its own VLANs from others. Written as part of each change, so a rollback
 # restores it with everything else.
 MANIFEST = "/etc/lanvex/networks.json"
+# Bridges and bonds Lanvex created (kind "link"): their own files, listed here so Lanvex can tell them
+# apart and remove them again. NetworkManager profiles lxlink-<name> and lxlink-<name>-<port>, netplan
+# files 61-lxlink-<name>.yaml; never lanvex-*, which are the VLAN profiles of the networks kind.
+LINKS_MANIFEST = "/etc/lanvex/links.json"
+LINK_PROFILE = "lxlink-"
+BOND_MODES = (
+    "active-backup",
+    "802.3ad",
+    "balance-rr",
+    "balance-xor",
+    "balance-tlb",
+    "balance-alb",
+    "broadcast",
+)
 UFW_MARK = "lanvex:"  # the comment on every ufw rule Lanvex adds, so it can find and remove its own
 UFW_FILES = ("/etc/ufw/user.rules", "/etc/ufw/user6.rules")
 MANAGED = "Managed by Lanvex. Edits here are replaced by the next Lanvex change."
@@ -889,6 +905,10 @@ def netplan_validate(candidates: dict) -> None:
                         shutil.copy2(os.path.join(src, f), dst)
         for path, text in candidates.items():
             dst = os.path.join(root, path.lstrip("/"))
+            if text is None:  # the change deletes this file
+                if os.path.exists(dst):
+                    os.unlink(dst)
+                continue
             with open(dst, "w", encoding="utf-8") as f:
                 f.write(text)
             os.chmod(dst, 0o600)
@@ -1132,6 +1152,409 @@ def nm_activate(iface: str, uuid: str) -> None:
     r = run(["nmcli", "device", "reapply", iface], timeout=60)
     if r.returncode != 0:
         run(["nmcli", "connection", "up", uuid, "ifname", iface], timeout=90, check=True)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Bridges and bonds (kind "link"): one per change, created from interfaces with no addresses of their own,
+# or removed again. Only Lanvex's own files are written; members' own configuration is never edited.
+
+
+def read_links() -> dict:
+    try:
+        data = json.loads(read_text(LINKS_MANIFEST))
+        return data.get("links") or {} if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def render_links(links: dict) -> str:
+    return json.dumps({"managed_by": "Lanvex", "links": links}, indent=2, sort_keys=True) + "\n"
+
+
+def validate_link(req: dict) -> dict:
+    if not isinstance(req, dict) or req.get("action") not in ("create", "remove"):
+        raise Refused("invalid_request", "action must be 'create' or 'remove'.")
+    name = check_interface(req.get("name"))
+    if name.startswith(("lanvex", LINK_PROFILE)) or "." in name or ":" in name:
+        raise Refused("invalid_request", "%s cannot be the name of a bridge or bond." % name)
+    if req["action"] == "remove":
+        return {"action": "remove", "name": name}
+    kind = req.get("type")
+    if kind not in ("bridge", "bond"):
+        raise Refused("invalid_request", "type must be 'bridge' or 'bond'.")
+    members = req.get("members")
+    if not isinstance(members, list) or not 1 <= len(members) <= 8:
+        raise Refused("invalid_request", "A bridge or bond needs between 1 and 8 member interfaces.")
+    members = [check_interface(m) for m in members]
+    if len(set(members)) != len(members) or name in members:
+        raise Refused("invalid_request", "Each member once, and not the bridge or bond itself.")
+    mode = req.get("mode") or "active-backup"
+    if kind == "bond" and mode not in BOND_MODES:
+        raise Refused("invalid_request", "Bond mode must be one of %s." % ", ".join(BOND_MODES))
+    method = req.get("method") or "none"
+    if method not in ("none", "static", "dhcp"):
+        raise Refused("invalid_request", "method must be 'none', 'static' or 'dhcp'.")
+    raw = req.get("addresses") or []
+    if not isinstance(raw, list) or len(raw) > 32:
+        raise Refused("invalid_request", "addresses must be a list of at most 32 addresses.")
+    addresses = [check_ipv4_address(a, "addresses") for a in raw]
+    gateway = req.get("gateway")
+    gw = check_ipv4(gateway, "gateway") if gateway not in (None, "") else None
+    if method == "static" and not addresses:
+        raise Refused("invalid_request", "A static configuration needs at least one address.")
+    if method != "static" and (addresses or gw):
+        raise Refused("invalid_request", "Addresses and a gateway need the static method.")
+    if gw is not None and not any(gw in a.network for a in addresses):
+        raise Refused("invalid_request", "The gateway %s is not inside any of the networks." % gw)
+    return {
+        "action": "create",
+        "name": name,
+        "type": kind,
+        "members": members,
+        "mode": mode if kind == "bond" else None,
+        "stp": bool(req.get("stp")) if kind == "bridge" else None,
+        "method": method,
+        "addresses": [str(a) for a in addresses],
+        "gateway": str(gw) if gw else None,
+    }
+
+
+def link_members_free(change: dict) -> None:
+    """Members must be there, in no other bridge or bond, the parent of no VLAN, and without addresses."""
+    for m in change["members"]:
+        base = "/sys/class/net/%s" % m
+        if not os.path.exists(base):
+            raise Refused("invalid_request", "There is no interface %s on this server." % m)
+        if os.path.exists(base + "/master"):
+            raise Refused("unsupported", "%s is already part of a bridge or bond." % m)
+        if os.path.exists(base + "/bridge") or os.path.exists(base + "/bonding"):
+            raise Refused("unsupported", "%s is itself a bridge or bond." % m)
+        r = run(["ip", "-json", "address", "show", "dev", m], timeout=15, check=True)
+        addrs = [
+            a
+            for link in json.loads(r.stdout or "[]")
+            for a in link.get("addr_info", [])
+            if a.get("scope") == "global"
+        ]
+        if addrs:
+            raise Refused(
+                "unsupported",
+                "%s has addresses (%s). Only interfaces without addresses become members."
+                % (m, ", ".join("%s/%s" % (a["local"], a["prefixlen"]) for a in addrs)),
+            )
+        r = run(["ip", "-json", "-details", "link", "show"], timeout=15, check=True)
+        for link in json.loads(r.stdout or "[]"):
+            if link.get("link") == m and (link.get("linkinfo") or {}).get("info_kind") == "vlan":
+                raise Refused("unsupported", "%s carries the VLAN interface %s." % (m, link.get("ifname")))
+
+
+def render_link_netplan(change: dict, member_ids: dict) -> str:
+    """member_ids: member -> its netplan ID where another file defines it, else None (defined here)."""
+    defn = {"interfaces": [member_ids.get(m) or m for m in change["members"]]}
+    if change["type"] == "bond":
+        defn["parameters"] = {"mode": change["mode"], "mii-monitor-interval": 100}
+    else:
+        defn["parameters"] = {"stp": bool(change["stp"])}
+    if change["method"] == "static":
+        defn["addresses"] = list(change["addresses"])
+        if change["gateway"]:
+            defn["routes"] = [{"to": "default", "via": change["gateway"]}]
+    elif change["method"] == "dhcp":
+        defn["dhcp4"] = True
+    network = {"version": 2}
+    own = [m for m in change["members"] if not member_ids.get(m)]
+    if own:
+        network["ethernets"] = {m: {} for m in own}
+    network[change["type"] + "s"] = {change["name"]: defn}
+    return "# " + MANAGED + "\n" + dump_netplan({"network": network})
+
+
+def render_link_keyfiles(change: dict, uuids: dict) -> dict:
+    """{path: text} for the bridge or bond profile and one port profile per member."""
+    name, kind = change["name"], change["type"]
+    head = [
+        "# " + MANAGED,
+        "[connection]",
+        "id=" + LINK_PROFILE + name,
+        "uuid=" + uuids[name],
+        "type=" + kind,
+    ]
+    head += ["interface-name=" + name, "autoconnect-slaves=1", ""]
+    if kind == "bond":
+        head += ["[bond]", "mode=" + change["mode"], "miimon=100", ""]
+    else:
+        head += ["[bridge]", "stp=" + ("true" if change["stp"] else "false"), ""]
+    ipv4 = {"none": "disabled", "static": "manual", "dhcp": "auto"}[change["method"]]
+    head += ["[ipv4]", "method=" + ipv4]
+    head += ["address%d=%s" % (i, a) for i, a in enumerate(change["addresses"], 1)]
+    if change["gateway"]:
+        head.append("gateway=" + change["gateway"])
+    head += ["", "[ipv6]", "method=disabled", ""]
+    out = {os.path.join(NM_KEYFILE_DIR, LINK_PROFILE + name + ".nmconnection"): "\n".join(head)}
+    for m in change["members"]:
+        port = LINK_PROFILE + name + "-" + m
+        out[os.path.join(NM_KEYFILE_DIR, port + ".nmconnection")] = "\n".join(
+            [
+                "# " + MANAGED,
+                "[connection]",
+                "id=" + port,
+                "uuid=" + uuids[m],
+                "type=ethernet",
+                "interface-name=" + m,
+                "master=" + name,
+                "slave-type=" + kind,
+                # Wins over another profile for the same device when NetworkManager starts.
+                "autoconnect-priority=100",
+                "",
+            ]
+        )
+    return out
+
+
+def link_backend(members: list) -> str:
+    if nm_running():
+        states = nm_device_states()
+        if all(states.get(m, "unmanaged") not in ("unmanaged", "unavailable") for m in members):
+            return "networkmanager"
+    if which("netplan") and os.path.isdir(NETPLAN_DIR):
+        return "netplan"
+    raise Refused(
+        "unsupported",
+        "Lanvex creates bridges and bonds where NetworkManager or netplan manages the member interfaces; "
+        "neither does here.",
+    )
+
+
+def link_plan(change: dict) -> dict:
+    name = change["name"]
+    links = read_links()
+    if change["action"] == "remove":
+        own = links.get(name)
+        if not own:
+            raise Refused("unsupported", "%s was not created by Lanvex; Lanvex removes only its own." % name)
+        rest = {k: v for k, v in links.items() if k != name}
+        files = [
+            {
+                "path": path,
+                "label": "Lanvex's %s %s" % (own.get("type", "link"), name),
+                "before": read_text(path) if os.path.exists(path) else "",
+                "after": "",
+                "sha256": sha256_file(path),
+                "action": "delete",
+            }
+            for path in own.get("files") or []
+        ]
+        files.append(
+            {
+                "path": LINKS_MANIFEST,
+                "label": "Lanvex's list of its bridges and bonds",
+                "before": read_text(LINKS_MANIFEST),
+                "after": render_links(rest),
+                "sha256": sha256_file(LINKS_MANIFEST),
+                "action": "modify",
+            }
+        )
+        backend = own.get("backend") or "netplan"
+        commands = (
+            ["netplan apply", "ip link delete %s" % name]
+            if backend == "netplan"
+            else ["nmcli connection reload", "ip link delete %s" % name]
+        )
+        return {
+            "backend": backend,
+            "files": files,
+            "commands": commands,
+            "warnings": [
+                "%s and every address on it go; %s are free again."
+                % (name, ", ".join(own.get("members") or []))
+            ],
+            "_write": {LINKS_MANIFEST: render_links(rest)},
+            "_delete": list(own.get("files") or []),
+            "_changed": True,
+            "_link": {"name": name, "members": own.get("members") or [], "existed": True},
+        }
+    if os.path.exists("/sys/class/net/%s" % name) or name in links:
+        raise Refused("unsupported", "There is already an interface %s on this server." % name)
+    link_members_free(change)
+    backend = link_backend(change["members"])
+    write = {}
+    if backend == "netplan":
+        docs = netplan_docs()
+        ids = {}
+        for m in change["members"]:
+            found = netplan_definitions(m, docs)
+            if len(found) > 1:
+                raise Refused("unsupported", "%s is defined in more than one netplan file." % m)
+            if found:
+                path, section, key = found[0]
+                defn = (docs[path]["network"][section] or {}).get(key) or {}
+                if any(defn.get(k) for k in ("addresses", "dhcp4", "dhcp6", "routes", "gateway4")):
+                    raise Refused(
+                        "unsupported",
+                        "%s has IP settings of its own in %s. Remove them there first."
+                        % (m, os.path.basename(path)),
+                    )
+                ids[m] = key
+        path = os.path.join(NETPLAN_DIR, "61-%s%s.yaml" % (LINK_PROFILE, name))
+        write[path] = render_link_netplan(change, ids)
+        commands = ["netplan generate", "netplan apply"]
+    else:
+        import uuid as uuidlib  # noqa: PLC0415 - only here
+
+        uuids = {k: str(uuidlib.uuid4()) for k in [name, *change["members"]]}
+        write = render_link_keyfiles(change, uuids)
+        commands = ["nmcli connection load %s" % p for p in write] + [
+            "nmcli connection up id %s%s" % (LINK_PROFILE, name)
+        ]
+    links = dict(links)
+    links[name] = {
+        "type": change["type"],
+        "members": change["members"],
+        "backend": backend,
+        "files": sorted(write),
+    }
+    files = [
+        {
+            "path": p,
+            "label": "Lanvex's %s %s" % (change["type"], name),
+            "before": "",
+            "after": t,
+            "sha256": None,
+            "action": "create",
+        }
+        for p, t in sorted(write.items())
+    ]
+    files.append(
+        {
+            "path": LINKS_MANIFEST,
+            "label": "Lanvex's list of its bridges and bonds",
+            "before": read_text(LINKS_MANIFEST) if os.path.exists(LINKS_MANIFEST) else "",
+            "after": render_links(links),
+            "sha256": sha256_file(LINKS_MANIFEST),
+            "action": "modify" if os.path.exists(LINKS_MANIFEST) else "create",
+        }
+    )
+    write[LINKS_MANIFEST] = render_links(links)
+    warnings = []
+    if change["method"] == "none":
+        warnings.append("%s gets no address: it carries traffic, the server does not use it." % name)
+    return {
+        "backend": backend,
+        "files": files,
+        "commands": commands,
+        "warnings": warnings,
+        "_write": write,
+        "_delete": [],
+        "_changed": True,
+        "_link": {"name": name, "members": change["members"], "existed": False},
+    }
+
+
+def link_apply(plan: dict) -> None:
+    os.makedirs(os.path.dirname(LINKS_MANIFEST), mode=0o755, exist_ok=True)
+    for path in plan["_delete"]:
+        if os.path.exists(path):
+            os.unlink(path)
+    for path, text in plan["_write"].items():
+        atomic_write(path, text.encode("utf-8"), 0o644 if path == LINKS_MANIFEST else 0o600, 0, 0)
+    link_activate(plan["backend"], plan["_link"], present=not plan["_link"]["existed"])
+
+
+def link_activate(backend: str, link: dict, present: bool) -> None:
+    """Bring the configuration on disk into effect: the link up with its members, or gone."""
+    name = link["name"]
+    if backend == "netplan":
+        netplan_apply()
+    else:
+        run(["nmcli", "connection", "reload"], timeout=30, check=True)
+        if present:
+            run(["nmcli", "connection", "up", "id", LINK_PROFILE + name], timeout=90, check=True)
+            for m in link["members"]:
+                run(["nmcli", "connection", "up", "id", "%s%s-%s" % (LINK_PROFILE, name, m)], timeout=90)
+    if not present and os.path.exists("/sys/class/net/%s" % name):
+        run(["ip", "link", "delete", name], timeout=30)
+    if not present and backend == "networkmanager":
+        for m in link["members"]:
+            run(["nmcli", "device", "connect", m], timeout=60)  # its own profile, if it has one
+
+
+def link_restore(state: dict) -> None:
+    """After the files are back: what was there before the change, in effect again."""
+    link = state.get("link") or {}
+    if link:
+        link_activate(state["backend"], link, present=link.get("existed", False))
+
+
+def link_verify(st: dict) -> list:
+    link, change = st["link"], st["change"]
+    name = link["name"]
+    base = "/sys/class/net/%s" % name
+    if change["action"] == "remove":
+        ok, detail = _wait_for(
+            lambda: (
+                not os.path.exists(base),
+                "%s is %s." % (name, "still there" if os.path.exists(base) else "gone"),
+            ),
+            15,
+        )
+        checks = [{"id": "link", "label": "%s removed" % name, "ok": ok, "detail": detail}]
+        held = [m for m in link["members"] if os.path.exists("/sys/class/net/%s/master" % m)]
+        checks.append(
+            {
+                "id": "members",
+                "label": "Members free",
+                "ok": not held,
+                "detail": ("Still in a bridge or bond: %s." % ", ".join(held))
+                if held
+                else "%s free." % ", ".join(link["members"]),
+            }
+        )
+        return checks
+    kind_dir = base + ("/bonding" if change["type"] == "bond" else "/bridge")
+    ok, detail = _wait_for(
+        lambda: (
+            os.path.isdir(kind_dir),
+            "%s %s." % (name, "is a " + change["type"] if os.path.isdir(kind_dir) else "is missing"),
+        ),
+        20,
+    )
+    checks = [{"id": "link", "label": "%s is a %s" % (name, change["type"]), "ok": ok, "detail": detail}]
+
+    def members_ok():
+        out = []
+        for m in change["members"]:
+            master = "/sys/class/net/%s/master" % m
+            out.append((m, os.path.basename(os.path.realpath(master)) if os.path.exists(master) else None))
+        wrong = ["%s (%s)" % (m, w or "in none") for m, w in out if w != name]
+        return (
+            not wrong,
+            ("Not in %s: %s." % (name, ", ".join(wrong)))
+            if wrong
+            else "%s in %s." % (", ".join(change["members"]), name),
+        )
+
+    ok, detail = _wait_for(members_ok, 20)
+    checks.append({"id": "members", "label": "Members of %s" % name, "ok": ok, "detail": detail})
+    if change["method"] == "static":
+        want = sorted(change["addresses"])
+
+        def addresses_ok():
+            got = sorted(a["address"] for a in ipv4_addresses(name) if not a["dynamic"])
+            return (got == want, "Expected %s, found %s." % (", ".join(want), ", ".join(got) or "none"))
+
+        ok, detail = _wait_for(addresses_ok, 20)
+        checks.append({"id": "addresses", "label": "IPv4 addresses on %s" % name, "ok": ok, "detail": detail})
+        if change["gateway"]:
+            checks.append(gateway_check(name, change["gateway"]))
+    elif change["method"] == "dhcp":
+
+        def lease():
+            got = [a["address"] for a in ipv4_addresses(name) if a["dynamic"]]
+            return (bool(got), "DHCP address: %s." % (", ".join(got) or "none yet"))
+
+        ok, detail = _wait_for(lease, 45)
+        checks.append({"id": "addresses", "label": "DHCP address on %s" % name, "ok": ok, "detail": detail})
+    return checks
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -3388,6 +3811,8 @@ def restore_files(cid: str, records: list) -> None:
 def reactivate(state: dict) -> None:
     if state.get("kind") == "networks":
         networks_restore(state)
+    elif state.get("kind") == "link":
+        link_restore(state)
     elif state["backend"] == "netplan":
         netplan_apply()
     else:
@@ -3418,7 +3843,7 @@ def cmd_version(_req: dict) -> dict:
             "ifup": bool(which("ifup")),
             "ufw": bool(which("ufw")),
         },
-        "kinds": ["interface_ipv4", "networks"],
+        "kinds": ["interface_ipv4", "networks", "link"],
         "pending": pending_changes(),
     }
 
@@ -3429,6 +3854,9 @@ def plan_for(req: dict) -> tuple:
     if kind == "networks":
         change = validate_networks(req)
         return kind, change, networks_plan(change)
+    if kind == "link":
+        change = validate_link(req)
+        return kind, change, link_plan(change)
     if kind != "interface_ipv4":
         raise Refused("invalid_request", "Unknown kind of change: %r." % kind)
     change = validate_change(req)
@@ -3442,6 +3870,11 @@ def validate_plan(kind: str, plan: dict) -> None:
             netplan_validate({NETPLAN_LANVEX: plan["_write"][NETPLAN_LANVEX]})
         if plan["_write"].get(NFT_FILE):
             nft_validate(plan["_write"][NFT_FILE])
+    elif kind == "link":
+        if plan["backend"] == "netplan":
+            candidates = {p: t for p, t in plan["_write"].items() if p.startswith(NETPLAN_DIR + "/")}
+            candidates.update({p: None for p in plan["_delete"] if p.startswith(NETPLAN_DIR + "/")})
+            netplan_validate(candidates)
     elif plan["backend"] == "netplan":
         netplan_validate(plan["_write"])
 
@@ -3483,7 +3916,7 @@ def cmd_apply(req: dict) -> dict:
                 "%s changed after the change was prepared. Nothing was changed; prepare the change again."
                 % f["path"],
             )
-    if kind == "networks" and set(expected) != {f["path"] for f in plan["files"]}:
+    if kind in ("networks", "link") and set(expected) != {f["path"] for f in plan["files"]}:
         raise Refused(
             "drift",
             "The server's configuration changed after the change was prepared. Nothing was changed; prepare it again.",
@@ -3496,12 +3929,13 @@ def cmd_apply(req: dict) -> dict:
         "state": "arming",
         "kind": kind,
         "backend": plan["backend"],
-        "interface": change.get("interface") or "networks",
+        "interface": change.get("interface") or change.get("name") or "networks",
         "change": change,
         "rollback_seconds": seconds,
         "nm": plan.get("_nm"),
         "networks": plan.get("_networks"),
         "removed_routes": plan.get("_removed_routes") or [],
+        "link": plan.get("_link"),
     }
     event(state, "received")
     state["files"] = backup(cid, [f["path"] for f in plan["files"]] + list(plan.get("_backup") or []))
@@ -3522,6 +3956,8 @@ def cmd_apply(req: dict) -> dict:
     try:
         if kind == "networks":
             networks_apply(plan)
+        elif kind == "link":
+            link_apply(plan)
         else:
             for path, text in plan["_write"].items():
                 # netplan and NetworkManager both refuse configuration files others can read
@@ -3699,6 +4135,8 @@ def cmd_verify(req: dict) -> dict:
     if st.get("kind") == "networks":
         checks = networks_verify(st)
         return _verified(cid, checks)
+    if st.get("kind") == "link":
+        return _verified(cid, link_verify(st))
     change, iface = st["change"], st["interface"]
     dns_name = req.get("dns_name")
     if dns_name not in (None, ""):

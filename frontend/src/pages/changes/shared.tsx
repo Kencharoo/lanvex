@@ -116,6 +116,7 @@ function dnsRow(label: string, b: InterfaceBefore | null, before: string[] | und
 /** The interface before (as last read) and after (as requested), row by row, changes highlighted. */
 export function BeforeAfter({ change }: { change: ChangeDetail }) {
   if (change.kind === "networks") return <NetworksBeforeAfter change={change} />;
+  if (change.kind === "link") return <LinkSummary change={change} />;
   const b = change.before;
   const r = change.request;
   const rows: Row[] = [
@@ -179,6 +180,41 @@ export function BeforeAfter({ change }: { change: ChangeDetail }) {
   );
 }
 
+
+/** A bridge or bond, as requested (created), or as Lanvex created it (removed). */
+function LinkSummary({ change }: { change: Extract<ChangeDetail, { kind: "link" }> }) {
+  const r = change.request;
+  const remove = r.action === "remove";
+  const b = change.before ?? {};
+  const rows: [string, React.ReactNode][] = remove
+    ? [
+        ["Removed", <span className="addr">{r.name}</span>],
+        ["Type", b.type === "bond" ? "Bond" : b.type === "bridge" ? "Bridge" : "—"],
+        ["Members, free again", list(b.members)],
+      ]
+    : [
+        ["Created", <span className="addr">{r.name}</span>],
+        ["Type", r.type === "bond" ? `Bond, ${r.mode}` : `Bridge, STP ${r.stp ? "on" : "off"}`],
+        ["Members", list(r.members)],
+        ["IPv4", r.method === "static" ? `${(r.addresses ?? []).join(", ")}${r.gateway ? `, gateway ${r.gateway}` : ""}` : r.method === "dhcp" ? "From DHCP" : <span className="text-faint">No address</span>],
+      ];
+  return (
+    <div className="overflow-x-auto rounded-[var(--radius-panel)] border border-line bg-surface">
+      <table className="w-full text-[13px]">
+        <tbody>
+          {rows.map(([label, value]) => (
+            <tr key={label} className="border-b border-line last:border-0">
+              <th scope="row" className="w-48 px-3 py-2 text-left font-normal text-muted">
+                {label}
+              </th>
+              <td className="addr px-3 py-2">{value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 /** A networks change: each VLAN interface and DHCP pool, as the server had it and as requested. */
 function NetworksBeforeAfter({ change }: { change: Extract<ChangeDetail, { kind: "networks" }> }) {

@@ -29,6 +29,7 @@ from lanvex.changes.schemas import (
     ConnectionPath,
     HelperInstall,
     HelperStatus,
+    LinkRequest,
     NetworksRequest,
     Preview,
     Readiness,
@@ -222,6 +223,21 @@ def _access_text(rule: Any) -> str:
     return f"{rule.interface}: " + (", ".join(parts) or "DHCP and DNS only")
 
 
+def summarize_link(r: LinkRequest, before: dict[str, Any]) -> str:
+    if r.action == "remove":
+        return f"Remove {before.get('type') or 'bridge or bond'} {r.name} ({', '.join(before.get('members') or [])})"
+    what = f"{r.type} {r.name} of {', '.join(r.members)}"
+    if r.type == "bond":
+        what += f", {r.mode}"
+    if r.method == "static":
+        what += ": static " + ", ".join(r.addresses) + (f" gateway {r.gateway}" if r.gateway else "")
+    elif r.method == "dhcp":
+        what += ": DHCP"
+    else:
+        what += ": no address"
+    return ("New " + what)[:500]
+
+
 def summarize_networks(r: NetworksRequest, before: list[dict[str, Any]]) -> str:
     have = {v["name"]: v for v in before}
     parts = []
@@ -409,6 +425,7 @@ class ChangeService:
             rollback_seconds=self.settings.change_rollback_seconds,
             second_admin_required=self.settings.changes_require_second_admin,
             open_change=to_out(open_change) if open_change else None,
+            links=await self.links(s, facts),
             connection=path,
             protected_interfaces=list(s.protected_interfaces or []),
             confirm_in_browser=s.confirm_in_browser,
@@ -487,7 +504,11 @@ class ChangeService:
     # ---- preparing --------------------------------------------------------------------------------
 
     async def prepare(
-        self, s: Server, req: ChangeRequest | NetworksRequest, user: User, notes: list[str] | None = None
+        self,
+        s: Server,
+        req: ChangeRequest | NetworksRequest | LinkRequest,
+        user: User,
+        notes: list[str] | None = None,
     ) -> ServerChange:
         """notes: warnings the caller found, shown in the preview first."""
         readiness = await self.readiness(s)
@@ -511,6 +532,9 @@ class ChangeService:
             before, warnings = await self._prepare_networks(s, req, facts)
             warnings = [*(notes or []), *warnings]
             summary = summarize_networks(req, before["vlans"])
+        elif isinstance(req, LinkRequest):
+            before, warnings = await self._prepare_link(s, req, facts)
+            summary = summarize_link(req, before)
         else:
             before, warnings = await self._prepare_interface(s, req, facts)
             summary = summarize(req)
@@ -596,6 +620,114 @@ class ChangeService:
             await self.db.rollback()
             raise Conflict("Another change for this server was prepared at the same time.") from e
         return c
+
+    async def links(self, s: Server, facts: HostFacts | None = None) -> list[dict[str, Any]]:
+        """Bridges and bonds Lanvex created on the server: by its own link changes that succeeded, not
+        removed since, and (when a read is at hand) still there."""
+        rows = (
+            await self.db.scalars(
+                select(ServerChange)
+                .where(
+                    ServerChange.server_id == s.id,
+                    ServerChange.kind == "link",
+                    ServerChange.status == ChangeStatus.SUCCEEDED,
+                )
+                .order_by(ServerChange.created_at)
+            )
+        ).all()
+        out: dict[str, dict[str, Any]] = {}
+        for c in rows:
+            r = c.request
+            if r.get("action") == "remove":
+                out.pop(r["name"], None)
+            else:
+                out[r["name"]] = {
+                    k: r.get(k) for k in ("name", "type", "members", "mode", "method", "addresses")
+                }
+        present = {i.name for i in facts.interfaces} if facts else None
+        return [v for k, v in sorted(out.items()) if present is None or k in present]
+
+    async def _prepare_link(
+        self, s: Server, req: LinkRequest, facts: HostFacts
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Lanvex's own rules for bridges and bonds, on top of the helper's: members are free interfaces,
+        never the one Lanvex connects through."""
+        if facts.stack.key not in SUPPORTED_STACKS:
+            raise Conflict(
+                f"{s.name}'s network is managed by {facts.stack.primary}. Lanvex creates bridges and bonds on servers "
+                "that use netplan or NetworkManager.",
+                code="unsupported_stack",
+            )
+        present = {i.name: i for i in facts.interfaces}
+        if req.action == "remove":
+            ours = {x["name"]: x for x in await self.links(s, facts)}
+            if req.name not in ours:
+                raise ValidationFailed(
+                    f"{req.name} is not a bridge or bond Lanvex created on {s.name}.",
+                    fields={"name": ["Not Lanvex's."]},
+                )
+            link = ours[req.name]
+            mgmt = set(await transport.resolve(s.address)) | (
+                {s.verify_address} if s.verify_address else set()
+            )
+            on = mgmt & {a.address.split("/")[0] for a in present[req.name].addresses}
+            if on:
+                raise ValidationFailed(
+                    f"Lanvex connects to {s.name} at {', '.join(sorted(on))}, which is on {req.name}. It cannot remove it.",
+                    fields={"name": ["Carries Lanvex's connection."]},
+                )
+            users = sorted(i.name for i in facts.interfaces if i.parent == req.name)
+            if users:
+                raise ValidationFailed(
+                    f"{', '.join(users)} {'is' if len(users) == 1 else 'are'} on {req.name}. Remove "
+                    + ("it" if len(users) == 1 else "them")
+                    + " first.",
+                    fields={"name": ["In use."]},
+                )
+            return link, [f"Everything using {req.name} loses its connection."]
+        if req.name in present:
+            raise ValidationFailed(
+                f"{s.name} already has an interface {req.name}.", fields={"name": ["Taken."]}
+            )
+        mgmt = set(await transport.resolve(s.address)) | ({s.verify_address} if s.verify_address else set())
+        for m in req.members:
+            i = present.get(m)
+            if i is None:
+                raise ValidationFailed(f"{s.name} has no interface {m}.", fields={"members": [f"No {m}."]})
+            guard = self._protected(s, m)
+            if guard is not None:
+                raise ValidationFailed(
+                    f"{m} is protected on {s.name} ({guard}).", fields={"members": [f"{m} is protected."]}
+                )
+            if i.kind not in ("ethernet", "veth") or i.master:
+                raise ValidationFailed(
+                    f"{m} cannot become a member: only Ethernet interfaces that are in no other bridge or bond.",
+                    fields={"members": [f"{m} is not free."]},
+                )
+            used = [a.address for a in i.addresses if a.scope != "link"]
+            if mgmt & {a.split("/")[0] for a in used}:
+                raise ValidationFailed(
+                    f"Lanvex connects to {s.name} through {m}. It does not become a member.",
+                    fields={"members": [f"{m} carries Lanvex's connection."]},
+                )
+            if used:
+                raise ValidationFailed(
+                    f"{m} has addresses ({', '.join(used)}). Only interfaces without addresses become members.",
+                    fields={"members": [f"{m} has addresses."]},
+                )
+            vlans = sorted(x.name for x in facts.interfaces if x.parent == m)
+            if vlans:
+                raise ValidationFailed(
+                    f"{m} carries {', '.join(vlans)}.", fields={"members": [f"{m} carries VLANs."]}
+                )
+        warnings = []
+        if req.method == "dhcp":
+            warnings.append(
+                f"{req.name} asks for an address by DHCP; the check waits up to 45 seconds for one."
+            )
+        if req.gateway:
+            warnings.append(f"{req.name} gets a default gateway: {req.gateway}.")
+        return {"members": req.members}, warnings
 
     def _protected(self, s: Server, name: str) -> str | None:
         return next((p for p in s.protected_interfaces or [] if fnmatch.fnmatchcase(name, p)), None)

@@ -370,3 +370,81 @@ async def test_ipv6_static_on_networkmanager(lab) -> None:  # type: ignore[no-un
     assert "fd00:31::12/64" in sh("lab-nm", "ip -6 -o address show dev eth1 scope global")
     assert "fd00:99::/48 via fd00:31::1" in sh("lab-nm", "ip -6 route show dev eth1")
     assert {ch["id"] for ch in done["checks"]} >= {"ipv6_addresses", "ipv6_default_route", "routes"}
+
+
+def spare_links(host: str) -> None:
+    """Two interfaces without addresses, as a server's unused network ports would be."""
+    sh(
+        host,
+        "for i in 0 1; do ip link del lxv$i 2>/dev/null; ip link add lxv$i type veth peer name lxp$i && "
+        "ip link set lxv$i up && ip link set lxp$i up; done",
+    )
+
+
+def drop_links(host: str) -> None:
+    sh(
+        host,
+        "for i in 0 1; do ip link del lxv$i 2>/dev/null; done; ip link del lxbr1 2>/dev/null; "
+        "ip link del lxbond1 2>/dev/null; rm -f /etc/netplan/61-lxlink-* "
+        "/etc/NetworkManager/system-connections/lxlink-* /etc/lanvex/links.json; "
+        "nmcli connection reload 2>/dev/null; true",
+    )
+
+
+@pytest.mark.parametrize("host", ["lab-netplan", "lab-nm"])
+async def test_a_bridge_created_and_removed(lab, host: str) -> None:  # type: ignore[no-untyped-def]
+    api, runner = lab
+    drop_links(host)
+    spare_links(host)
+    try:
+        s = await ready(api, host)
+        made = await run(
+            api,
+            runner,
+            s,
+            {
+                "kind": "link",
+                "name": "lxbr1",
+                "type": "bridge",
+                "members": ["lxv0"],
+                "method": "static",
+                "addresses": ["10.12.0.1/24"],
+            },
+        )
+        assert made["status"] == "succeeded", made
+        assert sh(host, "readlink /sys/class/net/lxv0/master").strip().endswith("/lxbr1")
+        assert ipv4(host, "lxbr1") == ["10.12.0.1/24"]
+        links = ok(await api.get(f"/api/v1/servers/{s['id']}/changes/readiness"))["links"]
+        assert [x["name"] for x in links] == ["lxbr1"]
+
+        gone = await run(api, runner, s, {"kind": "link", "action": "remove", "name": "lxbr1"})
+        assert gone["status"] == "succeeded", gone
+        assert sh(host, "test -e /sys/class/net/lxbr1 && echo there || echo gone").strip() == "gone"
+        assert sh(host, "test -e /sys/class/net/lxv0/master && echo held || echo free").strip() == "free"
+    finally:
+        drop_links(host)
+
+
+async def test_a_bond_on_networkmanager(lab) -> None:  # type: ignore[no-untyped-def]
+    api, runner = lab
+    drop_links("lab-nm")
+    spare_links("lab-nm")
+    try:
+        s = await ready(api, "lab-nm")
+        done = await run(
+            api,
+            runner,
+            s,
+            {
+                "kind": "link",
+                "name": "lxbond1",
+                "type": "bond",
+                "members": ["lxv0", "lxv1"],
+                "mode": "active-backup",
+            },
+        )
+        assert done["status"] == "succeeded", done
+        assert sh("lab-nm", "cat /sys/class/net/lxbond1/bonding/mode").split()[0] == "active-backup"
+        assert sorted(sh("lab-nm", "cat /sys/class/net/lxbond1/bonding/slaves").split()) == ["lxv0", "lxv1"]
+    finally:
+        drop_links("lab-nm")

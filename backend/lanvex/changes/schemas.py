@@ -66,6 +66,18 @@ def check_ipv6_addresses(v: list[str]) -> list[str]:
     return out
 
 
+def check_gateway4(v: str | None) -> str | None:
+    if v is None or not v.strip():
+        return None
+    try:
+        ip = ipaddress.ip_address(v.strip())
+    except ValueError:
+        raise ValueError(f"{v} is not an IPv4 address.") from None
+    if not isinstance(ip, ipaddress.IPv4Address) or ip.is_unspecified or ip.is_multicast:
+        raise ValueError(f"{v} is not a usable IPv4 gateway.")
+    return str(ip)
+
+
 class Ipv6Settings(ApiModel):
     """auto: router advertisements and DHCPv6; static: these addresses; link-local: no other address."""
 
@@ -183,15 +195,7 @@ class ChangeRequest(ApiModel):
     @field_validator("gateway")
     @classmethod
     def _gateway(cls, v: str | None) -> str | None:
-        if v is None or not v.strip():
-            return None
-        try:
-            ip = ipaddress.ip_address(v.strip())
-        except ValueError:
-            raise ValueError(f"{v} is not an IPv4 address.") from None
-        if not isinstance(ip, ipaddress.IPv4Address) or ip.is_unspecified or ip.is_multicast:
-            raise ValueError(f"{v} is not a usable IPv4 gateway.")
-        return str(ip)
+        return check_gateway4(v)
 
     @field_validator("dns_servers")
     @classmethod
@@ -542,6 +546,97 @@ class NetworksRequest(ApiModel):
         return self.model_dump(mode="json")
 
 
+BOND_MODES = (
+    "active-backup",
+    "802.3ad",
+    "balance-rr",
+    "balance-xor",
+    "balance-tlb",
+    "balance-alb",
+    "broadcast",
+)
+
+
+class LinkRequest(ApiModel):
+    """Create one bridge or bond from interfaces without addresses, or remove one Lanvex created."""
+
+    kind: Literal["link"] = "link"
+    action: Literal["create", "remove"] = "create"
+    name: str
+    type: Literal["bridge", "bond"] | None = None
+    members: list[str] = Field(default_factory=list, max_length=8)
+    mode: Literal[BOND_MODES] | None = None  # type: ignore[valid-type]
+    stp: bool = False
+    method: Literal["none", "static", "dhcp"] = "none"
+    addresses: list[str] = Field(default_factory=list, max_length=32)
+    gateway: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not IFACE_RE.match(v) or v == "lo" or v.startswith(("lanvex", "lxlink-")) or "." in v or ":" in v:
+            raise ValueError("Not a name Lanvex can give a bridge or bond.")
+        return v
+
+    @field_validator("members")
+    @classmethod
+    def _members(cls, v: list[str]) -> list[str]:
+        for m in v:
+            if not IFACE_RE.match(m) or m == "lo":
+                raise ValueError(f"{m} is not an interface name.")
+        if len(set(v)) != len(v):
+            raise ValueError("An interface is listed twice.")
+        return v
+
+    @field_validator("addresses")
+    @classmethod
+    def _addresses(cls, v: list[str]) -> list[str]:
+        return check_addresses(v)
+
+    @field_validator("gateway")
+    @classmethod
+    def _gateway(cls, v: str | None) -> str | None:
+        return check_gateway4(v)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "LinkRequest":
+        if self.action == "remove":
+            return self
+        if self.type is None:
+            raise ValueError("Choose bridge or bond.")
+        if not self.members:
+            raise ValueError("Choose at least one member interface.")
+        if self.name in self.members:
+            raise ValueError("A bridge or bond cannot be its own member.")
+        if self.type == "bond":
+            self.mode = self.mode or "active-backup"
+        else:
+            self.mode = None
+        if self.method == "static":
+            if not self.addresses:
+                raise ValueError("A static configuration needs at least one address.")
+            if self.gateway:
+                gw = ipaddress.ip_address(self.gateway)
+                if not any(gw in ipaddress.ip_interface(a).network for a in self.addresses):
+                    raise ValueError(f"The gateway {gw} is not inside any of the networks.")
+        elif self.addresses or self.gateway:
+            raise ValueError("Addresses and a gateway need the static method.")
+        return self
+
+    @property
+    def interface(self) -> str:
+        return self.name
+
+    @property
+    def verify_dns_name(self) -> None:
+        return None
+
+    def helper_payload(self) -> dict[str, Any]:
+        if self.action == "remove":
+            return {"kind": "link", "action": "remove", "name": self.name}
+        return {"kind": "link", **self.model_dump(exclude={"kind"})}
+
+
 def _kind(v: Any) -> str:
     if isinstance(v, dict):
         return v.get("kind") or "interface_ipv4"
@@ -549,15 +644,19 @@ def _kind(v: Any) -> str:
 
 
 AnyChangeRequest = Annotated[
-    Annotated[ChangeRequest, Tag("interface_ipv4")] | Annotated[NetworksRequest, Tag("networks")],
+    Annotated[ChangeRequest, Tag("interface_ipv4")]
+    | Annotated[NetworksRequest, Tag("networks")]
+    | Annotated[LinkRequest, Tag("link")],
     Discriminator(_kind),
 ]
 
 
-def parse_request(kind: str, data: dict[str, Any]) -> "ChangeRequest | NetworksRequest":
+def parse_request(kind: str, data: dict[str, Any]) -> "ChangeRequest | NetworksRequest | LinkRequest":
     """A stored request; requests from before kinds existed are interface changes."""
     if kind == "networks":
         return NetworksRequest.model_validate(data)
+    if kind == "link":
+        return LinkRequest.model_validate(data)
     return ChangeRequest.model_validate(data)
 
 
@@ -650,6 +749,8 @@ class Readiness(ApiModel):
     connection: ConnectionPath | None = None
     protected_interfaces: list[str] = []
     confirm_in_browser: bool = False
+    # Bridges and bonds Lanvex created here (by its changes that succeeded) and that are still there.
+    links: list[dict[str, Any]] = []
 
 
 class HelperInstall(ApiModel):

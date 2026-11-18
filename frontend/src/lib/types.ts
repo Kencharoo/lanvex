@@ -623,7 +623,31 @@ export type ChangeDetail = ChangeDetailBase &
   (
     | { kind: "interface_ipv4"; request: ChangeRequestBody; before: InterfaceBefore | null }
     | { kind: "networks"; request: NetworksRequestBody; before: { vlans: VlanSpec[]; dhcp: null; access?: AccessRule[] } | null }
+    | { kind: "link"; request: LinkRequestBody; before: { members?: string[]; type?: "bridge" | "bond"; name?: string } | null }
   );
+
+export interface LinkRequestBody {
+  kind: "link";
+  action: "create" | "remove";
+  name: string;
+  type?: "bridge" | "bond" | null;
+  members?: string[];
+  mode?: string | null;
+  stp?: boolean;
+  method?: "none" | "static" | "dhcp";
+  addresses?: string[];
+  gateway?: string | null;
+}
+
+/** A bridge or bond Lanvex created on a server. */
+export interface LanvexLink {
+  name: string;
+  type: "bridge" | "bond";
+  members: string[];
+  mode: string | null;
+  method: "none" | "static" | "dhcp";
+  addresses: string[];
+}
 
 interface ChangeDetailBase extends ChangeOut {
   preview: {
@@ -676,6 +700,7 @@ export interface ChangeReadiness {
   connection: { address: string; interfaces: string[]; verify_address: string | null; verify_interfaces: string[] } | null;
   protected_interfaces: string[];
   confirm_in_browser: boolean;
+  links: LanvexLink[];
 }
 
 export interface HelperInstall {

@@ -1274,3 +1274,102 @@ async def test_an_ipv6_management_address_must_stay(
     )
     assert r.status_code == 201, r.text
     assert r.json()["preview"]["warnings"][0].startswith("Lanvex reaches web-01 through eth0.")
+
+
+# ---- bridges and bonds ----------------------------------------------------------------------------------
+
+
+def free_interface(fake: FakeServer, name: str = "eth2") -> None:
+    eth0 = next(i for i in fake.facts.interfaces if i.name == "eth0")
+    spare = eth0.model_copy(update={"name": name, "index": 40, "addresses": [], "mac": "02:00:00:00:00:42"})
+    fake.facts.interfaces.append(spare)
+
+
+async def test_a_bridge_created_and_removed(
+    admin: httpx.AsyncClient, ready_server: str, fake: FakeServer, runner: ChangeRunner
+) -> None:
+    free_interface(fake)
+    assert (await admin.post(f"/api/v1/servers/{ready_server}/collect")).status_code == 200
+    body = {
+        "kind": "link",
+        "name": "br1",
+        "type": "bridge",
+        "members": ["eth2"],
+        "method": "static",
+        "addresses": ["10.12.0.1/24"],
+    }
+    r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=body)
+    assert r.status_code == 201, r.text
+    c = r.json()
+    assert c["kind"] == "link" and c["interface"] == "br1"
+    assert c["summary"] == "New bridge br1 of eth2: static 10.12.0.1/24"
+    plan = next(p for cmd, p in fake.calls if cmd == Cmd.HELPER_PLAN)
+    assert plan == {
+        "kind": "link",
+        "action": "create",
+        "name": "br1",
+        "type": "bridge",
+        "members": ["eth2"],
+        "mode": None,
+        "stp": False,
+        "method": "static",
+        "addresses": ["10.12.0.1/24"],
+        "gateway": None,
+    }
+    done = await approve_and_run(admin, runner, c)
+    assert done["status"] == "succeeded", done
+    bridge = next(i for i in fake.facts.interfaces if i.name == "br0").model_copy(
+        update={"name": "br1", "index": 41}
+    )
+    fake.facts.interfaces.append(bridge)
+    assert (await admin.post(f"/api/v1/servers/{ready_server}/collect")).status_code == 200
+    links = (await admin.get(f"/api/v1/servers/{ready_server}/changes/readiness")).json()["links"]
+    assert [(x["name"], x["type"], x["members"]) for x in links] == [("br1", "bridge", ["eth2"])]
+
+    r = await admin.post(
+        f"/api/v1/servers/{ready_server}/changes", json={"kind": "link", "action": "remove", "name": "br1"}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["summary"] == "Remove bridge br1 (eth2)"
+    assert (await approve_and_run(admin, runner, r.json()))["status"] == "succeeded"
+    fake.facts.interfaces.remove(bridge)
+    assert (await admin.get(f"/api/v1/servers/{ready_server}/changes/readiness")).json()["links"] == []
+
+
+@pytest.mark.parametrize(
+    ("body", "field", "message"),
+    [
+        ({"members": ["eth0"]}, "members", "Lanvex connects to web-01 through eth0"),
+        ({"members": ["br0"]}, "members", "only Ethernet interfaces"),
+        ({"members": ["eth7"]}, "members", "has no interface eth7"),
+        ({"name": "br0"}, "name", "already has an interface br0"),
+        ({"action": "remove", "name": "br0"}, "name", "not a bridge or bond Lanvex created"),
+    ],
+)
+async def test_bridges_and_bonds_only_from_free_interfaces(
+    admin: httpx.AsyncClient, ready_server: str, fake: FakeServer, body: dict, field: str, message: str
+) -> None:
+    base = {"kind": "link", "name": "bond0", "type": "bond", "members": ["eth2"]}
+    r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=base | body)
+    assert r.status_code == 422, r.text
+    assert message in r.json()["error"]["message"] and field in r.json()["error"]["fields"]
+    assert Cmd.HELPER_PLAN not in fake.commands()
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"name": "lanvex-x"}, "Not a name"),
+        ({"type": None}, "Choose bridge or bond"),
+        ({"members": []}, "at least one member"),
+        ({"mode": "fastest"}, "Input should be"),
+        ({"method": "static"}, "at least one address"),
+        ({"addresses": ["10.12.0.1/24"]}, "need the static method"),
+    ],
+)
+async def test_bridge_and_bond_requests_are_validated(
+    admin: httpx.AsyncClient, ready_server: str, body: dict, message: str
+) -> None:
+    base = {"kind": "link", "name": "bond0", "type": "bond", "members": ["eth2"]}
+    r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=base | body)
+    assert r.status_code == 422 and message in r.text, r.text

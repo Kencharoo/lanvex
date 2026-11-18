@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, CircleDashed, Download, Plus, Settings2, Upload, X, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, Download, Network, Plus, Settings2, Trash2, Upload, X, XCircle } from "lucide-react";
 import * as React from "react";
 import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -11,7 +11,7 @@ import { Checkbox, Field, Input, Select } from "@/components/ui/form";
 import { Notice, Skeleton } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
-import type { ChangeDetail, ChangeOut, ChangeReadiness, ChangeRequestBody, HelperInstall, HelperState, HostFacts, Server } from "@/lib/types";
+import type { ChangeDetail, ChangeOut, ChangeReadiness, ChangeRequestBody, HelperInstall, HelperState, HostFacts, LanvexLink, LinkRequestBody, Server } from "@/lib/types";
 import { cn, relativeTime } from "@/lib/utils";
 import { ChangeStatusBadge } from "../changes/shared";
 import type { ChangeSeed } from "./record";
@@ -42,7 +42,8 @@ export function ChangesSection({
   onSeedUsed?: () => void;
 }) {
   const qc = useQueryClient();
-  const [dialog, setDialog] = React.useState<null | "install" | "change">(null);
+  const [dialog, setDialog] = React.useState<null | "install" | "change" | "link">(null);
+  const [removing, setRemoving] = React.useState<LanvexLink | null>(null);
   React.useEffect(() => {
     if (seed) setDialog("change");
   }, [seed]);
@@ -84,9 +85,14 @@ export function ChangesSection({
         r?.ready &&
         r.interface_changes !== false &&
         !r.open_change && (
-          <Button variant="primary" onClick={() => setDialog("change")} disabled={!facts}>
-            <Settings2 /> Change IP settings
-          </Button>
+          <>
+            <Button variant="secondary" onClick={() => setDialog("link")} disabled={!facts}>
+              <Network /> Add bridge or bond
+            </Button>
+            <Button variant="primary" onClick={() => setDialog("change")} disabled={!facts}>
+              <Settings2 /> Change IP settings
+            </Button>
+          </>
         )
       }
     >
@@ -169,6 +175,29 @@ export function ChangesSection({
                 {r.open_change.summary}
               </Notice>
             )}
+            {r.links.length > 0 && (
+              <div className="rounded-[var(--radius-panel)] border border-line bg-surface">
+                <p className="border-b border-line px-4 py-2.5 text-[13px] font-medium">Bridges and bonds by Lanvex</p>
+                <ul>
+                  {r.links.map((l) => (
+                    <li key={l.name} className="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5 last:border-0">
+                      <span className="grid">
+                        <span className="addr text-[13px] font-medium">{l.name}</span>
+                        <span className="text-xs text-muted">
+                          {l.type === "bond" ? `Bond (${l.mode})` : "Bridge"} of {l.members.join(", ")}
+                          {l.method === "static" ? ` · ${l.addresses.join(", ")}` : l.method === "dhcp" ? " · DHCP" : ""}
+                        </span>
+                      </span>
+                      {isAdmin && r.ready && !r.open_change && (
+                        <Button size="sm" variant="ghost" onClick={() => setRemoving(l)}>
+                          <Trash2 /> Remove…
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="rounded-[var(--radius-panel)] border border-line bg-surface">
               <p className="border-b border-line px-4 py-2.5 text-[13px] font-medium">Recent changes</p>
               {recent.data && recent.data.length > 0 ? (
@@ -195,6 +224,8 @@ export function ChangesSection({
         </div>
       )}
       {r && <InstallHelperDialog server={s} readiness={r} open={dialog === "install"} onClose={() => setDialog(null)} onChecked={refresh} />}
+      {r && facts && <LinkDialog server={s} facts={facts} readiness={r} open={dialog === "link"} onClose={() => setDialog(null)} />}
+      <RemoveLinkDialog server={s} link={removing} onClose={() => setRemoving(null)} />
       {r && facts && (
         <ChangeDialog
           server={s}
@@ -209,6 +240,189 @@ export function ChangesSection({
         />
       )}
     </Section>
+  );
+}
+
+/** Interfaces that can become members: Ethernet, in no bridge or bond, no addresses, no VLANs on them. */
+function freeInterfaces(facts: HostFacts, protectedPatterns: string[]): string[] {
+  const parents = new Set(facts.interfaces.map((i) => i.parent).filter(Boolean));
+  return facts.interfaces
+    .filter(
+      (i) =>
+        (i.kind === "ethernet" || i.kind === "veth") &&
+        !i.master &&
+        !parents.has(i.name) &&
+        !i.addresses.some((a) => a.scope !== "link") &&
+        !isProtected(i.name, protectedPatterns),
+    )
+    .map((i) => i.name);
+}
+
+const BOND_MODES: [string, string][] = [
+  ["active-backup", "Active-backup (any switch)"],
+  ["802.3ad", "802.3ad / LACP (switch must be set up for it)"],
+  ["balance-alb", "Adaptive load balancing"],
+  ["balance-tlb", "Transmit load balancing"],
+  ["balance-xor", "XOR"],
+  ["balance-rr", "Round-robin"],
+  ["broadcast", "Broadcast"],
+];
+
+function LinkDialog({ server: s, facts, readiness: r, open, onClose }: { server: Server; facts: HostFacts; readiness: ChangeReadiness; open: boolean; onClose: () => void }) {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const free = freeInterfaces(facts, r.protected_interfaces);
+  const [d, setD] = React.useState({ type: "bridge" as "bridge" | "bond", name: "br1", members: [] as string[], mode: "active-backup", stp: false, method: "none" as "none" | "static" | "dhcp", addresses: "", gateway: "" });
+  const prepare = useMutation({
+    mutationFn: (body: LinkRequestBody) => api<ChangeDetail>(`/servers/${s.id}/changes`, { method: "POST", body }),
+    onSuccess: (c) => {
+      void qc.invalidateQueries({ queryKey: ["changes"] });
+      void qc.invalidateQueries({ queryKey: ["servers", s.id] });
+      onClose();
+      navigate(`/changes/${c.id}`);
+    },
+  });
+  React.useEffect(() => {
+    if (!open) return;
+    const taken = new Set(facts.interfaces.map((i) => i.name));
+    const next = (prefix: string) => `${prefix}${[...Array(20).keys()].find((n) => !taken.has(`${prefix}${n}`)) ?? 0}`;
+    setD({ type: "bridge", name: next("br"), members: [], mode: "active-backup", stp: false, method: "none", addresses: "", gateway: "" });
+    prepare.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const set = (patch: Partial<typeof d>) => setD((prev) => ({ ...prev, ...patch }));
+  const err = (...names: string[]) => fieldError(prepare.error, ...names);
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent title={`Add a bridge or bond on ${s.name}`} width="max-w-xl">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            prepare.mutate({
+              kind: "link",
+              action: "create",
+              name: d.name.trim(),
+              type: d.type,
+              members: d.members,
+              mode: d.type === "bond" ? d.mode : null,
+              stp: d.type === "bridge" && d.stp,
+              method: d.method,
+              addresses: d.method === "static" ? split(d.addresses) : [],
+              gateway: d.method === "static" && d.gateway.trim() ? d.gateway.trim() : null,
+            });
+          }}
+        >
+          <DialogBody>
+            {prepare.error && !err("name", "members", "addresses", "gateway") && <Notice tone="danger">{errorMessage(prepare.error)}</Notice>}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Type" htmlFor="lk-type">
+                <Select id="lk-type" value={d.type} onChange={(e) => set({ type: e.target.value as "bridge" | "bond", name: d.name.replace(/^(br|bond)(\d+)$/, (_, __, n) => `${e.target.value === "bond" ? "bond" : "br"}${n}`) })}>
+                  <option value="bridge">Bridge</option>
+                  <option value="bond">Bond</option>
+                </Select>
+              </Field>
+              <Field label="Name" htmlFor="lk-name" error={err("name")}>
+                <Input id="lk-name" className="addr" value={d.name} maxLength={15} onChange={(e) => set({ name: e.target.value })} spellCheck={false} />
+              </Field>
+            </div>
+            <fieldset className="grid gap-1.5">
+              <legend className="mb-1.5 text-[13px] font-medium">Members</legend>
+              {free.length === 0 ? (
+                <p className="text-[13px] text-muted">No free interfaces: members need to be Ethernet interfaces without addresses.</p>
+              ) : (
+                <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                  {free.map((m) => (
+                    <Checkbox
+                      key={m}
+                      id={`lk-m-${m}`}
+                      label={m}
+                      checked={d.members.includes(m)}
+                      onChange={(e) => set({ members: e.target.checked ? [...d.members, m] : d.members.filter((x) => x !== m) })}
+                    />
+                  ))}
+                </div>
+              )}
+              {err("members") && (
+                <p role="alert" className="text-xs text-danger">
+                  {err("members")}
+                </p>
+              )}
+            </fieldset>
+            {d.type === "bond" ? (
+              <Field label="Mode" htmlFor="lk-mode">
+                <Select id="lk-mode" value={d.mode} onChange={(e) => set({ mode: e.target.value })}>
+                  {BOND_MODES.map(([v, l]) => (
+                    <option key={v} value={v}>
+                      {l}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : (
+              <Checkbox id="lk-stp" label="Spanning tree (STP)" checked={d.stp} onChange={(e) => set({ stp: e.target.checked })} />
+            )}
+            <Field label="IPv4" htmlFor="lk-method">
+              <Select id="lk-method" value={d.method} onChange={(e) => set({ method: e.target.value as "none" | "static" | "dhcp" })}>
+                <option value="none">No address</option>
+                <option value="static">Static</option>
+                <option value="dhcp">From DHCP</option>
+              </Select>
+            </Field>
+            {d.method === "static" && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Addresses" htmlFor="lk-addresses" error={err("addresses")} hint="Comma-separated">
+                  <Input id="lk-addresses" className="addr" value={d.addresses} placeholder="192.0.2.10/24" onChange={(e) => set({ addresses: e.target.value })} />
+                </Field>
+                <Field label="Default gateway" htmlFor="lk-gw" optional error={err("gateway")}>
+                  <Input id="lk-gw" className="addr" value={d.gateway} placeholder="192.0.2.1" onChange={(e) => set({ gateway: e.target.value })} />
+                </Field>
+              </div>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={prepare.isPending} disabled={!d.name.trim() || d.members.length === 0}>
+              Prepare change
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RemoveLinkDialog({ server: s, link, onClose }: { server: Server; link: LanvexLink | null; onClose: () => void }) {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const prepare = useMutation({
+    mutationFn: (name: string) => api<ChangeDetail>(`/servers/${s.id}/changes`, { method: "POST", body: { kind: "link", action: "remove", name } }),
+    onSuccess: (c) => {
+      void qc.invalidateQueries({ queryKey: ["changes"] });
+      void qc.invalidateQueries({ queryKey: ["servers", s.id] });
+      onClose();
+      navigate(`/changes/${c.id}`);
+    },
+  });
+  React.useEffect(() => {
+    if (link) prepare.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [link]);
+  return (
+    <Dialog open={link !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent title={link ? `Remove ${link.name}?` : "Remove"} description={link ? `${link.members.join(", ")} become free again. Prepared as a change, applied after approval.` : undefined}>
+        <DialogBody>{prepare.error && <Notice tone="danger">{errorMessage(prepare.error)}</Notice>}</DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="danger" loading={prepare.isPending} onClick={() => link && prepare.mutate(link.name)}>
+            Prepare removal
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

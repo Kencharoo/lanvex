@@ -232,6 +232,30 @@ applied finishes, including its verification and rollback.
 5. Optionally name a host that must still resolve afterwards.
 6. **Prepare change.** Review the change page, then **Approve and apply** and type the server's name.
 
+## Bridges and bonds
+
+*Add bridge or bond* on the server page creates one bridge or bond from interfaces that have no
+addresses (a server's unused network ports), as a change like any other: previewed, approved, applied
+behind the rollback timer, verified, and confirmed or rolled back.
+
+- **Members** must be Ethernet interfaces in no other bridge or bond, with no address and no VLAN on
+  them; the interface Lanvex connects through never is one. Their own configuration is not edited.
+- **Bond modes:** active-backup (the default; works with any switch), 802.3ad (LACP; the switch ports
+  must be set up for it), balance-alb, balance-tlb, balance-xor, balance-rr, broadcast. Bridges have
+  spanning tree off unless chosen.
+- **IPv4** on the bridge or bond: none (it only carries traffic, for virtual machines or VLANs, say),
+  static addresses with an optional gateway, or DHCP. Its addresses can be changed later with *Change
+  IP settings*, like any interface's.
+- **Files:** NetworkManager profiles `lxlink-<name>` and `lxlink-<name>-<member>` (the member profiles
+  win over others for the same device when NetworkManager starts), or the netplan file
+  `61-lxlink-<name>.yaml`. `/etc/lanvex/links.json` lists them.
+- **Checked:** the bridge or bond exists, every member is in it, and it has the requested addresses
+  (or a DHCP lease within 45 seconds).
+- **Removing** one Lanvex created (*Bridges and bonds by Lanvex*, *Remove…*) deletes its files and the
+  interface and frees the members. Refused while it carries Lanvex's connection or a VLAN.
+
+Interfaces on ifupdown servers cannot be bridged or bonded from Lanvex yet.
+
 ## What the helper does as root
 
 - Reads the network configuration and runs `netplan generate --root-dir` (validation in a temporary

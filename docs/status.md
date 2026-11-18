@@ -50,6 +50,16 @@ gateway and for routes that go, an IPv6 management address that must stay static
 NetworkManager profile's route replaced and the old one gone from the kernel, a route added on
 netplan, IPv6 static with an IPv6 route on NetworkManager where the runner's kernel has IPv6.
 
+### Bridges and bonds on servers (unreleased)
+
+Helper unit tests: requests (names, members, modes, methods, gateways), the netplan file (members
+defined elsewhere referred to by their netplan ID, the others defined in it), the NetworkManager
+profiles (never named like the networks' lanvex-* profiles), planning a bridge and removing it again,
+members with IP settings of their own refused. API tests: a bridge prepared, applied, listed as
+Lanvex's and removed; members refused when they carry Lanvex's connection, are not Ethernet, are
+missing; names taken or not Lanvex's. Lab tests (CI): a bridge created and removed on netplan and on
+NetworkManager, an active-backup bond of two interfaces on NetworkManager.
+
 ### Monitoring (new in 1.1)
 
 API tests with real PostgreSQL and the Lanvex Core stand-in: after reads, a full pool (critical at
@@ -283,7 +293,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 450 tests: 400 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 42 SSH lab (6 reading, discovery and recording; 9 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Backend | 481 tests: 428 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 45 SSH lab (6 reading, discovery and recording; 12 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
 | Frontend | Type check, 30 unit tests, production build; 13 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 reading two SNMP switches in software) |
 | Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
@@ -303,7 +313,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 | The takeover on KlassenServer | Tested with a stand-in of Netzverwaltung (its files, profile, zone, policy and a service), not with Netzverwaltung itself, its real `dnsmasq-filter.service` or several VLANs at once | Import, review the networks and rules in Lanvex Core, then the takeover from a browser on the LAN with console access at hand |
 | DNS filter on real devices | The lab's client asks with raw DNS packets; phones and laptops cache names and may use DNS over HTTPS | Filter a test network and try a few devices |
 | More than one Lanvex process running changes | The runner claims changes with row locks and is designed for it, but only one process was tested | — |
-| IPv6 and bond interfaces on servers | The lab kernel has no IPv6 or bonding (CI loads 8021q for VLANs) | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
+| IPv6 and bond interfaces on servers | This build environment's kernel has no IPv6 or bonding; CI loads the bonding module and the lab tests use IPv6 where the runner's kernel has it | Parsers are covered by constructed samples in iproute2's JSON shape; confirm on a real host |
 | In the browser on a real installation: creating and editing data, read-only users, servers over SSH, server changes | Not part of the first installation test | A walkthrough on the test server |
 | Backup and restore under Podman | Tested with Docker in CI (lanvexctl); the Podman job tests install and update | `lanvexctl backup`, then a restore on a test server |
 | Upgrading an installation from 0.3 | No 0.3 installation exists outside the build environment | 0.3 installations keep their NetBox; Lanvex Core is only added by a new installation or by hand (`.env.example`) |
@@ -313,8 +323,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 ## Not built yet
 
 - **Kea** as an alternative DHCP server; block lists by name for the DNS filter.
-- **More kinds of server change.** Bonds and bridges; IPv6 DNS servers; interface settings on
-  ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
+- **More kinds of server change.** Bridges and bonds on ifupdown servers, or with the interface
+  Lanvex connects through as a member; IPv6 DNS servers; interface settings on ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
 - Other switch changes (creating VLANs, port names, saving the configuration); discovery of devices no
   server or switch sees; a deployment wizard.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).

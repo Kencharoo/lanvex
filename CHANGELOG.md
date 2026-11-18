@@ -20,6 +20,10 @@
   verified (addresses, IPv6 default route and gateway, each route through its next hop, removed routes
   gone) and rolled back like the rest. Left out, both stay exactly as they are. Needs helper 6:
   servers ask for the new helper on their page.
+- **Bridges and bonds** on servers: one at a time, from interfaces without addresses, with no
+  address, static addresses or DHCP, on NetworkManager and netplan servers; checked (the interface,
+  its members, its addresses) and rolled back like any change, and removable again
+  ([docs/changes.md](docs/changes.md#bridges-and-bonds)).
 - **Makers from MAC addresses** on switch ports, in Discovery and in unknown-device alerts (the IEEE
   registry, through netaddr); random addresses of phones and laptops are marked as such.
 - **lanvexctl finds installations set up before it**, in any directory, by the directory their

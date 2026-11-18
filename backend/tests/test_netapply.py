@@ -5,6 +5,8 @@ The lab tests (test_changes_lab.py) run the same helper for real on netplan and 
 """
 
 import difflib
+import json
+import os
 
 import pytest
 import yaml
@@ -1236,3 +1238,146 @@ def test_routes_check_compares_what_the_kernel_has(monkeypatch):
         not ok
         and detail == "Missing: 10.50.0.0/16 via 172.31.0.254. Still there: 10.70.0.0/16 via 172.31.0.254."
     )
+
+
+# ---- bridges and bonds (kind "link") ------------------------------------------------------------------
+
+
+def link_req(**kw):
+    return {
+        "action": "create",
+        "name": "br1",
+        "type": "bridge",
+        "members": ["eth2"],
+        "method": "static",
+        "addresses": ["10.12.0.1/24"],
+    } | kw
+
+
+def test_validate_link():
+    assert h.validate_link(link_req()) == {
+        "action": "create",
+        "name": "br1",
+        "type": "bridge",
+        "members": ["eth2"],
+        "mode": None,
+        "stp": False,
+        "method": "static",
+        "addresses": ["10.12.0.1/24"],
+        "gateway": None,
+    }
+    bond = h.validate_link(
+        link_req(name="bond0", type="bond", members=["eth2", "eth3"], method="dhcp", addresses=[])
+    )
+    assert bond["mode"] == "active-backup" and bond["stp"] is None and bond["method"] == "dhcp"
+    assert h.validate_link({"action": "remove", "name": "br1"}) == {"action": "remove", "name": "br1"}
+
+
+@pytest.mark.parametrize(
+    ("req", "message"),
+    [
+        (link_req(action="replace"), "action must be"),
+        (link_req(name="lanvex-x"), "cannot be the name"),
+        (link_req(name="eth0.5"), "cannot be the name"),
+        (link_req(type="team"), "type must be"),
+        (link_req(members=[]), "between 1 and 8"),
+        (link_req(members=["eth2", "eth2"]), "Each member once"),
+        (link_req(members=["br1"]), "Each member once"),
+        (link_req(type="bond", mode="fastest"), "Bond mode"),
+        (link_req(addresses=[]), "at least one address"),
+        (link_req(method="none"), "need the static method"),
+        (link_req(gateway="10.13.0.1"), "not inside"),
+        (link_req(members=["eth2; reboot"]), "Invalid interface"),
+    ],
+)
+def test_validate_link_rejects(req, message):
+    with pytest.raises(h.Refused) as e:
+        h.validate_link(req)
+    assert message in e.value.message
+
+
+def test_link_netplan_file():
+    change = h.validate_link(
+        link_req(type="bond", name="bond0", members=["eth2", "eth3"], gateway="10.12.0.254")
+    )
+    text = h.render_link_netplan(change, {"eth2": "lan2"})  # eth2 is defined elsewhere as lan2
+    assert text.startswith("# Managed by Lanvex.")
+    assert yaml.safe_load(text) == {
+        "network": {
+            "version": 2,
+            "ethernets": {"eth3": {}},
+            "bonds": {
+                "bond0": {
+                    "interfaces": ["lan2", "eth3"],
+                    "parameters": {"mode": "active-backup", "mii-monitor-interval": 100},
+                    "addresses": ["10.12.0.1/24"],
+                    "routes": [{"to": "default", "via": "10.12.0.254"}],
+                }
+            },
+        }
+    }
+
+
+def test_link_keyfiles():
+    change = h.validate_link(link_req(members=["eth2", "eth3"], stp=True))
+    files = h.render_link_keyfiles(change, {"br1": "u-br1", "eth2": "u-2", "eth3": "u-3"})
+    d = "/etc/NetworkManager/system-connections/"
+    assert sorted(files) == [
+        d + "lxlink-br1-eth2.nmconnection",
+        d + "lxlink-br1-eth3.nmconnection",
+        d + "lxlink-br1.nmconnection",
+    ]
+    br = files[d + "lxlink-br1.nmconnection"]
+    assert "type=bridge\ninterface-name=br1" in br and "[bridge]\nstp=true" in br
+    assert "[ipv4]\nmethod=manual\naddress1=10.12.0.1/24\n" in br and "[ipv6]\nmethod=disabled" in br
+    port = files[d + "lxlink-br1-eth2.nmconnection"]
+    assert (
+        "id=lxlink-br1-eth2\nuuid=u-2\ntype=ethernet\ninterface-name=eth2\nmaster=br1\nslave-type=bridge"
+        in port
+    )
+    # Never named like the VLAN profiles of the networks kind, which owns every lanvex-* profile.
+    assert not any(os.path.basename(p).startswith("lanvex-") for p in files)
+
+
+def test_link_plan_create_and_remove(tmp_path, monkeypatch):
+    netplan = tmp_path / "netplan"
+    netplan.mkdir()
+    (netplan / "50-lab.yaml").write_text("network:\n  version: 2\n  ethernets:\n    eth2: {}\n")
+    monkeypatch.setattr(h, "NETPLAN_DIR", str(netplan))
+    monkeypatch.setattr(h, "LINKS_MANIFEST", str(tmp_path / "links.json"))
+    monkeypatch.setattr(h, "link_members_free", lambda change: None)
+    monkeypatch.setattr(h, "link_backend", lambda members: "netplan")
+    monkeypatch.setattr(
+        h.os.path, "exists", lambda p, real=os.path.exists: False if p.startswith("/sys/") else real(p)
+    )
+    plan = h.link_plan(h.validate_link(link_req()))
+    path = str(netplan / "61-lxlink-br1.yaml")
+    assert plan["backend"] == "netplan" and [f["path"] for f in plan["files"]] == [
+        path,
+        str(tmp_path / "links.json"),
+    ]
+    assert "eth2" not in yaml.safe_load(plan["_write"][path])["network"].get(
+        "ethernets", {}
+    )  # defined in 50-lab
+    manifest = json.loads(plan["_write"][str(tmp_path / "links.json")])
+    assert manifest["links"]["br1"] == {
+        "type": "bridge",
+        "members": ["eth2"],
+        "backend": "netplan",
+        "files": [path],
+    }
+
+    (tmp_path / "links.json").write_text(plan["_write"][str(tmp_path / "links.json")])
+    (netplan / "61-lxlink-br1.yaml").write_text(plan["_write"][path])
+    gone = h.link_plan({"action": "remove", "name": "br1"})
+    assert (
+        gone["_delete"] == [path] and json.loads(gone["_write"][str(tmp_path / "links.json")])["links"] == {}
+    )
+    assert [f["action"] for f in gone["files"]] == ["delete", "modify"]
+    with pytest.raises(h.Refused, match="not created by Lanvex"):
+        h.link_plan({"action": "remove", "name": "br9"})
+
+    (netplan / "50-lab.yaml").write_text("network:\n  version: 2\n  ethernets:\n    eth2: {dhcp4: true}\n")
+    (tmp_path / "links.json").write_text(h.render_links({}))
+    with pytest.raises(h.Refused, match="IP settings of its own"):
+        h.link_plan(h.validate_link(link_req()))
