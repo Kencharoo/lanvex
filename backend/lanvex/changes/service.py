@@ -676,7 +676,7 @@ class ChangeService:
                     f"Lanvex connects to {s.name} at {', '.join(sorted(on))}, which is on {req.name}. It cannot remove it.",
                     fields={"name": ["Carries Lanvex's connection."]},
                 )
-            users = sorted(i.name for i in facts.interfaces if i.parent == req.name)
+            users = sorted(i.name for i in facts.interfaces if i.parent == req.name and i.kind == "vlan")
             if users:
                 raise ValidationFailed(
                     f"{', '.join(users)} {'is' if len(users) == 1 else 'are'} on {req.name}. Remove "
@@ -715,7 +715,7 @@ class ChangeService:
                     f"{m} has addresses ({', '.join(used)}). Only interfaces without addresses become members.",
                     fields={"members": [f"{m} has addresses."]},
                 )
-            vlans = sorted(x.name for x in facts.interfaces if x.parent == m)
+            vlans = sorted(x.name for x in facts.interfaces if x.parent == m and x.kind == "vlan")
             if vlans:
                 raise ValidationFailed(
                     f"{m} carries {', '.join(vlans)}.", fields={"members": [f"{m} carries VLANs."]}

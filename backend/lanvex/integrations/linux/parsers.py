@@ -471,10 +471,15 @@ def parse_lanvex_kea(text: str) -> list[DhcpPool]:
         return []
     out = []
     for n in nets if isinstance(nets, list) else []:
+        iface = (
+            ((n.get("user-context") or {}).get("interface") or n.get("interface"))
+            if isinstance(n, dict)
+            else None
+        )
         for sub in (n.get("subnet4") or []) if isinstance(n, dict) else []:
             pool = ((sub.get("pools") or [{}])[0].get("pool") or "").replace(" ", "")
             first, _, last = pool.partition("-")
-            if not (n.get("interface") and first and last):
+            if not (iface and first and last):
                 continue
             options = {
                 o.get("name"): o.get("data") for o in sub.get("option-data") or [] if isinstance(o, dict)
@@ -485,7 +490,7 @@ def parse_lanvex_kea(text: str) -> list[DhcpPool]:
                 netmask = None
             out.append(
                 DhcpPool(
-                    interface=n["interface"],
+                    interface=iface,
                     start=first,
                     end=last,
                     netmask=netmask,

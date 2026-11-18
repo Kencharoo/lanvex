@@ -1445,8 +1445,7 @@ def test_kea_networks():
     assert nets == [
         {
             "name": "lanvex-vlan50",
-            "interface": "vlan50",
-            "user-context": {"lanvex": h.MANAGED},
+            "user-context": {"lanvex": h.MANAGED, "interface": "vlan50"},
             "subnet4": [
                 {
                     "id": h.kea_subnet_id("vlan50"),

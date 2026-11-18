@@ -1373,3 +1373,18 @@ async def test_bridge_and_bond_requests_are_validated(
     base = {"kind": "link", "name": "bond0", "type": "bond", "members": ["eth2"]}
     r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=base | body)
     assert r.status_code == 422 and message in r.text, r.text
+
+
+async def test_a_veths_peer_is_not_a_vlan(
+    admin: httpx.AsyncClient, ready_server: str, fake: FakeServer
+) -> None:
+    """iproute2 names a veth's peer as its link, as it names a VLAN's parent: only VLANs count."""
+    free_interface(fake, "lxv0")
+    peer = next(i for i in fake.facts.interfaces if i.name == "lxv0").model_copy(
+        update={"name": "lxp0", "index": 43, "parent": "lxv0"}
+    )
+    fake.facts.interfaces.append(peer)
+    assert (await admin.post(f"/api/v1/servers/{ready_server}/collect")).status_code == 200
+    body = {"kind": "link", "name": "lxbr1", "type": "bridge", "members": ["lxv0"]}
+    r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=body)
+    assert r.status_code == 201, r.text

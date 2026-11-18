@@ -245,7 +245,7 @@ export function ChangesSection({
 
 /** Interfaces that can become members: Ethernet, in no bridge or bond, no addresses, no VLANs on them. */
 function freeInterfaces(facts: HostFacts, protectedPatterns: string[]): string[] {
-  const parents = new Set(facts.interfaces.map((i) => i.parent).filter(Boolean));
+  const parents = new Set(facts.interfaces.filter((i) => i.kind === "vlan").map((i) => i.parent));
   return facts.interfaces
     .filter(
       (i) =>

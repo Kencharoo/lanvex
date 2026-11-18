@@ -691,7 +691,7 @@ def test_kea_serves_the_pools_where_it_is_set_up(host: str) -> None:
     assert "/etc/dnsmasq.d/lanvex.conf" not in by_path  # Kea serves the pools, not dnsmasq
     nets = json.loads(by_path["/etc/kea/lanvex-shared-networks.json"]["after"])
     assert (
-        nets[0]["interface"] == "vlan50"
+        nets[0]["user-context"]["interface"] == "vlan50"
         and nets[0]["subnet4"][0]["reservations"][0]["ip-address"] == "192.168.50.21"
     )
     assert json.loads(by_path["/etc/lanvex/networks.json"]["after"])["dhcp_server"] == "kea"
@@ -712,5 +712,5 @@ def test_kea_serves_the_pools_where_it_is_set_up(host: str) -> None:
     assert call(host, "verify", {"id": cid})["passed"]
     assert json.loads(sh(host, "cat /etc/kea/lanvex-shared-networks.json")) == []
     call(host, "rollback", {"id": cid})
-    assert json.loads(sh(host, "cat /etc/kea/lanvex-shared-networks.json"))[0]["interface"] == "vlan50"
+    assert json.loads(sh(host, "cat /etc/kea/lanvex-shared-networks.json"))[0]["name"] == "lanvex-vlan50"
     assert sh(host, "systemctl is-active kea-dhcp4-server || true").strip() == "active"

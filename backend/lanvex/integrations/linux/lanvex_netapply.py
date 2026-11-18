@@ -2187,11 +2187,12 @@ def render_kea(pools: list) -> str:
                 for r in p["reservations"]
             ],
         }
+        # No "interface" key: kea-dhcp4 -t refuses one that does not exist yet, as a new VLAN does not
+        # before the change. Kea picks the subnet by the address of the interface a request comes in on.
         nets.append(
             {
                 "name": "lanvex-" + p["interface"],
-                "interface": p["interface"],
-                "user-context": {"lanvex": MANAGED},
+                "user-context": {"lanvex": MANAGED, "interface": p["interface"]},
                 "subnet4": [subnet],
             }
         )
@@ -2201,7 +2202,9 @@ def render_kea(pools: list) -> str:
 def kea_pools(text: str) -> set:
     """The interfaces Lanvex's Kea file serves."""
     try:
-        return {n.get("interface") for n in json.loads(text) if isinstance(n, dict)} - {None}
+        return {
+            (n.get("user-context") or {}).get("interface") for n in json.loads(text) if isinstance(n, dict)
+        } - {None}
     except ValueError:
         return set()
 
@@ -2267,7 +2270,7 @@ def kea_check(n: dict) -> tuple:
     if answer is None:
         return (True, "%s is running with the new configuration (checked with kea-dhcp4 -t)." % k["unit"])
     nets = {
-        x.get("interface")
+        (x.get("user-context") or {}).get("interface")
         for x in ((answer.get("arguments") or {}).get("Dhcp4") or {}).get("shared-networks") or []
         if isinstance(x, dict) and (x.get("user-context") or {}).get("lanvex")
     }
