@@ -339,7 +339,15 @@ interface Draft {
   dns: string;
   search: string;
   verifyName: string;
+  changeV6: boolean;
+  v6method: "auto" | "static" | "link-local";
+  v6addresses: string;
+  v6gateway: string;
+  changeRoutes: boolean;
+  routes: { to: string; via: string; metric: string }[];
 }
+
+const isDefault = (dst: string) => dst === "0.0.0.0/0" || dst === "::/0" || dst === "default";
 
 /** What the interface has now, as last read: the starting point of the form. */
 function draftFor(facts: HostFacts, iface: string): Draft {
@@ -348,6 +356,12 @@ function draftFor(facts: HostFacts, iface: string): Draft {
   const statics = v4.filter((a) => !a.dynamic).map((a) => a.address);
   const gateway = facts.routes.find((rt) => rt.family === 4 && rt.interface === iface && (rt.destination === "0.0.0.0/0" || rt.destination === "default"))?.gateway ?? "";
   const scope = facts.dns.resolved?.find((x) => x.scope === iface);
+  const v6 = (i?.addresses ?? []).filter((a) => a.family === 6 && a.scope !== "link");
+  const v6static = v6.filter((a) => !a.dynamic).map((a) => a.address);
+  const gw6 = facts.routes.find((rt) => rt.family === 6 && rt.interface === iface && isDefault(rt.destination))?.gateway ?? "";
+  const routes = facts.routes
+    .filter((rt) => rt.interface === iface && rt.gateway && !isDefault(rt.destination) && (rt.protocol === "static" || rt.protocol === "boot"))
+    .map((rt) => ({ to: rt.destination, via: rt.gateway ?? "", metric: rt.metric == null ? "" : String(rt.metric) }));
   return {
     iface,
     method: statics.length === 0 && v4.some((a) => a.dynamic) ? "dhcp" : "static",
@@ -357,6 +371,12 @@ function draftFor(facts: HostFacts, iface: string): Draft {
     dns: (scope?.servers ?? []).filter((x) => !x.includes(":")).join(", "),
     search: (scope?.domains ?? []).filter((d) => d !== "~.").join(", "),
     verifyName: "",
+    changeV6: false,
+    v6method: v6static.length ? "static" : v6.some((a) => a.dynamic) ? "auto" : "link-local",
+    v6addresses: v6static.join(", "),
+    v6gateway: gw6,
+    changeRoutes: false,
+    routes,
   };
 }
 
@@ -404,7 +424,7 @@ function ChangeDialog({
   }, [open]);
   const set = (patch: Partial<Draft>) => setD((prev) => ({ ...prev, ...patch }));
   const err = (...names: string[]) => fieldError(prepare.error, ...names);
-  const generalError = prepare.error && !err("addresses", "gateway", "interface", "dns_servers", "dns_search", "verify_dns_name") ? errorMessage(prepare.error) : null;
+  const generalError = prepare.error && !err("addresses", "gateway", "interface", "dns_servers", "dns_search", "verify_dns_name", "ipv6", "routes") ? errorMessage(prepare.error) : null;
 
   const submit = () =>
     prepare.mutate({
@@ -415,6 +435,22 @@ function ChangeDialog({
       dns_servers: d.changeDns ? split(d.dns) : null,
       dns_search: d.changeDns ? split(d.search) : null,
       verify_dns_name: d.verifyName.trim() || null,
+      ...(d.changeV6
+        ? {
+            ipv6: {
+              method: d.v6method,
+              addresses: d.v6method === "static" ? split(d.v6addresses) : [],
+              gateway: d.v6method === "static" && d.v6gateway.trim() ? d.v6gateway.trim() : null,
+            },
+          }
+        : {}),
+      ...(d.changeRoutes
+        ? {
+            routes: d.routes
+              .filter((x) => x.to.trim() || x.via.trim())
+              .map((x) => ({ to: x.to.trim(), via: x.via.trim(), metric: x.metric.trim() ? Number(x.metric) : null })),
+          }
+        : {}),
     });
 
   return (
@@ -515,6 +551,76 @@ function ChangeDialog({
                     <Input id="chg-dns-search" value={d.search} placeholder="example.net" onChange={(e) => set({ search: e.target.value })} />
                   </Field>
                 </>
+              )}
+            </div>
+
+            <div className="grid gap-2 rounded-[var(--radius-control)] border border-line p-3">
+              <Checkbox id="chg-v6" label="Also change IPv6" checked={d.changeV6} onChange={(e) => set({ changeV6: e.target.checked })} />
+              {!d.changeV6 ? (
+                <p className="text-xs text-muted">Unchanged</p>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-4 text-[13px]" role="radiogroup" aria-label="IPv6 method">
+                    {(
+                      [
+                        ["auto", "Automatic (router advertisements, DHCPv6)"],
+                        ["static", "Static"],
+                        ["link-local", "Link-local only"],
+                      ] as const
+                    ).map(([m, label]) => (
+                      <label key={m} className="flex items-center gap-2">
+                        <input type="radio" name="chg-v6-method" value={m} checked={d.v6method === m} onChange={() => set({ v6method: m })} className="accent-[var(--color-accent)]" />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  {d.v6method === "static" && (
+                    <>
+                      <Field label="IPv6 addresses" htmlFor="chg-v6-addresses" hint="Comma-separated" error={err("ipv6")}>
+                        <Input id="chg-v6-addresses" className="addr" value={d.v6addresses} placeholder="2001:db8::10/64" onChange={(e) => set({ v6addresses: e.target.value })} />
+                      </Field>
+                      <Field label="IPv6 gateway" htmlFor="chg-v6-gw" optional>
+                        <Input id="chg-v6-gw" className="addr" value={d.v6gateway} placeholder="fe80::1" onChange={(e) => set({ v6gateway: e.target.value })} />
+                      </Field>
+                    </>
+                  )}
+                  {d.v6method !== "static" && err("ipv6") && (
+                    <p role="alert" className="text-xs text-danger">
+                      {err("ipv6")}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="grid gap-2 rounded-[var(--radius-control)] border border-line p-3">
+              <Checkbox id="chg-routes" label="Also change static routes" checked={d.changeRoutes} onChange={(e) => set({ changeRoutes: e.target.checked })} />
+              {!d.changeRoutes ? (
+                <p className="text-xs text-muted">Unchanged</p>
+              ) : (
+                <div className="grid gap-1.5">
+                  {d.routes.map((rt, idx) => (
+                    <div key={idx} className="grid grid-cols-[1fr_1fr_5rem_auto] gap-2">
+                      <Input aria-label={`Route ${idx + 1} network`} className="addr" value={rt.to} placeholder="10.20.0.0/16" onChange={(e) => set({ routes: d.routes.map((x, j) => (j === idx ? { ...x, to: e.target.value } : x)) })} />
+                      <Input aria-label={`Route ${idx + 1} next hop`} className="addr" value={rt.via} placeholder="via 192.0.2.254" onChange={(e) => set({ routes: d.routes.map((x, j) => (j === idx ? { ...x, via: e.target.value } : x)) })} />
+                      <Input aria-label={`Route ${idx + 1} metric`} className="addr" inputMode="numeric" value={rt.metric} placeholder="metric" onChange={(e) => set({ routes: d.routes.map((x, j) => (j === idx ? { ...x, metric: e.target.value.replace(/\D/g, "") } : x)) })} />
+                      <Button type="button" size="icon" variant="ghost" aria-label={`Remove route ${idx + 1}`} onClick={() => set({ routes: d.routes.filter((_, j) => j !== idx) })}>
+                        <X />
+                      </Button>
+                    </div>
+                  ))}
+                  {d.routes.length === 0 && <p className="text-xs text-muted">No static routes: those there now are removed.</p>}
+                  {err("routes") && (
+                    <p role="alert" className="text-xs text-danger">
+                      {err("routes")}
+                    </p>
+                  )}
+                  <span>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => set({ routes: [...d.routes, { to: "", via: "", metric: "" }] })}>
+                      <Plus /> Add route
+                    </Button>
+                  </span>
+                </div>
               )}
             </div>
 

@@ -8,7 +8,8 @@ result from stdout.
 What it does, and nothing else:
   version   report the helper version and which network tools are present
   plan      show the exact change, without changing anything. Two kinds:
-              interface_ipv4  one interface's IPv4 addresses, gateway and DNS
+              interface_ipv4  one interface's IPv4 addresses, gateway and DNS, and optionally its IPv6
+                              addresses and gateway and its static routes
               networks        the VLAN interfaces Lanvex manages, their firewalld zones, and the DHCP
                               service for them (dnsmasq), all in one change
   apply     back up the affected configuration, arm a rollback timer, then make the change
@@ -49,7 +50,7 @@ import sys
 import tempfile
 import time
 
-HELPER_VERSION = 5
+HELPER_VERSION = 6
 STATE_DIR = "/var/lib/lanvex/changes"
 LOCK_FILE = "/run/lanvex-netapply.lock"
 NETPLAN_DIR = "/etc/netplan"
@@ -115,6 +116,9 @@ NETPLAN_SECTIONS = (
     "virtual-ethernets",
 )
 ID_RE = re.compile(r"^[0-9a-f]{32}$")
+MAX_ROUTES = 64
+IPV6_METHODS = ("auto", "static", "link-local")
+NM_IPV6_METHOD = {"auto": "auto", "static": "manual", "link-local": "link-local"}
 MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 LEASE_RE = re.compile(r"^([1-9][0-9]{0,4}[mhd]|infinite)$")
 HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -300,6 +304,137 @@ def check_ipv4(text: object, field: str) -> ipaddress.IPv4Address:
     return ip
 
 
+def check_ipv6_address(text: object, field: str) -> ipaddress.IPv6Interface:
+    if not isinstance(text, str) or "/" not in text:
+        raise Refused("invalid_request", "%s: expected an IPv6 address with prefix length." % field)
+    try:
+        a = ipaddress.ip_interface(text)
+    except ValueError as e:
+        raise Refused(
+            "invalid_request", "%s: %s is not an address with prefix length." % (field, text)
+        ) from e
+    if not isinstance(a, ipaddress.IPv6Interface) or a.network.prefixlen == 0:
+        raise Refused("invalid_request", "%s: %s is not an IPv6 address with prefix length." % (field, text))
+    ip = a.ip
+    if ip.is_loopback or ip.is_multicast or ip.is_link_local or ip.is_unspecified or ip.ipv4_mapped:
+        raise Refused("invalid_request", "%s: %s cannot be assigned to an interface." % (field, text))
+    return a
+
+
+def check_ip(text: object, field: str):
+    """A unicast address of either family (a gateway or next hop)."""
+    try:
+        ip = ipaddress.ip_address(text)  # type: ignore[arg-type]
+    except (ValueError, TypeError) as e:
+        raise Refused("invalid_request", "%s: %r is not an IP address." % (field, text)) from e
+    if ip.is_unspecified or ip.is_multicast or ip.is_loopback:
+        raise Refused("invalid_request", "%s: %s is not a usable address." % (field, ip))
+    return ip
+
+
+def validate_ipv6(raw: object) -> dict | None:
+    """The interface's IPv6 settings, or None to leave them as they are."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or raw.get("method") not in IPV6_METHODS:
+        raise Refused("invalid_request", "ipv6.method must be one of %s." % ", ".join(IPV6_METHODS))
+    method = raw["method"]
+    raw_addresses = raw.get("addresses") or []
+    if not isinstance(raw_addresses, list) or len(raw_addresses) > 32:
+        raise Refused("invalid_request", "ipv6.addresses must be a list of at most 32 addresses.")
+    addresses = [check_ipv6_address(a, "ipv6.addresses") for a in raw_addresses]
+    if len({a.ip for a in addresses}) != len(addresses):
+        raise Refused("invalid_request", "ipv6.addresses lists the same address twice.")
+    gateway = raw.get("gateway")
+    gw = check_ip(gateway, "ipv6.gateway") if gateway not in (None, "") else None
+    if gw is not None and not isinstance(gw, ipaddress.IPv6Address):
+        raise Refused("invalid_request", "ipv6.gateway: %s is not an IPv6 address." % gw)
+    if method == "static":
+        if not addresses:
+            raise Refused("invalid_request", "A static IPv6 configuration needs at least one address.")
+        if gw is not None and not gw.is_link_local and not any(gw in a.network for a in addresses):
+            raise Refused(
+                "invalid_request",
+                "The IPv6 gateway %s is neither link-local nor inside one of the interface's networks." % gw,
+            )
+        if gw is not None and any(gw == a.ip for a in addresses):
+            raise Refused(
+                "invalid_request", "The IPv6 gateway cannot be one of the interface's own addresses."
+            )
+    elif addresses or gw is not None:
+        raise Refused("invalid_request", "IPv6 addresses and gateway can only be set with the static method.")
+    return {
+        "method": method,
+        "addresses": [str(a) for a in addresses],
+        "gateway": str(gw) if gw else None,
+    }
+
+
+def validate_routes(raw: object, ipv4: dict, ipv6: dict | None) -> list | None:
+    """Static routes through a next hop, or None to leave the interface's routes as they are.
+
+    Default routes are not among them: they are the gateways. A next hop has to be on the link: inside a
+    static network of the interface, or link-local for IPv6; with DHCP or router advertisements the
+    networks are not known here, and netplan or NetworkManager refuses an unreachable one.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) > MAX_ROUTES:
+        raise Refused("invalid_request", "routes must be a list of at most %d routes." % MAX_ROUTES)
+    nets = {
+        4: [ipaddress.ip_interface(a).network for a in ipv4["addresses"]]
+        if ipv4["method"] == "static"
+        else None,
+        6: (
+            [ipaddress.ip_interface(a).network for a in ipv6["addresses"]]
+            if ipv6 is not None and ipv6["method"] == "static"
+            else ([] if ipv6 is not None and ipv6["method"] == "link-local" else None)
+        ),
+    }
+    out, seen = [], set()
+    for r in raw:
+        if not isinstance(r, dict):
+            raise Refused("invalid_request", "Each route must be an object with to and via.")
+        try:
+            to = ipaddress.ip_network(r.get("to"))  # type: ignore[arg-type]
+        except (ValueError, TypeError) as e:
+            raise Refused(
+                "invalid_request",
+                "routes: %r is not a network with prefix length, e.g. 10.20.0.0/16." % r.get("to"),
+            ) from e
+        if to.prefixlen == 0:
+            raise Refused(
+                "invalid_request", "routes: the default route is set as the gateway, not as a route."
+            )
+        if to.is_multicast or to.is_loopback or (to.version == 6 and to.is_link_local):
+            raise Refused("invalid_request", "routes: %s cannot be routed." % to)
+        via = check_ip(r.get("via"), "routes.via")
+        if via.version != to.version:
+            raise Refused(
+                "invalid_request", "routes: %s and its next hop %s are not the same family." % (to, via)
+            )
+        on_link = nets[to.version]
+        if (
+            on_link is not None
+            and not (via.version == 6 and via.is_link_local)
+            and not any(via in n for n in on_link)
+        ):
+            raise Refused(
+                "invalid_request",
+                "routes: the next hop %s for %s is not on any of the interface's networks." % (via, to),
+            )
+        metric = r.get("metric")
+        if metric is not None and (
+            not isinstance(metric, int) or isinstance(metric, bool) or not 0 <= metric < 2**32
+        ):
+            raise Refused("invalid_request", "routes: the metric of %s must be a whole number." % to)
+        if to in seen:
+            raise Refused("invalid_request", "routes: %s is listed twice." % to)
+        seen.add(to)
+        out.append({"to": str(to), "via": str(via), "metric": metric})
+    return out
+
+
 def check_domain(text: object, field: str) -> str:
     if not isinstance(text, str) or not DOMAIN_RE.match(text):
         raise Refused("invalid_request", "%s: %r is not a valid domain name." % (field, text))
@@ -344,6 +479,10 @@ def validate_change(req: dict) -> dict:
         search = [check_domain(d, "dns.search") for d in (dns.get("search") or [])]
         if len(servers) > 8 or len(search) > 16:
             raise Refused("invalid_request", "Too many DNS servers or search domains.")
+    ipv6 = validate_ipv6(req.get("ipv6"))
+    routes = validate_routes(
+        req.get("routes"), {"method": method, "addresses": [str(a) for a in addresses]}, ipv6
+    )
     return {
         "interface": iface,
         "method": method,
@@ -351,6 +490,8 @@ def validate_change(req: dict) -> dict:
         "gateway": str(gw) if gw else None,
         "dns_servers": servers,
         "dns_search": search,
+        "ipv6": ipv6,
+        "routes": routes,
     }
 
 
@@ -358,22 +499,60 @@ def validate_change(req: dict) -> dict:
 # netplan
 
 
-def _is_v4(entry: object) -> bool:
-    """A netplan address entry is either "a/len" or {"a/len": {options}}."""
+def _family(entry: object) -> int | None:
+    """4 or 6 for a netplan address entry, which is either "a/len" or {"a/len": {options}}."""
     key = next(iter(entry)) if isinstance(entry, dict) and entry else entry
     try:
-        return isinstance(ipaddress.ip_interface(str(key)), ipaddress.IPv4Interface)
+        return ipaddress.ip_interface(str(key)).version
+    except ValueError:
+        return None
+
+
+def _is_v4(entry: object) -> bool:
+    return _family(entry) == 4
+
+
+def _is_default_route(route: object, family: int = 4) -> bool:
+    if not isinstance(route, dict) or str(route.get("to")) not in ("default", "0.0.0.0/0", "::/0"):
+        return False
+    try:
+        return ipaddress.ip_address(str(route.get("via"))).version == family
     except ValueError:
         return False
 
 
 def _is_v4_default_route(route: object) -> bool:
-    if not isinstance(route, dict) or str(route.get("to")) not in ("default", "0.0.0.0/0"):
+    return _is_default_route(route, 4)
+
+
+def _is_static_route(route: object) -> bool:
+    """A route Lanvex manages as one of the interface's static routes: through a next hop, in the main
+    table, not a default route. Routes in other tables, without a next hop or of other types stay."""
+    if (
+        not isinstance(route, dict)
+        or "via" not in route
+        or str(route.get("to")) in ("default", "0.0.0.0/0", "::/0")
+    ):
         return False
+    return route.get("table") in (None, 254, "main") and route.get("type") in (None, "unicast")
+
+
+def netplan_route(r: dict) -> dict:
+    out = {"to": r["to"], "via": r["via"]}
+    if r.get("metric") is not None:
+        out["metric"] = r["metric"]
+    return out
+
+
+def route_key(r: dict) -> tuple:
+    """A route as (destination, next hop), whichever way it was written."""
     try:
-        return isinstance(ipaddress.ip_address(str(route.get("via"))), ipaddress.IPv4Address)
+        return (
+            str(ipaddress.ip_network(str(r.get("to")), strict=False)),
+            str(ipaddress.ip_address(str(r.get("via")))),
+        )
     except ValueError:
-        return False
+        return (str(r.get("to")), str(r.get("via")))
 
 
 def iface_facts(iface: str) -> dict:
@@ -441,36 +620,61 @@ def netplan_definitions(iface: str, docs: dict, facts: dict | None = None) -> li
 
 
 def edit_netplan_definition(defn: dict, change: dict) -> dict:
-    """Return a copy of one netplan interface definition with the IPv4 settings replaced.
+    """Return a copy of one netplan interface definition with the IPv4 settings replaced, and the IPv6
+    settings and static routes when the change sets them (not None).
 
-    IPv6 addresses, IPv6 routes, non-default IPv4 routes and every other key are kept as they are.
+    Whatever the change does not set is kept as it is: IPv6 addresses and routes, other routes, every
+    other key.
     """
     d = copy.deepcopy(defn) if isinstance(defn, dict) else {}
+    ipv6, static_routes = change.get("ipv6"), change.get("routes")
     d.pop("gateway4", None)
+    if ipv6 is not None:
+        d.pop("gateway6", None)
     nm = d.get("networkmanager")
     passthrough = nm.get("passthrough") if isinstance(nm, dict) else None
     if isinstance(passthrough, dict):
         keys = ["ipv4.method", "ipv4.addresses", "ipv4.gateway"]
         if change["dns_servers"] is not None:
             keys += ["ipv4.dns", "ipv4.dns-search"]
+        if ipv6 is not None:
+            keys += ["ipv6.method", "ipv6.addresses", "ipv6.gateway"]
+        if static_routes is not None:
+            keys += ["ipv4.routes", "ipv6.routes"]
         for k in keys:
             passthrough.pop(k, None)
         if change["method"] == "static" and change["gateway"]:
             passthrough.pop("ipv4.never-default", None)
-    kept_addresses = [a for a in (d.get("addresses") or []) if not _is_v4(a)]
-    routes = [r for r in (d.get("routes") or []) if not _is_v4_default_route(r)]
+        if ipv6 is not None and ipv6["gateway"]:
+            passthrough.pop("ipv6.never-default", None)
+    replaced = {4} | ({6} if ipv6 is not None else set())
+    kept_addresses = [a for a in (d.get("addresses") or []) if _family(a) not in replaced]
+    routes = [r for r in (d.get("routes") or []) if not any(_is_default_route(r, f) for f in replaced)]
+    if static_routes is not None:
+        routes = [r for r in routes if not _is_static_route(r)] + [netplan_route(r) for r in static_routes]
+    new_addresses = list(change["addresses"]) if change["method"] == "static" else []
     if change["method"] == "static":
         if d.get("dhcp4"):
             d["dhcp4"] = False
-        d["addresses"] = list(change["addresses"]) + kept_addresses
         if change["gateway"]:
             routes.append({"to": "default", "via": change["gateway"]})
     else:
         d["dhcp4"] = True
-        if kept_addresses:
-            d["addresses"] = kept_addresses
+    if ipv6 is not None:
+        new_addresses += ipv6["addresses"]
+        if ipv6["method"] == "auto":
+            d["dhcp6"], d["accept-ra"] = True, True
         else:
-            d.pop("addresses", None)
+            if "dhcp6" in d:
+                d["dhcp6"] = False
+            d["accept-ra"] = False
+        if ipv6["gateway"]:
+            routes.append({"to": "default", "via": ipv6["gateway"]})
+    addresses = new_addresses + kept_addresses
+    if addresses:
+        d["addresses"] = addresses
+    else:
+        d.pop("addresses", None)
     if routes:
         d["routes"] = routes
     else:
@@ -643,7 +847,15 @@ def netplan_plan(iface: str, change: dict) -> dict:
             "is disabled." % os.path.basename(path)
         )
     if section != "ethernets":
-        warnings.append("%s is a %s entry; only its IPv4 settings change." % (iface, section[:-1]))
+        warnings.append("%s is a %s entry; only its IP settings change." % (iface, section[:-1]))
+    removed = []
+    if change.get("routes") is not None:
+        wanted = {route_key(r) for r in change["routes"]}
+        removed = [
+            {"to": k[0], "via": k[1]}
+            for k in (route_key(r) for r in ((old or {}).get("routes") or []) if _is_static_route(r))
+            if k not in wanted
+        ]
     return {
         "backend": "netplan",
         "files": [
@@ -660,6 +872,7 @@ def netplan_plan(iface: str, change: dict) -> dict:
         "warnings": warnings,
         "_write": {path: after},
         "_changed": new != (old if isinstance(old, dict) else {}),
+        "_removed_routes": removed,
     }
 
 
@@ -738,6 +951,7 @@ def nm_active_profile(iface: str) -> dict | None:
 
 NM_IPV4_KEYS = re.compile(r"^(method|address\d*|addresses|gateway)$")
 NM_DNS_KEYS = re.compile(r"^(dns|dns-search)$")
+NM_ROUTE_KEYS = re.compile(r"^(route\d+(_options)?|routes)$")
 
 
 def _key(line: str) -> str | None:
@@ -746,6 +960,17 @@ def _key(line: str) -> str | None:
     if not stripped or stripped.startswith(("#", ";", "[")) or "=" not in stripped:
         return None
     return stripped.split("=", 1)[0].strip()
+
+
+def nm_route_lines(routes: list, family: int) -> list:
+    """NetworkManager keyfile routes: routeN=destination,next hop[,metric]."""
+    out = []
+    for r in (r for r in routes if ipaddress.ip_network(r["to"]).version == family):
+        out.append(
+            "route%d=%s,%s%s"
+            % (len(out) + 1, r["to"], r["via"], "" if r.get("metric") is None else ",%d" % r["metric"])
+        )
+    return out
 
 
 def nm_ipv4_lines(change: dict) -> list:
@@ -758,26 +983,78 @@ def nm_ipv4_lines(change: dict) -> list:
         lines.append("dns=%s;" % ";".join(change["dns_servers"]))
     if change["dns_search"]:
         lines.append("dns-search=%s;" % ";".join(change["dns_search"]))
+    if change.get("routes") is not None:
+        lines += nm_route_lines(change["routes"], 4)
     return lines  # with DNS unchanged (None), the existing dns lines stay where they are
 
 
+def nm_ipv6_lines(change: dict) -> list:
+    ipv6 = change.get("ipv6")
+    lines = []
+    if ipv6 is not None:
+        lines.append("method=%s" % NM_IPV6_METHOD[ipv6["method"]])
+        for i, a in enumerate(ipv6["addresses"], 1):
+            lines.append("address%d=%s" % (i, a))
+        if ipv6["gateway"]:
+            lines.append("gateway=%s" % ipv6["gateway"])
+    if change.get("routes") is not None:
+        lines += nm_route_lines(change["routes"], 6)
+    return lines
+
+
+def nm_keyfile_routes(text: str) -> list:
+    """The static routes in a keyfile's [ipv4] and [ipv6] sections, as {to, via}."""
+    out, section = [], None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+            continue
+        key = _key(line)
+        if section in ("ipv4", "ipv6") and key is not None and re.match(r"^route\d+$", key):
+            parts = stripped.split("=", 1)[1].split(",")
+            if len(parts) >= 2 and parts[1].strip():
+                out.append({"to": parts[0].strip(), "via": parts[1].strip()})
+    return out
+
+
 def edit_keyfile(text: str, change: dict) -> str:
-    """Rewrite the [ipv4] settings Lanvex manages in a NetworkManager keyfile; keep every other line.
+    """Rewrite the IP settings Lanvex manages in a NetworkManager keyfile; keep every other line.
 
-    Replaced: method, addressN/addresses (an address's embedded gateway too), gateway, dns and dns-search
-    (only when DNS changes), and never-default when a gateway is set (otherwise the gateway would never
-    become the default route). The new lines go where the first replaced line was, so a preview shows
-    only what really changes.
+    [ipv4], replaced: method, addressN/addresses (an address's embedded gateway too), gateway, dns and
+    dns-search (only when DNS changes), and never-default when a gateway is set (otherwise the gateway
+    would never become the default route). [ipv6], when the change sets IPv6: method, addresses and
+    gateway. In both, when it sets the routes: routeN and their options. The new lines go where the
+    first replaced line was, so a preview shows only what really changes.
     """
-    new = nm_ipv4_lines(change)
     dns_changes = change["dns_servers"] is not None
+    routes_change = change.get("routes") is not None
+    ipv6 = change.get("ipv6")
 
-    def managed(key: str) -> bool:
+    def managed4(key: str) -> bool:
         return bool(
             NM_IPV4_KEYS.match(key)
             or (dns_changes and NM_DNS_KEYS.match(key))
             or (key == "never-default" and change["gateway"])
+            or (routes_change and NM_ROUTE_KEYS.match(key))
         )
+
+    def managed6(key: str) -> bool:
+        return bool(
+            (ipv6 is not None and NM_IPV4_KEYS.match(key))
+            or (ipv6 is not None and ipv6["gateway"] and key == "never-default")
+            or (routes_change and NM_ROUTE_KEYS.match(key))
+        )
+
+    text = edit_keyfile_section(text, "ipv4", nm_ipv4_lines(change), managed4, create=True)
+    if ipv6 is not None or routes_change:
+        new6 = nm_ipv6_lines(change)
+        text = edit_keyfile_section(text, "ipv6", new6, managed6, create=bool(new6))
+    return text
+
+
+def edit_keyfile_section(text: str, name: str, new: list, managed, create: bool) -> str:
+    """Replace the `managed` keys of one keyfile section with `new`, where the first of them was."""
 
     def insert_at_section_end(out: list) -> None:
         pos = len(out)
@@ -785,30 +1062,31 @@ def edit_keyfile(text: str, change: dict) -> str:
             pos -= 1
         out[pos:pos] = new
 
-    out, section, inserted = [], None, False
+    out, section, inserted, seen = [], None, False, False
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
-            if section == "ipv4" and not inserted:
+            if section == name and not inserted:
                 insert_at_section_end(out)
                 inserted = True
             section = stripped[1:-1]
+            seen = seen or section == name
             out.append(line)
             continue
         key = _key(line)
-        if section == "ipv4" and key is not None and managed(key):
+        if section == name and key is not None and managed(key):
             if not inserted:
                 out.extend(new)
                 inserted = True
             continue
         out.append(line)
-    if section == "ipv4" and not inserted:
+    if section == name and not inserted:
         insert_at_section_end(out)
         inserted = True
-    if not inserted:
+    if not inserted and not seen and create:
         if out and out[-1].strip():
             out.append("")
-        out.append("[ipv4]")
+        out.append("[%s]" % name)
         out.extend(new)
     return "\n".join(out) + "\n"
 
@@ -825,6 +1103,10 @@ def nm_plan(iface: str, profile: dict, change: dict) -> dict:
         )
     before = read_text(path)
     after = edit_keyfile(before, change)
+    removed = []
+    if change.get("routes") is not None:
+        wanted = {route_key(r) for r in change["routes"]}
+        removed = [r for r in nm_keyfile_routes(before) if route_key(r) not in wanted]
     return {
         "backend": "networkmanager",
         "files": [
@@ -842,6 +1124,7 @@ def nm_plan(iface: str, profile: dict, change: dict) -> dict:
         "_write": {path: after},
         "_changed": before != after,
         "_nm": {"uuid": profile["uuid"], "file": path},
+        "_removed_routes": removed,
     }
 
 
@@ -2967,6 +3250,8 @@ def detect_and_plan(change: dict) -> dict:
         )
     if iface in (read_manifest().get("vlans") or []):
         raise Refused("unsupported", "%s is one of Lanvex's VLAN interfaces; change it as a network." % iface)
+    if change.get("ipv6") is not None and not os.path.isdir("/proc/sys/net/ipv6"):
+        raise Refused("unsupported", "This server's kernel has no IPv6.")
     if nm_running():
         profile = nm_active_profile(iface)
         if profile is not None and profile["name"].startswith(LANVEX_PROFILE):
@@ -3216,6 +3501,7 @@ def cmd_apply(req: dict) -> dict:
         "rollback_seconds": seconds,
         "nm": plan.get("_nm"),
         "networks": plan.get("_networks"),
+        "removed_routes": plan.get("_removed_routes") or [],
     }
     event(state, "received")
     state["files"] = backup(cid, [f["path"] for f in plan["files"]] + list(plan.get("_backup") or []))
@@ -3297,14 +3583,71 @@ def ipv4_addresses(iface: str) -> list:
     return out
 
 
-def default_routes(iface: str) -> list:
-    r = run(["ip", "-json", "-4", "route", "show", "default"], timeout=15, check=True)
+def ipv6_addresses(iface: str) -> list:
+    """Global IPv6 addresses; `dynamic` for those from router advertisements or DHCPv6."""
+    r = run(["ip", "-json", "-6", "address", "show", "dev", iface, "scope", "global"], timeout=15, check=True)
+    out = []
+    for link in json.loads(r.stdout or "[]"):
+        for a in link.get("addr_info", []):
+            if a.get("family") == "inet6":
+                out.append(
+                    {
+                        "address": str(ipaddress.ip_interface("%s/%s" % (a["local"], a["prefixlen"]))),
+                        "dynamic": bool(a.get("dynamic")),
+                    }
+                )
+    return out
+
+
+def default_routes(iface: str, family: int = 4) -> list:
+    r = run(["ip", "-json", "-%d" % family, "route", "show", "default"], timeout=15, check=True)
     return [x.get("gateway") for x in json.loads(r.stdout or "[]") if x.get("dev") == iface]
 
 
+def interface_routes(iface: str, family: int) -> list:
+    """Routes through iface in the main table, as {to, via, metric}."""
+    r = run(["ip", "-json", "-%d" % family, "route", "show", "dev", iface], timeout=15, check=True)
+    out = []
+    for x in json.loads(r.stdout or "[]"):
+        dst = x.get("dst") or ""
+        if dst in ("", "default"):
+            continue
+        try:
+            net = ipaddress.ip_network(
+                dst if "/" in dst else "%s/%d" % (dst, 32 if family == 4 else 128), strict=False
+            )
+        except ValueError:
+            continue
+        via = _ip_or_none(x.get("gateway")) if x.get("gateway") else None
+        out.append({"to": str(net), "via": str(via) if via else None, "metric": x.get("metric")})
+    return out
+
+
+def routes_check(iface: str, wanted: list, removed: list) -> tuple:
+    """Every requested route there, through its next hop (and metric when given); removed ones gone."""
+    have = interface_routes(iface, 4) + interface_routes(iface, 6)
+    keys = {(h["to"], str(h["via"])) for h in have if h["via"]}
+    missing = []
+    for w in wanted:
+        match = [h for h in have if (h["to"], str(h["via"])) == route_key(w)]
+        if not match or (w.get("metric") is not None and not any(h["metric"] == w["metric"] for h in match)):
+            missing.append("%s via %s" % (w["to"], w["via"]))
+    left = ["%s via %s" % (r["to"], r["via"]) for r in removed if route_key(r) in keys]
+    if missing or left:
+        return (
+            False,
+            " ".join(
+                (["Missing: %s." % ", ".join(missing)] if missing else [])
+                + (["Still there: %s." % ", ".join(left)] if left else [])
+            ),
+        )
+    return (True, "%d static route%s in place." % (len(wanted), "" if len(wanted) == 1 else "s"))
+
+
 def neighbour(iface: str, address: str) -> dict | None:
-    """The kernel's neighbour (ARP) entry for address on iface, if it resolved to a link-layer address."""
-    r = run(["ip", "-json", "-4", "neighbour", "show", address, "dev", iface], timeout=15)
+    """The kernel's neighbour (ARP or NDP) entry for address on iface, if it resolved to a link-layer address."""
+    family = ipaddress.ip_address(address).version
+    r = run(["ip", "-json", "-%d" % family, "neighbour", "show", address, "dev", iface], timeout=15)
     if r.returncode != 0:
         return None
     for n in json.loads(r.stdout or "[]"):
@@ -3330,7 +3673,9 @@ def gateway_check(iface: str, gateway: str) -> dict:
         how = "Does not answer ping, but is" if detail else "Is"
         return dict(check, ok=True, detail="%s reachable on the link (%s)." % (how, n["lladdr"]))
     if not detail:
-        return dict(check, ok=None, detail="ping is not installed and the gateway is not in the ARP table.")
+        return dict(
+            check, ok=None, detail="ping is not installed and the gateway is not in the neighbour table."
+        )
     return dict(check, ok=False, detail=detail)
 
 
@@ -3392,6 +3737,15 @@ def cmd_verify(req: dict) -> dict:
         if change["gateway"]:
             checks.append(gateway_check(iface, change["gateway"]))
 
+    ipv6 = change.get("ipv6")
+    if ipv6 is not None:
+        checks += ipv6_checks(iface, ipv6)
+    if change.get("routes") is not None:
+        ok, detail = _wait_for(
+            lambda: routes_check(iface, change["routes"], st.get("removed_routes") or []), 10
+        )
+        checks.append({"id": "routes", "label": "Static routes on %s" % iface, "ok": ok, "detail": detail})
+
     if change["dns_servers"]:
         servers = dns_servers(iface)
         if servers is None:
@@ -3427,6 +3781,65 @@ def cmd_verify(req: dict) -> dict:
         )
 
     return _verified(cid, checks)
+
+
+def ipv6_checks(iface: str, ipv6: dict) -> list:
+    checks = []
+    if ipv6["method"] == "static":
+        want = sorted(ipv6["addresses"])
+
+        def addresses_ok():
+            got = sorted(a["address"] for a in ipv6_addresses(iface) if not a["dynamic"])
+            return (
+                set(want) <= set(got) and len(got) == len(want),
+                "Expected %s, found %s." % (", ".join(want), ", ".join(got) or "none"),
+            )
+
+        ok, detail = _wait_for(addresses_ok, 15)
+        checks.append(
+            {"id": "ipv6_addresses", "label": "IPv6 addresses on %s" % iface, "ok": ok, "detail": detail}
+        )
+
+        def route_ok():
+            gws = default_routes(iface, 6)
+            if ipv6["gateway"]:
+                return (
+                    ipv6["gateway"] in gws,
+                    "IPv6 default routes via %s: %s."
+                    % (iface, ", ".join(g or "direct" for g in gws) or "none"),
+                )
+            return (
+                not gws,
+                "No IPv6 default route via %s expected; found %s."
+                % (iface, ", ".join(g or "direct" for g in gws) or "none"),
+            )
+
+        ok, detail = _wait_for(route_ok, 10)
+        checks.append({"id": "ipv6_default_route", "label": "IPv6 default route", "ok": ok, "detail": detail})
+        if ipv6["gateway"]:
+            checks.append(dict(gateway_check(iface, ipv6["gateway"]), id="ipv6_gateway"))
+    elif ipv6["method"] == "auto":
+        got = [a["address"] for a in ipv6_addresses(iface) if a["dynamic"]]
+        checks.append(
+            {
+                "id": "ipv6_addresses",
+                "label": "IPv6 addresses on %s" % iface,
+                # No router advertisement yet is not a failure: the network may announce none.
+                "ok": True if got else None,
+                "detail": "From router advertisements or DHCPv6: %s." % (", ".join(got) or "none yet"),
+            }
+        )
+    else:
+        got = [a["address"] for a in ipv6_addresses(iface) if not a["dynamic"]]
+        checks.append(
+            {
+                "id": "ipv6_addresses",
+                "label": "Only a link-local IPv6 address on %s" % iface,
+                "ok": not got,
+                "detail": "Global addresses: %s." % (", ".join(got) or "none"),
+            }
+        )
+    return checks
 
 
 def _verified(cid: str, checks: list) -> dict:

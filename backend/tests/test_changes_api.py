@@ -27,6 +27,7 @@ from lanvex.integrations.linux import adapter, helper, transport
 from lanvex.integrations.linux.adapter import Collection
 from lanvex.integrations.linux.assemble import assemble
 from lanvex.integrations.linux.commands import Cmd
+from lanvex.integrations.linux.facts import Address, Route
 from lanvex.integrations.linux.lanvex_netapply import HELPER_VERSION
 from lanvex.servers.models import ServerSnapshot
 
@@ -1156,3 +1157,120 @@ async def test_interface_changes_leave_lanvex_networks_to_the_networks_section(
     }
     r = await admin.post(f"/api/v1/servers/{sid}/changes", json=body)
     assert r.status_code == 422 and "Networks section" in r.text, r.text
+
+
+# ---- IPv6 and static routes ----------------------------------------------------------------------------
+
+
+async def test_ipv6_and_static_routes(admin: httpx.AsyncClient, ready_server: str, fake: FakeServer) -> None:
+    br0 = next(i for i in fake.facts.interfaces if i.name == "br0")
+    br0.addresses.append(Address(address="2001:db8:11::1/64", family=6, scope="global"))
+    fake.facts.routes.append(
+        Route(destination="10.50.0.0/16", family=4, gateway="10.11.0.254", interface="br0", protocol="static")
+    )
+    assert (await admin.post(f"/api/v1/servers/{ready_server}/collect")).status_code == 200
+    c = await prepare(
+        admin,
+        ready_server,
+        ipv6={
+            "method": "static",
+            "addresses": ["2001:db8:11::1/64", "2001:DB8:11::2/64"],
+            "gateway": "fe80::1",
+        },
+        routes=[
+            {"to": "10.60.0.0/16", "via": "10.11.0.254", "metric": 20},
+            {"to": "2001:db8:99::/48", "via": "2001:db8:11::fe"},
+        ],
+    )
+    assert c["summary"] == (
+        "br0: static 10.11.0.1/24, 10.11.0.2/24 · no gateway · no DNS servers · IPv6 static 2001:db8:11::1/64, "
+        "2001:db8:11::2/64 gateway fe80::1 · routes 10.60.0.0/16 via 10.11.0.254, 2001:db8:99::/48 via 2001:db8:11::fe"
+    )
+    assert c["before"]["ipv6"] == {
+        "method": "static",
+        "addresses": ["2001:db8:11::1/64"],
+        "dynamic_addresses": [],
+        "gateway": None,
+    }
+    assert c["before"]["routes"] == [{"to": "10.50.0.0/16", "via": "10.11.0.254", "metric": None}]
+    assert "br0 gets an IPv6 default gateway: fe80::1." in c["preview"]["warnings"]
+    assert (
+        "Traffic for 10.50.0.0/16 no longer takes its static route and follows the default route instead."
+        in c["preview"]["warnings"]
+    )
+    plan = next(p for cmd, p in fake.calls if cmd == Cmd.HELPER_PLAN)
+    assert plan is not None
+    assert plan["ipv6"] == {
+        "method": "static",
+        "addresses": ["2001:db8:11::1/64", "2001:db8:11::2/64"],
+        "gateway": "fe80::1",
+    }
+    assert plan["routes"] == [
+        {"to": "10.60.0.0/16", "via": "10.11.0.254", "metric": 20},
+        {"to": "2001:db8:99::/48", "via": "2001:db8:11::fe", "metric": None},
+    ]
+
+
+async def test_ipv6_and_routes_left_alone_are_not_sent(
+    admin: httpx.AsyncClient, ready_server: str, fake: FakeServer
+) -> None:
+    await prepare(admin, ready_server)
+    plan = next(p for cmd, p in fake.calls if cmd == Cmd.HELPER_PLAN)
+    assert plan is not None and "ipv6" not in plan and "routes" not in plan  # an older helper still takes it
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"ipv6": {"method": "static", "addresses": []}}, "needs at least one address"),
+        ({"ipv6": {"method": "static", "addresses": ["10.0.0.1/24"]}}, "not an IPv6 address"),
+        (
+            {"ipv6": {"method": "static", "addresses": ["2001:db8::1/64"], "gateway": "2001:db8:5::1"}},
+            "neither link-local",
+        ),
+        ({"ipv6": {"method": "auto", "addresses": ["2001:db8::1/64"]}}, "need the static method"),
+        ({"routes": [{"to": "10.60.1.0/16", "via": "10.11.0.254"}]}, "did you mean 10.60.0.0/16"),
+        ({"routes": [{"to": "0.0.0.0/0", "via": "10.11.0.254"}]}, "the gateway, not a static route"),
+        ({"routes": [{"to": "10.60.0.0/16", "via": "10.99.0.1"}]}, "not on any of the interface's networks"),
+        ({"routes": [{"to": "10.60.0.0/16", "via": "fd00::1"}]}, "not the same family"),
+        (
+            {
+                "routes": [
+                    {"to": "10.60.0.0/16", "via": "10.11.0.254"},
+                    {"to": "10.60.0.0/16", "via": "10.11.0.253"},
+                ]
+            },
+            "listed twice",
+        ),
+    ],
+)
+async def test_ipv6_and_routes_are_validated(
+    admin: httpx.AsyncClient, ready_server: str, change: dict, message: str
+) -> None:
+    r = await admin.post(f"/api/v1/servers/{ready_server}/changes", json=BR0_SECONDARY | change)
+    assert r.status_code == 422 and message in r.text, r.text
+
+
+async def test_an_ipv6_management_address_must_stay(
+    admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
+) -> None:
+    v6 = "2001:db8:30::11"
+    eth0 = next(i for i in fake.facts.interfaces if i.name == "eth0")
+    eth0.addresses.append(Address(address=f"{v6}/64", family=6, scope="global"))
+    r = await admin.post("/api/v1/servers", json=server_body(address=v6, port=22))
+    sid = r.json()["server"]["id"]
+    assert (await admin.post(f"/api/v1/servers/{sid}/collect")).status_code == 200
+    assert (await admin.post(f"/api/v1/servers/{sid}/changes/helper/check")).status_code == 200
+    assert (
+        await admin.put(f"/api/v1/servers/{sid}/changes/enabled", json={"enabled": True})
+    ).status_code == 200
+    body = {"interface": "eth0", "method": "static", "addresses": ["172.30.0.11/24"], "gateway": "172.30.0.1"}
+    r = await admin.post(f"/api/v1/servers/{sid}/changes", json=body | {"ipv6": {"method": "auto"}})
+    assert r.status_code == 422 and "static IPv6 address" in r.json()["error"]["message"], r.text
+    assert "ipv6" in r.json()["error"]["fields"]
+    r = await admin.post(
+        f"/api/v1/servers/{sid}/changes",
+        json=body | {"ipv6": {"method": "static", "addresses": [f"{v6}/64"]}},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["preview"]["warnings"][0].startswith("Lanvex reaches web-01 through eth0.")

@@ -518,6 +518,22 @@ export interface ChangeRequestBody {
   dns_servers: string[] | null;
   dns_search: string[] | null;
   verify_dns_name?: string | null;
+  /** Left out (or null): the interface's IPv6 settings stay as they are. */
+  ipv6?: Ipv6Settings | null;
+  /** Left out (or null): its static routes stay as they are; [] removes them. */
+  routes?: StaticRoute[] | null;
+}
+
+export interface Ipv6Settings {
+  method: "auto" | "static" | "link-local";
+  addresses: string[];
+  gateway: string | null;
+}
+
+export interface StaticRoute {
+  to: string;
+  via: string;
+  metric?: number | null;
 }
 
 export interface VlanSpec {
@@ -572,6 +588,9 @@ export interface InterfaceBefore {
   dns_search: string[];
   dns_known: boolean;
   managed_by: string | null;
+  /** Absent in changes prepared before 1.3. */
+  ipv6?: Ipv6Settings & { dynamic_addresses: string[] };
+  routes?: StaticRoute[];
 }
 
 export interface ChangeOut {

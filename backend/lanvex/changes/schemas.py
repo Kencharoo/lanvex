@@ -46,8 +46,112 @@ def check_addresses(v: list[str]) -> list[str]:
     return out
 
 
+def check_ipv6_addresses(v: list[str]) -> list[str]:
+    out: list[str] = []
+    for text in v:
+        text = text.strip()
+        try:
+            a = ipaddress.ip_interface(text)
+        except ValueError:
+            raise ValueError(f"{text} is not an address with prefix length, e.g. 2001:db8::10/64.") from None
+        if not isinstance(a, ipaddress.IPv6Interface):
+            raise ValueError(f"{text} is not an IPv6 address.")
+        if "/" not in text or a.network.prefixlen == 0:
+            raise ValueError(f"{text} needs a prefix length, e.g. /64.")
+        if a.ip.is_loopback or a.ip.is_multicast or a.ip.is_link_local or a.ip.is_unspecified:
+            raise ValueError(f"{a.ip} cannot be assigned to an interface.")
+        out.append(str(a))
+    if len({a.split("/")[0] for a in out}) != len(out):
+        raise ValueError("The same address is listed twice.")
+    return out
+
+
+class Ipv6Settings(ApiModel):
+    """auto: router advertisements and DHCPv6; static: these addresses; link-local: no other address."""
+
+    method: Literal["auto", "static", "link-local"]
+    addresses: list[str] = Field(default_factory=list, max_length=32)
+    gateway: str | None = None
+
+    @field_validator("addresses")
+    @classmethod
+    def _addresses(cls, v: list[str]) -> list[str]:
+        return check_ipv6_addresses(v)
+
+    @field_validator("gateway")
+    @classmethod
+    def _gateway(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        try:
+            ip = ipaddress.ip_address(v.strip())
+        except ValueError:
+            raise ValueError(f"{v} is not an IPv6 address.") from None
+        if not isinstance(ip, ipaddress.IPv6Address) or ip.is_unspecified or ip.is_multicast:
+            raise ValueError(f"{v} is not a usable IPv6 gateway.")
+        return str(ip)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "Ipv6Settings":
+        if self.method == "static":
+            if not self.addresses:
+                raise ValueError("A static IPv6 configuration needs at least one address.")
+            if self.gateway:
+                gw = ipaddress.ip_address(self.gateway)
+                nets = [ipaddress.ip_interface(a) for a in self.addresses]
+                if not gw.is_link_local and not any(gw in n.network for n in nets):
+                    raise ValueError(
+                        f"The IPv6 gateway {gw} is neither link-local nor inside one of the interface's networks."
+                    )
+                if any(gw == n.ip for n in nets):
+                    raise ValueError("The IPv6 gateway cannot be one of the interface's own addresses.")
+        elif self.addresses or self.gateway:
+            raise ValueError("IPv6 addresses and a gateway need the static method.")
+        return self
+
+
+class StaticRoute(ApiModel):
+    """A route to a network through a next hop on this interface's link."""
+
+    to: str
+    via: str
+    metric: int | None = Field(default=None, ge=0, le=4294967295)
+
+    @field_validator("to")
+    @classmethod
+    def _to(cls, v: str) -> str:
+        try:
+            net = ipaddress.ip_network(v.strip(), strict=False)
+        except ValueError:
+            raise ValueError(f"{v} is not a network, e.g. 10.20.0.0/16.") from None
+        if str(net) != v.strip() and "/" in v and net.network_address != ipaddress.ip_interface(v.strip()).ip:
+            raise ValueError(f"{v} is not a network address; did you mean {net}?")
+        if net.prefixlen == 0:
+            raise ValueError("The default route is the gateway, not a static route.")
+        if net.is_multicast or net.is_loopback or (net.version == 6 and net.is_link_local):
+            raise ValueError(f"{net} cannot be routed.")
+        return str(net)
+
+    @field_validator("via")
+    @classmethod
+    def _via(cls, v: str) -> str:
+        try:
+            ip = ipaddress.ip_address(v.strip())
+        except ValueError:
+            raise ValueError(f"{v} is not an IP address.") from None
+        if ip.is_unspecified or ip.is_multicast or ip.is_loopback:
+            raise ValueError(f"{v} cannot be a next hop.")
+        return str(ip)
+
+    @model_validator(mode="after")
+    def _family(self) -> "StaticRoute":
+        if ipaddress.ip_network(self.to).version != ipaddress.ip_address(self.via).version:
+            raise ValueError(f"{self.to} and its next hop {self.via} are not the same family.")
+        return self
+
+
 class ChangeRequest(ApiModel):
-    """The IPv4 settings an interface should have. Everything else on the interface stays as it is."""
+    """The IP settings an interface should have. Everything else on the interface stays as it is."""
 
     kind: Literal["interface_ipv4"] = "interface_ipv4"
     interface: str
@@ -60,6 +164,9 @@ class ChangeRequest(ApiModel):
     verify_dns_name: str | None = Field(
         default=None, description="A name that must resolve after the change."
     )
+    # None keeps the interface's IPv6 settings, or its static routes, exactly as they are.
+    ipv6: Ipv6Settings | None = None
+    routes: list[StaticRoute] | None = Field(default=None, max_length=64)
 
     @field_validator("interface")
     @classmethod
@@ -138,18 +245,49 @@ class ChangeRequest(ApiModel):
         if (self.dns_servers is None) != (self.dns_search is None):
             # Changing DNS means stating both; send [] for "none".
             self.dns_servers, self.dns_search = self.dns_servers or [], self.dns_search or []
+        if self.routes is not None:
+            self._check_routes(self.routes)
         return self
+
+    def _check_routes(self, routes: list["StaticRoute"]) -> None:
+        """A next hop must be on the link: inside a static network of the interface (or link-local for
+        IPv6). With DHCP or router advertisements the networks are not known in advance."""
+        if len({r.to for r in routes}) != len(routes):
+            raise ValueError("A network is listed twice in the routes.")
+        on_link: dict[int, list[Any] | None] = {
+            4: [ipaddress.ip_interface(a).network for a in self.addresses]
+            if self.method == "static"
+            else None,
+            6: None,
+        }
+        if self.ipv6 is not None and self.ipv6.method == "static":
+            on_link[6] = [ipaddress.ip_interface(a).network for a in self.ipv6.addresses]
+        elif self.ipv6 is not None and self.ipv6.method == "link-local":
+            on_link[6] = []
+        for r in routes:
+            via = ipaddress.ip_address(r.via)
+            nets = on_link[via.version]
+            if nets is None or (via.version == 6 and via.is_link_local):
+                continue
+            if not any(via in n for n in nets):
+                raise ValueError(f"The next hop {via} for {r.to} is not on any of the interface's networks.")
 
     @property
     def changes_dns(self) -> bool:
         return self.dns_servers is not None
 
     def helper_payload(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "interface": self.interface,
             "ipv4": {"method": self.method, "addresses": self.addresses, "gateway": self.gateway},
             "dns": {"servers": self.dns_servers, "search": self.dns_search} if self.changes_dns else None,
         }
+        # Sent only when set, so a helper older than 6 still takes a change that sets neither.
+        if self.ipv6 is not None:
+            out["ipv6"] = self.ipv6.model_dump()
+        if self.routes is not None:
+            out["routes"] = [r.model_dump() for r in self.routes]
+        return out
 
 
 MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")

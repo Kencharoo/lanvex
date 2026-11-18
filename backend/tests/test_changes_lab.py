@@ -313,3 +313,60 @@ async def test_hosts_that_cannot_take_changes_say_why(lab) -> None:  # type: ign
     assert up["path"] == "/home/lanvex/lanvex-netapply"
     assert sha("lab-ifup", up["path"]) == hashlib.sha256(helper.source()).hexdigest() == up["sha256"]
     sh("lab-ifup", "rm -f /home/lanvex/lanvex-netapply")
+
+
+async def test_static_routes_replaced_on_networkmanager_and_added_on_netplan(lab) -> None:  # type: ignore[no-untyped-def]
+    api, runner = lab
+    s = await ready(api, "lab-nm")
+    body = change("eth1", ["172.31.0.12/24"]) | {"dns_servers": None, "dns_search": None}
+    c = ok(
+        await api.post(
+            f"/api/v1/servers/{s['id']}/changes",
+            json=body | {"routes": [{"to": "10.60.0.0/16", "via": "172.31.0.1", "metric": 30}]},
+        ),
+        201,
+    )
+    assert c["before"]["routes"] == [{"to": "10.50.0.0/16", "via": "172.31.0.1", "metric": 50}]
+    assert "+route1=10.60.0.0/16,172.31.0.1,30" in c["preview"]["files"][0]["diff"]
+    ok(await api.post(f"/api/v1/changes/{c['id']}/approve", json={"confirm_name": s["name"]}))
+    assert await runner.run_once()
+    done = ok(await api.get(f"/api/v1/changes/{c['id']}"))
+    assert done["status"] == "succeeded", done
+    assert next(ch for ch in done["checks"] if ch["id"] == "routes")["ok"] is True
+    routes = sh("lab-nm", "ip -4 route show dev eth1")
+    assert "10.60.0.0/16 via 172.31.0.1" in routes and "metric 30" in routes and "10.50.0.0/16" not in routes
+
+    n = await ready(api, "lab-netplan")
+    done = await run(
+        api,
+        runner,
+        n,
+        change("br0", ["10.11.0.1/24"])
+        | {"dns_servers": None, "dns_search": None, "routes": [{"to": "10.77.0.0/16", "via": "10.11.0.254"}]},
+    )
+    assert done["status"] == "succeeded", done
+    assert "to: 10.77.0.0/16" in sh("lab-netplan", "cat /etc/netplan/50-lab.yaml")
+    assert "10.77.0.0/16 via 10.11.0.254" in sh("lab-netplan", "ip -4 route show dev br0")
+
+
+async def test_ipv6_static_on_networkmanager(lab) -> None:  # type: ignore[no-untyped-def]
+    if sh("lab-nm", "test -d /proc/sys/net/ipv6 && echo yes || echo no").strip() != "yes":
+        pytest.skip("no IPv6 in this kernel")
+    api, runner = lab
+    s = await ready(api, "lab-nm")
+    done = await run(
+        api,
+        runner,
+        s,
+        change("eth1", ["172.31.0.12/24"])
+        | {
+            "dns_servers": None,
+            "dns_search": None,
+            "ipv6": {"method": "static", "addresses": ["fd00:31::12/64"]},
+            "routes": [{"to": "fd00:99::/48", "via": "fd00:31::1"}],
+        },
+    )
+    assert done["status"] == "succeeded", done
+    assert "fd00:31::12/64" in sh("lab-nm", "ip -6 -o address show dev eth1 scope global")
+    assert "fd00:99::/48 via fd00:31::1" in sh("lab-nm", "ip -6 route show dev eth1")
+    assert {ch["id"] for ch in done["checks"]} >= {"ipv6_addresses", "ipv6_default_route", "routes"}

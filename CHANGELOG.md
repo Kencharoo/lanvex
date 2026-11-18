@@ -14,6 +14,12 @@
   through are refused. A switch can use separate credentials for changes. Switch changes are listed
   under *Automation* with the server changes and numbered with them
   ([docs/switches.md](docs/switches.md#changing-a-ports-vlans)).
+- **IPv6 and static routes in server changes**: an interface's IPv6 (automatic, static addresses with
+  a gateway, or link-local only) and its static routes (IPv4 or IPv6, through a next hop, with an
+  optional metric) can be part of a change, on netplan and NetworkManager servers, previewed,
+  verified (addresses, IPv6 default route and gateway, each route through its next hop, removed routes
+  gone) and rolled back like the rest. Left out, both stay exactly as they are. Needs helper 6:
+  servers ask for the new helper on their page.
 - **Makers from MAC addresses** on switch ports, in Discovery and in unknown-device alerts (the IEEE
   registry, through netaddr); random addresses of phones and laptops are marked as such.
 - **lanvexctl finds installations set up before it**, in any directory, by the directory their

@@ -36,6 +36,20 @@ back; a change made on the switch since the preview, not written at all; a switc
 writes; readers, approval by the wrong port name, cancelling. In the browser (Playwright, with the lab
 specs): allowing changes, a change and its reversal through preview, approval and read back.
 
+### IPv6 and static routes in server changes (unreleased)
+
+Helper unit tests: validation (methods, addresses, link-local and on-link gateways and next hops,
+families, default routes, networks with host bits, duplicates, metrics); netplan definitions with IPv6
+static, automatic and link-local only, routes replaced while routes in other tables and without a
+next hop stay, and both left exactly as they were when the change does not set them; NetworkManager
+keyfiles with [ipv6] written, routes in both sections, no [ipv6] section created for nothing; the
+route check against what the kernel reports (host routes, metrics, next hops written differently,
+removed routes still there). API tests: what is sent to the helper (nothing new for a change that sets
+neither, so an older helper still takes it), summaries, the state before, warnings for a new IPv6
+gateway and for routes that go, an IPv6 management address that must stay static. Lab tests (CI): a
+NetworkManager profile's route replaced and the old one gone from the kernel, a route added on
+netplan, IPv6 static with an IPv6 route on NetworkManager where the runner's kernel has IPv6.
+
 ### Monitoring (new in 1.1)
 
 API tests with real PostgreSQL and the Lanvex Core stand-in: after reads, a full pool (critical at
@@ -269,7 +283,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 413 tests: 365 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 40 SSH lab (6 reading, discovery and recording; 7 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Backend | 450 tests: 400 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 42 SSH lab (6 reading, discovery and recording; 9 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
 | Frontend | Type check, 30 unit tests, production build; 13 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 reading two SNMP switches in software) |
 | Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
@@ -299,7 +313,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 ## Not built yet
 
 - **Kea** as an alternative DHCP server; block lists by name for the DNS filter.
-- **More kinds of server change.** Bonds and bridges; IPv6; static routes; interface settings on
+- **More kinds of server change.** Bonds and bridges; IPv6 DNS servers; interface settings on
   ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
 - Other switch changes (creating VLANs, port names, saving the configuration); discovery of devices no
   server or switch sees; a deployment wizard.

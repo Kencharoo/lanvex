@@ -146,7 +146,22 @@ def summarize(r: ChangeRequest) -> str:
         parts.append(("DNS " + ", ".join(r.dns_servers or [])) if r.dns_servers else "no DNS servers")
         if r.dns_search:
             parts.append("search " + ", ".join(r.dns_search))
-    return f"{r.interface}: " + " · ".join(parts)
+    if r.ipv6 is not None:
+        if r.ipv6.method == "static":
+            parts.append(
+                "IPv6 static "
+                + ", ".join(r.ipv6.addresses)
+                + (f" gateway {r.ipv6.gateway}" if r.ipv6.gateway else " no gateway")
+            )
+        else:
+            parts.append("IPv6 automatic" if r.ipv6.method == "auto" else "IPv6 link-local only")
+    if r.routes is not None:
+        parts.append(
+            ("routes " + ", ".join(f"{x.to} via {x.via}" for x in r.routes))
+            if r.routes
+            else "no static routes"
+        )
+    return (f"{r.interface}: " + " · ".join(parts))[:500]
 
 
 VPN_KINDS = {"wireguard", "tun", "tap", "gre", "gretap", "ipip", "sit", "vxlan", "geneve", "ip6tnl"}
@@ -246,6 +261,10 @@ def interface_state(facts: HostFacts, name: str) -> dict[str, Any] | None:
     gateways = [r.gateway for r in facts.routes if r.is_default and r.family == 4 and r.interface == name]
     scope = next((x for x in (facts.dns.resolved or []) if x.scope == name), None)
     servers = [s for s in (scope.servers if scope else []) if ":" not in s]
+    v6 = [a for a in iface.addresses if a.family == 6 and a.scope != "link"]
+    v6_static = [a.address for a in v6 if not a.dynamic]
+    v6_dynamic = [a.address for a in v6 if a.dynamic]
+    v6_gateways = [r.gateway for r in facts.routes if r.is_default and r.family == 6 and r.interface == name]
     return {
         "method": "dhcp" if dynamic and not static else "static",
         "addresses": static,
@@ -257,6 +276,22 @@ def interface_state(facts: HostFacts, name: str) -> dict[str, Any] | None:
         "kind": iface.kind,
         "managed_by": iface.managed_by,
         "master": iface.master,
+        "ipv6": {
+            "method": "static" if v6_static else ("auto" if v6_dynamic else "link-local"),
+            "addresses": v6_static,
+            "dynamic_addresses": v6_dynamic,
+            "gateway": v6_gateways[0] if v6_gateways else None,
+        },
+        # Static routes through a next hop: set in the configuration (static) or by hand (boot).
+        "routes": [
+            {"to": r.destination, "via": r.gateway, "metric": r.metric}
+            for r in facts.routes
+            if r.interface == name
+            and not r.is_default
+            and r.gateway
+            and r.protocol in ("static", "boot")
+            and r.type in (None, "unicast")
+        ],
     }
 
 
@@ -685,6 +720,24 @@ class ChangeService:
                     "the old one.",
                     fields={"addresses": [f"Must include {', '.join(on_iface)}."]},
                 )
+        b6 = before.get("ipv6") or {
+            "method": "link-local",
+            "addresses": [],
+            "dynamic_addresses": [],
+            "gateway": None,
+        }
+        current6 = {str(ipaddress.ip_interface(a).ip) for a in b6["addresses"] + b6["dynamic_addresses"]}
+        on_iface6 = sorted(mgmt & current6)
+        if on_iface6 and req.ipv6 is not None:
+            keep6 = {str(ipaddress.ip_interface(a).ip) for a in req.ipv6.addresses}
+            if req.ipv6.method != "static" or not set(on_iface6) <= keep6:
+                raise ValidationFailed(
+                    f"Lanvex connects to {s.name} at {', '.join(on_iface6)}, which is on {req.interface}. "
+                    "Keep that address as a static IPv6 address, or Lanvex loses the connection.",
+                    fields={"ipv6": [f"Must include {', '.join(on_iface6)}."]},
+                )
+        on_iface = on_iface + on_iface6
+        if on_iface:
             warnings.append(
                 f"Lanvex reaches {s.name} through {req.interface}. If the change breaks that connection, the "
                 f"server restores its previous configuration after {self.settings.change_rollback_seconds} seconds."
@@ -700,6 +753,32 @@ class ChangeService:
                 warnings.append(f"The default gateway changes from {before['gateway']} to {req.gateway}.")
         if before["method"] == "dhcp" and req.method == "static":
             warnings.append(f"{req.interface} stops using DHCP.")
+        if req.ipv6 is not None:
+            gw6 = req.ipv6.gateway if req.ipv6.method == "static" else None
+            if req.ipv6.method == "static" and gw6 != b6["gateway"]:
+                if gw6 is None and b6["gateway"]:
+                    warnings.append(
+                        f"{req.interface} will no longer have an IPv6 default gateway ({b6['gateway']} today)."
+                    )
+                elif gw6 is not None:
+                    warnings.append(
+                        f"The IPv6 default gateway changes from {b6['gateway']} to {gw6}."
+                        if b6["gateway"]
+                        else f"{req.interface} gets an IPv6 default gateway: {gw6}."
+                    )
+            if req.ipv6.method != "auto" and b6["dynamic_addresses"]:
+                warnings.append(
+                    f"{req.interface} stops taking IPv6 addresses from router advertisements and DHCPv6."
+                )
+        if req.routes is not None:
+            wanted = {(r.to, r.via) for r in req.routes}
+            gone = [r for r in before.get("routes") or [] if (r["to"], r["via"]) not in wanted]
+            if gone:
+                warnings.append(
+                    "Traffic for "
+                    + ", ".join(r["to"] for r in gone)
+                    + " no longer takes its static route and follows the default route instead."
+                )
         return warnings
 
     # ---- reading another tool's setup ---------------------------------------------------------------

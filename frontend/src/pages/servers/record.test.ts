@@ -54,7 +54,7 @@ describe("changeSeedFor", () => {
   });
 
   it("says why when no change can be prepared", () => {
-    expect(changeSeedFor(row({ address: "2001:db8::1", server_address: "2001:db8::1/64", server_interface: "eth0" }), host, "NetBox")).toBe("Lanvex changes IPv4 settings only.");
+    expect(changeSeedFor(row({ address: "2001:db8::1", server_address: "2001:db8::1/64", server_interface: "eth0" }), host, "NetBox")).toBe("Change IPv6 addresses with Change IP settings.");
     expect(changeSeedFor(row({ address: "198.51.100.5", server_address: "198.51.100.5/24", server_interface: "eth1" }), host, "NetBox")).toBe("eth1 gets its address from DHCP.");
     expect(changeSeedFor(row({ status: "only_in_netbox", netbox_address: "192.0.2.99/24", netbox_interface: "eth9" }), host, "NetBox")).toBe("The server has no interface eth9.");
     expect(changeSeedFor(row({ status: "only_in_netbox", netbox_address: "192.0.2.99/24", netbox_interface: null }), host, "NetBox")).toBe("NetBox does not say which interface the address belongs to.");

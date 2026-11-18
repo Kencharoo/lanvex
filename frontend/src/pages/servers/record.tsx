@@ -22,10 +22,10 @@ export interface ChangeSeed {
 
 /**
  * The server change that makes the server match the documentation for one row, or why there is none.
- * Changes cover static IPv4 addresses on one interface, so that is what this can prepare.
+ * It prepares static IPv4 addresses on one interface; IPv6 is set in the change form itself.
  */
 export function changeSeedFor(r: ComparisonRow, facts: HostFacts, nbName: string): ChangeSeed | string {
-  if (r.address.includes(":")) return "Lanvex changes IPv4 settings only.";
+  if (r.address.includes(":")) return "Change IPv6 addresses with Change IP settings.";
   const name = r.status === "only_in_netbox" ? r.netbox_interface : r.server_interface;
   if (r.status === "interface_differs") return `Move the address between interfaces on the server by hand, or record the server's interface in ${nbName}.`;
   if (!name) return `${nbName} does not say which interface the address belongs to.`;

@@ -1,13 +1,21 @@
 # Changing server configuration
 
-Lanvex can change the IPv4 configuration of one interface on a Linux server: its static
+Lanvex can change the IP configuration of one interface on a Linux server: its static IPv4
 addresses (or switching to DHCP), its default gateway, and optionally its DNS servers and search
-domains. It can also give a server VLAN networks with DHCP, from the documentation in Lanvex Core:
-see [networks.md](networks.md). Every change is previewed, approved by an administrator, applied by
+domains, its IPv6 settings and its static routes. It can also give a server VLAN networks with
+DHCP, from the documentation in Lanvex Core: see [networks.md](networks.md). Every change is previewed, approved by an administrator, applied by
 the server itself, verified, and rolled back automatically if anything fails or Lanvex loses contact.
 
-Everything else on the interface stays as it is: IPv6, routes other than the default route, MTU,
-VLAN and bridge settings, and any other key in the file.
+Everything else on the interface stays as it is: what the change does not set (IPv6 and static
+routes are left alone unless the change includes them), MTU, VLAN and bridge settings, and any other
+key in the file.
+
+| Part | Choices | Left alone when |
+|---|---|---|
+| IPv4 | Static addresses and an optional default gateway, or DHCP | Always part of a change |
+| DNS | Servers and search domains | *Also change DNS* is off |
+| IPv6 | Automatic (router advertisements and DHCPv6), static addresses with an optional gateway (link-local gateways such as `fe80::1` are fine), or link-local only | *Also change IPv6* is off |
+| Static routes | Networks through a next hop on the interface's link, IPv4 or IPv6, with an optional metric. The list replaces the interface's static routes; routes in other tables, without a next hop, or of other types (blackhole, unreachable) stay | *Also change static routes* is off |
 
 It is **off by default**, three times over: for the installation, for each server, and per change
 (approval).
@@ -31,7 +39,7 @@ NetworkManager-in-netplan. See [status.md](status.md) for what has not been test
 
 ## How a change runs
 
-1. **Prepare.** An administrator describes the interface's new IPv4 settings. Lanvex reads the server
+1. **Prepare.** An administrator describes the interface's new IP settings. Lanvex reads the server
    again, applies its own safety rules (below), and asks the helper on the server for a plan. The
    helper returns the exact file contents before and after and the commands it would run. **Nothing
    on the server changes.**
@@ -47,6 +55,11 @@ NetworkManager-in-netplan. See [status.md](status.md) for what has not been test
    - the default route is as requested, and the gateway is there: it answers ping or, if it drops
      ping (many firewalls do), at least answers ARP on the link;
    - the requested DNS servers are active on the interface (when DNS was changed);
+   - when IPv6 was changed: the static IPv6 addresses and IPv6 default route, the IPv6 gateway as above
+     (ping or the neighbour table), or, for link-local only, no other address. Automatic addresses are
+     reported but not required: a network may announce none;
+   - when routes were changed: every requested route through its next hop (and metric), and the
+     removed ones gone;
    - a host name you name resolves (optional, e.g. your NetBox).
 5. **Confirm or roll back.** If every check passes, Lanvex confirms and the helper cancels the timer:
    the change is permanent. If a check fails, Lanvex has the server restore the previous file

@@ -47,6 +47,8 @@ def test_validate_static_and_dhcp():
         "gateway": "10.0.0.1",
         "dns_servers": ["1.1.1.1"],
         "dns_search": ["example.net"],
+        "ipv6": None,  # left as they are
+        "routes": None,
     }
     dhcp = h.validate_change({"interface": "ens3", "ipv4": {"method": "dhcp"}})
     assert dhcp["method"] == "dhcp" and dhcp["addresses"] == [] and dhcp["gateway"] is None
@@ -456,7 +458,7 @@ def test_without_ping_the_arp_table_decides_or_the_check_is_skipped(monkeypatch)
     assert h.gateway_check("eth0", "10.0.0.1")["ok"] is True
     fake_tools(monkeypatch, None, "[]")
     c = h.gateway_check("eth0", "10.0.0.1")
-    assert c["ok"] is None and "not checked" not in c["detail"] and "ARP table" in c["detail"]
+    assert c["ok"] is None and "not checked" not in c["detail"] and "neighbour table" in c["detail"]
 
 
 # ---- networks: VLAN interfaces, firewalld zones and DHCP -------------------------------------------------
@@ -1003,3 +1005,234 @@ def test_taking_over_netzverwaltung_needs_all_its_networks_and_no_policy_naming_
     )
     with pytest.raises(h.Refused, match="gast-to-printer refers to zone gast.*use lx-gast"):
         h.nv_takeover(wanted, "networkmanager")
+
+
+# ---- IPv6 and static routes (helper 6) --------------------------------------------------------------------
+
+
+def v6(method="static", addresses=("2001:db8:1::5/64",), gateway="2001:db8:1::1"):
+    return {"method": method, "addresses": list(addresses), "gateway": gateway}
+
+
+def test_validate_ipv6_and_routes():
+    req = {
+        "interface": "eth0",
+        "ipv4": {"method": "static", "addresses": ["10.0.0.5/24"], "gateway": "10.0.0.1"},
+        "ipv6": {"method": "static", "addresses": ["2001:DB8:1:0::5/64"], "gateway": "fe80::1"},
+        "routes": [
+            {"to": "10.50.0.0/16", "via": "10.0.0.254", "metric": 50},
+            {"to": "2001:db8:99::/48", "via": "2001:db8:1::fe"},
+            {"to": "192.0.2.7/32", "via": "10.0.0.254"},
+        ],
+    }
+    out = h.validate_change(req)
+    assert out["ipv6"] == {"method": "static", "addresses": ["2001:db8:1::5/64"], "gateway": "fe80::1"}
+    assert out["routes"] == [
+        {"to": "10.50.0.0/16", "via": "10.0.0.254", "metric": 50},
+        {"to": "2001:db8:99::/48", "via": "2001:db8:1::fe", "metric": None},
+        {"to": "192.0.2.7/32", "via": "10.0.0.254", "metric": None},
+    ]
+    auto = h.validate_change(
+        {"interface": "eth0", "ipv4": {"method": "dhcp"}, "ipv6": {"method": "auto"}, "routes": []}
+    )
+    assert auto["ipv6"] == {"method": "auto", "addresses": [], "gateway": None} and auto["routes"] == []
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"ipv6": {"method": "manual"}}, "ipv6.method must be"),
+        ({"ipv6": v6(addresses=[])}, "at least one address"),
+        ({"ipv6": v6(addresses=["10.0.0.9/24"])}, "not an IPv6 address"),
+        ({"ipv6": v6(addresses=["fe80::5/64"])}, "cannot be assigned"),
+        ({"ipv6": v6(gateway="2001:db8:2::1")}, "neither link-local nor inside"),
+        ({"ipv6": v6(gateway="2001:db8:1::5")}, "own addresses"),
+        ({"ipv6": v6(method="auto")}, "only be set with the static method"),
+        ({"routes": [{"to": "0.0.0.0/0", "via": "10.0.0.1"}]}, "set as the gateway"),
+        ({"routes": [{"to": "10.50.0.1/16", "via": "10.0.0.1"}]}, "not a network"),
+        ({"routes": [{"to": "10.50.0.0/16", "via": "10.9.0.1"}]}, "not on any of the interface's networks"),
+        ({"routes": [{"to": "10.50.0.0/16", "via": "2001:db8:1::1"}]}, "not the same family"),
+        ({"routes": [{"to": "224.0.0.0/4", "via": "10.0.0.1"}]}, "cannot be routed"),
+        ({"routes": [{"to": "10.50.0.0/16", "via": "10.0.0.1", "metric": -1}]}, "whole number"),
+        ({"routes": [{"to": "10.50.0.0/16", "via": "10.0.0.1"}] * 2}, "listed twice"),
+        ({"routes": "10.50.0.0/16"}, "must be a list"),
+        (
+            {"ipv6": {"method": "link-local"}, "routes": [{"to": "2001:db8:9::/48", "via": "2001:db8:1::1"}]},
+            "not on any",
+        ),
+    ],
+)
+def test_validate_ipv6_and_routes_rejects(extra, message):
+    req = {"interface": "eth0", "ipv4": {"method": "static", "addresses": ["10.0.0.5/24"]}} | extra
+    with pytest.raises(h.Refused) as e:
+        h.validate_change(req)
+    assert message in e.value.message
+
+
+def test_routes_with_dhcp_are_not_checked_for_the_link():
+    out = h.validate_change(
+        {
+            "interface": "eth0",
+            "ipv4": {"method": "dhcp"},
+            "routes": [{"to": "10.50.0.0/16", "via": "10.9.0.1"}],
+        }
+    )
+    assert out["routes"][0]["via"] == "10.9.0.1"
+
+
+def test_netplan_ipv6_static_and_routes():
+    old = {
+        "addresses": ["192.0.2.10/24", "2001:db8::10/64"],
+        "dhcp6": True,
+        "gateway6": "2001:db8::1",
+        "routes": [
+            {"to": "default", "via": "192.0.2.1"},
+            {"to": "default", "via": "2001:db8::1"},
+            {"to": "10.50.0.0/16", "via": "192.0.2.254"},
+            {"to": "10.60.0.0/16", "via": "192.0.2.254", "table": 100},  # policy routing: not ours
+            {"to": "10.70.0.0/16", "scope": "link"},  # no next hop: not ours
+        ],
+        "mtu": 9000,
+    }
+    c = change(
+        addresses=["192.0.2.10/24"],
+        gateway="192.0.2.1",
+        dns_servers=None,
+        dns_search=None,
+        ipv6=v6(addresses=["2001:db8:1::5/64"], gateway="fe80::1"),
+        routes=[
+            {"to": "10.80.0.0/16", "via": "192.0.2.254", "metric": 20},
+            {"to": "2001:db8:99::/48", "via": "fe80::fe", "metric": None},
+        ],
+    )
+    new = h.edit_netplan_definition(old, c)
+    assert new == {
+        "addresses": ["192.0.2.10/24", "2001:db8:1::5/64"],
+        "dhcp6": False,
+        "routes": [
+            {"to": "10.60.0.0/16", "via": "192.0.2.254", "table": 100},
+            {"to": "10.70.0.0/16", "scope": "link"},
+            {"to": "10.80.0.0/16", "via": "192.0.2.254", "metric": 20},
+            {"to": "2001:db8:99::/48", "via": "fe80::fe"},
+            {"to": "default", "via": "192.0.2.1"},
+            {"to": "default", "via": "fe80::1"},
+        ],
+        "mtu": 9000,
+        "accept-ra": False,
+    }
+
+
+def test_netplan_ipv6_auto_and_link_local_keep_ipv4_and_routes():
+    old = {
+        "addresses": ["192.0.2.10/24", "2001:db8::10/64"],
+        "routes": [{"to": "10.50.0.0/16", "via": "192.0.2.254"}],
+    }
+    base = dict(addresses=["192.0.2.10/24"], gateway=None, dns_servers=None, dns_search=None)
+    auto = h.edit_netplan_definition(
+        old, change(**base, ipv6={"method": "auto", "addresses": [], "gateway": None})
+    )
+    assert auto == {
+        "addresses": ["192.0.2.10/24"],
+        "routes": [{"to": "10.50.0.0/16", "via": "192.0.2.254"}],
+        "dhcp6": True,
+        "accept-ra": True,
+    }
+    ll = h.edit_netplan_definition(
+        old, change(**base, ipv6={"method": "link-local", "addresses": [], "gateway": None})
+    )
+    assert ll["addresses"] == ["192.0.2.10/24"] and ll["accept-ra"] is False and "dhcp6" not in ll
+    # Neither set: IPv6 and routes exactly as they were.
+    same = h.edit_netplan_definition(old, change(**base))
+    assert same == old
+
+
+def test_keyfile_ipv6_and_routes():
+    c = change(
+        addresses=["172.31.0.12/24"],
+        gateway="172.31.0.1",
+        dns_servers=None,
+        dns_search=None,
+        ipv6=v6(addresses=["2001:db8:1::5/64", "2001:db8:1::6/64"], gateway="2001:db8:1::1"),
+        routes=[
+            {"to": "10.60.0.0/16", "via": "172.31.0.254", "metric": None},
+            {"to": "2001:db8:99::/48", "via": "2001:db8:1::fe", "metric": 10},
+        ],
+    )
+    after = h.edit_keyfile(KEYFILE, c)
+    ipv4 = after.split("[ipv4]")[1].split("[ipv6]")[0].strip().splitlines()
+    assert ipv4 == [
+        "# keep this comment",
+        "method=manual",
+        "address1=172.31.0.12/24",
+        "gateway=172.31.0.1",
+        "route1=10.60.0.0/16,172.31.0.254",
+        "dns=172.31.0.53;",  # DNS not part of this change
+    ]
+    assert after.split("[ipv6]")[1].strip().splitlines() == [
+        "method=manual",
+        "address1=2001:db8:1::5/64",
+        "address2=2001:db8:1::6/64",
+        "gateway=2001:db8:1::1",
+        "route1=2001:db8:99::/48,2001:db8:1::fe,10",
+    ]
+    assert h.nm_keyfile_routes(KEYFILE) == [{"to": "10.50.0.0/16", "via": "172.31.0.1"}]
+
+
+def test_keyfile_routes_only_and_a_profile_without_ipv6():
+    c = change(addresses=["172.31.0.12/24"], gateway=None, dns_servers=None, dns_search=None, routes=[])
+    after = h.edit_keyfile(KEYFILE, c)
+    assert "route1" not in after and after.endswith("[ipv6]\nmethod=disabled\n")  # IPv6 untouched
+    bare = "[connection]\nid=x\ntype=ethernet\n"
+    only_v4 = h.edit_keyfile(bare, change(gateway=None, dns_servers=None, dns_search=None, routes=[]))
+    assert "[ipv6]" not in only_v4  # no section created for nothing
+    with_v6 = h.edit_keyfile(
+        bare,
+        change(
+            gateway=None,
+            dns_servers=None,
+            dns_search=None,
+            ipv6={"method": "auto", "addresses": [], "gateway": None},
+        ),
+    )
+    assert with_v6.endswith("[ipv6]\nmethod=auto\n")
+
+
+def test_routes_check_compares_what_the_kernel_has(monkeypatch):
+    tables = {
+        4: [
+            {"dst": "10.50.0.0/16", "gateway": "172.31.0.254", "metric": 20},
+            {"dst": "192.0.2.7", "gateway": "172.31.0.254"},
+            {"dst": "10.70.0.0/16", "gateway": "172.31.0.254"},
+            {"dst": "172.31.0.0/24", "scope": "link"},
+        ],
+        6: [{"dst": "2001:db8:99::/48", "gateway": "2001:DB8:1::FE", "metric": 1024}],
+    }
+    monkeypatch.setattr(
+        h,
+        "interface_routes",
+        lambda iface, fam: [
+            {
+                "to": str(
+                    __import__("ipaddress").ip_network(
+                        x["dst"] if "/" in x["dst"] else x["dst"] + ("/32" if fam == 4 else "/128")
+                    )
+                ),
+                "via": str(__import__("ipaddress").ip_address(x["gateway"])) if x.get("gateway") else None,
+                "metric": x.get("metric"),
+            }
+            for x in tables[fam]
+        ],
+    )
+    wanted = [
+        {"to": "10.50.0.0/16", "via": "172.31.0.254", "metric": 20},
+        {"to": "192.0.2.7/32", "via": "172.31.0.254", "metric": None},
+        {"to": "2001:db8:99::/48", "via": "2001:db8:1::fe", "metric": None},
+    ]
+    assert h.routes_check("eth1", wanted, []) == (True, "3 static routes in place.")
+    ok, detail = h.routes_check(
+        "eth1", [dict(wanted[0], metric=30)], [{"to": "10.70.0.0/16", "via": "172.31.0.254"}]
+    )
+    assert (
+        not ok
+        and detail == "Missing: 10.50.0.0/16 via 172.31.0.254. Still there: 10.70.0.0/16 via 172.31.0.254."
+    )

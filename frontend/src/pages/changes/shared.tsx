@@ -130,6 +130,26 @@ export function BeforeAfter({ change }: { change: ChangeDetail }) {
     dnsRow("DNS servers", b, b?.dns_servers, r.dns_servers),
     dnsRow("Search domains", b, b?.dns_search, r.dns_search),
   ];
+  if (r.ipv6) {
+    const b6 = b?.ipv6;
+    const method = (m: string | undefined) => (m === "static" ? "Static" : m === "auto" ? "Automatic" : m === "link-local" ? "Link-local only" : "—");
+    rows.push(
+      ["IPv6", method(b6?.method), method(r.ipv6.method), !b6 || b6.method !== r.ipv6.method],
+      [
+        "IPv6 addresses",
+        b6 ? list([...b6.addresses, ...b6.dynamic_addresses.map((a) => `${a} (automatic)`)]) : "—",
+        r.ipv6.method === "static" ? list(r.ipv6.addresses) : <span className="text-faint">{r.ipv6.method === "auto" ? "Automatic" : "None"}</span>,
+        !b6 || b6.addresses.join() !== r.ipv6.addresses.join(),
+      ],
+      ["IPv6 gateway", b6 ? b6.gateway ?? <span className="text-faint">None</span> : "—", r.ipv6.gateway ?? <span className="text-faint">None</span>, !b6 || (b6.gateway ?? null) !== (r.ipv6.gateway ?? null)],
+    );
+  }
+  if (r.routes) {
+    const text = (x: { to: string; via: string; metric?: number | null }) => `${x.to} via ${x.via}${x.metric != null ? ` (metric ${x.metric})` : ""}`;
+    const before = b?.routes?.map(text) ?? [];
+    const after = r.routes.map(text);
+    rows.push(["Static routes", b?.routes ? list(before) : "—", list(after), before.join() !== after.join()]);
+  }
   return (
     <div className="overflow-x-auto rounded-[var(--radius-panel)] border border-line bg-surface">
       <table className="w-full text-[13px]">
