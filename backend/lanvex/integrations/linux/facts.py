@@ -131,7 +131,8 @@ class DhcpReservation(BaseModel):
 
 
 class DhcpPool(BaseModel):
-    """A pool in Lanvex's own dnsmasq file (/etc/dnsmasq.d/lanvex.conf)."""
+    """A pool in Lanvex's own dnsmasq file (/etc/dnsmasq.d/lanvex.conf) or Kea file
+    (/etc/kea/lanvex-shared-networks.json)."""
 
     interface: str
     start: str
@@ -144,7 +145,7 @@ class DhcpPool(BaseModel):
 
 
 class DhcpLease(BaseModel):
-    """An address dnsmasq gave out (its leases file)."""
+    """An address dnsmasq or Kea gave out (their lease files)."""
 
     ip: str
     mac: str

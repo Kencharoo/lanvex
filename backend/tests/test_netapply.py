@@ -1381,3 +1381,91 @@ def test_link_plan_create_and_remove(tmp_path, monkeypatch):
     (tmp_path / "links.json").write_text(h.render_links({}))
     with pytest.raises(h.Refused, match="IP settings of its own"):
         h.link_plan(h.validate_link(link_req()))
+
+
+# ---- Kea ---------------------------------------------------------------------------------------------------
+
+KEA_CONF = """// Kea as shipped, with Lanvex's networks included
+{
+  "Dhcp4": {
+    # the interfaces Kea listens on
+    "interfaces-config": { "interfaces": [ "*" ] },
+    "control-socket": { "socket-type": "unix", "socket-name": "/run/kea/kea4-ctrl-socket" },
+    /* a subnet of the administrator's own */
+    "subnet4": [ { "id": 1, "subnet": "192.0.2.0/24", "pools": [ { "pool": "192.0.2.100 - 192.0.2.200" } ] } ],
+    "shared-networks": <?include "/etc/kea/lanvex-shared-networks.json"?>,
+    "option-data": [ { "name": "domain-name", "data": "a // b # c" } ]
+  }
+}
+"""
+
+
+def test_kea_comments_and_includes_are_read_past():
+    doc = json.loads(h.strip_kea_comments(KEA_CONF))
+    assert doc["Dhcp4"]["interfaces-config"]["interfaces"] == ["*"]
+    assert doc["Dhcp4"]["shared-networks"] == []
+    assert doc["Dhcp4"]["option-data"][0]["data"] == "a // b # c"  # comment characters inside strings stay
+
+
+def test_kea_setup_and_which_dhcp_server(tmp_path, monkeypatch):
+    conf = tmp_path / "kea-dhcp4.conf"
+    conf.write_text(KEA_CONF)
+    monkeypatch.setattr(h, "KEA_CONF", str(conf))
+    monkeypatch.setattr(h, "KEA_FILE", str(tmp_path / "lanvex-shared-networks.json"))
+    monkeypatch.setattr(h, "read_manifest", lambda: {})
+    monkeypatch.setattr(h, "DNSMASQ_FILE", str(tmp_path / "lanvex.conf"))
+    monkeypatch.setattr(h, "kea_unit", lambda: "kea-dhcp4.service")
+    assert h.kea_setup() == {"unit": "kea-dhcp4.service", "included": True, "interfaces": ["*"]}
+    assert h.dhcp_server() == "kea"
+    conf.write_text(KEA_CONF.replace('<?include "/etc/kea/lanvex-shared-networks.json"?>', "[]"))
+    assert h.kea_setup()["included"] is False and h.dhcp_server() == "dnsmasq"  # not set up for Lanvex
+    monkeypatch.setattr(h, "kea_unit", lambda: None)
+    conf.write_text(KEA_CONF)
+    assert h.dhcp_server() == "dnsmasq"  # included, but Kea is not installed
+    monkeypatch.setattr(h, "kea_unit", lambda: "kea-dhcp4.service")
+    (tmp_path / "lanvex.conf").write_text("interface=vlan50\n")
+    assert h.dhcp_server() == "dnsmasq"  # Lanvex's pools are in dnsmasq already: not served twice
+
+
+def test_kea_networks():
+    pool = {
+        "interface": "vlan50",
+        "network": "192.168.50.0/24",
+        "start": "192.168.50.100",
+        "end": "192.168.50.199",
+        "lease": "12h",
+        "router": "192.168.50.1",
+        "dns": ["192.168.50.1", "9.9.9.9"],
+        "reservations": [
+            {"mac": "02:00:00:00:00:05", "ip": "192.168.50.5", "name": "nas"},
+            {"mac": "02:00:00:00:00:06", "ip": "192.168.50.6", "name": None},
+        ],
+    }
+    nets = json.loads(h.render_kea([pool]))
+    assert nets == [
+        {
+            "name": "lanvex-vlan50",
+            "interface": "vlan50",
+            "user-context": {"lanvex": h.MANAGED},
+            "subnet4": [
+                {
+                    "id": h.kea_subnet_id("vlan50"),
+                    "subnet": "192.168.50.0/24",
+                    "pools": [{"pool": "192.168.50.100 - 192.168.50.199"}],
+                    "valid-lifetime": 43200,
+                    "option-data": [
+                        {"name": "routers", "data": "192.168.50.1"},
+                        {"name": "domain-name-servers", "data": "192.168.50.1, 9.9.9.9"},
+                    ],
+                    "reservations": [
+                        {"hw-address": "02:00:00:00:00:05", "ip-address": "192.168.50.5", "hostname": "nas"},
+                        {"hw-address": "02:00:00:00:00:06", "ip-address": "192.168.50.6"},
+                    ],
+                }
+            ],
+        }
+    ]
+    assert h.kea_subnet_id("vlan50") == h.kea_subnet_id("vlan50") >= 2**30  # stable, far from 1, 2, 3…
+    assert h.kea_subnet_id("vlan50") != h.kea_subnet_id("vlan60")
+    assert h.kea_pools(h.render_kea([pool])) == {"vlan50"} and h.kea_pools("[]\n") == set()
+    assert [h.lease_seconds(x) for x in ("30m", "2d", "infinite")] == [1800, 172800, 4294967295]

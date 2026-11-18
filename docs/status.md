@@ -50,6 +50,16 @@ gateway and for routes that go, an IPv6 management address that must stay static
 NetworkManager profile's route replaced and the old one gone from the kernel, a route added on
 netplan, IPv6 static with an IPv6 route on NetworkManager where the runner's kernel has IPv6.
 
+### Kea (unreleased)
+
+Helper unit tests: Kea's configuration read past its comments and includes, whether Kea is set up for
+Lanvex, which DHCP server a server's pools go to (never both), the shared networks written (pool,
+lease time, router, DNS, fixed addresses, stable subnet IDs). Parser tests: Lanvex's Kea pools read
+after its dnsmasq file, Kea's lease file (released and declined leases left out). Lab test (CI, Debian
+12 with kea-dhcp4-server): Kea set up as docs/networks.md says, a new VLAN's pool written for Kea,
+checked with `kea-dhcp4 -t`, Kea reloaded and asked over its control socket, a real client gets its
+fixed address and Kea's lease file has it; the pool removed and that rolled back.
+
 ### Bridges and bonds on servers (unreleased)
 
 Helper unit tests: requests (names, members, modes, methods, gateways), the netplan file (members
@@ -293,7 +303,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 481 tests: 428 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 45 SSH lab (6 reading, discovery and recording; 12 changes; 27 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 6 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Backend | 488 tests: 432 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 48 SSH lab (6 reading, discovery and recording; 12 changes; 30 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 8 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora, Kea only on Debian). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
 | Frontend | Type check, 30 unit tests, production build; 13 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 reading two SNMP switches in software) |
 | Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
@@ -322,9 +332,10 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 ## Not built yet
 
-- **Kea** as an alternative DHCP server; block lists by name for the DNS filter.
+- Block lists by name for the DNS filter; DNS filters on Kea servers.
 - **More kinds of server change.** Bridges and bonds on ifupdown servers, or with the interface
-  Lanvex connects through as a member; IPv6 DNS servers; interface settings on ifupdown servers; Kea instead of dnsmasq; nftables rules for DHCP (pointed out today).
+  Lanvex connects through as a member; IPv6 DNS servers; interface settings on ifupdown servers;
+  nftables rules for DHCP (pointed out today).
 - Other switch changes (creating VLANs, port names, saving the configuration); discovery of devices no
   server or switch sees; a deployment wizard.
 - Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).

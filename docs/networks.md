@@ -85,6 +85,34 @@ servers; on ifupdown servers Lanvex manages networks only.
   networks' interfaces, now listed in Lanvex's file).
 - The choice is kept as long as Lanvex's file exists, so later changes do not flip it.
 
+## Kea instead of dnsmasq
+
+On a server that already runs Kea (`kea-dhcp4`), Lanvex can put its DHCP pools there instead. Kea's
+configuration is one file, `kea-dhcp4.conf`, so Lanvex writes its networks to a file of its own and
+Kea includes it. An administrator sets that up once:
+
+1. In `/etc/kea/kea-dhcp4.conf`, inside `"Dhcp4"`, add
+   `"shared-networks": <?include "/etc/kea/lanvex-shared-networks.json"?>,`
+   (Lanvex's networks; your own subnets stay where they are).
+2. Make Kea listen on Lanvex's VLAN interfaces: `"interfaces-config": { "interfaces": [ "*" ] }`, or
+   list them.
+3. `echo '[]' | sudo tee /etc/kea/lanvex-shared-networks.json`, then restart Kea.
+
+From then on, networks changes on that server write Kea's file (one shared network per Lanvex
+network, with its pool, lease time, router, DNS servers and fixed addresses), check it with
+`kea-dhcp4 -t` before applying, and reload Kea. After the change Lanvex checks that Kea runs and,
+through its control socket where it has one, that it serves each network; a rollback puts the file
+back and reloads Kea again.
+
+- Kea serves DHCP only. Devices get the server's address as their DNS server unless the network
+  says otherwise, so something on the server must answer DNS there (dnsmasq for DNS alone, Unbound,
+  BIND); the preview says so.
+- DNS filters and taking over from Netzverwaltung need dnsmasq, and are refused on a Kea server.
+- Pools Lanvex already serves with dnsmasq stay with dnsmasq: a network is never served twice. Remove
+  them, set up Kea, then add them again.
+- Leases appear on the server page when Kea's lease file (`/var/lib/kea/kea-leases4.csv`) is readable
+  by Lanvex's account (Debian's default; on Fedora and RHEL, `/var/lib/kea` is closed to others).
+
 ## What the server needs
 
 - NetworkManager, netplan or ifupdown manages the trunk. On ifupdown, `/etc/network/interfaces`

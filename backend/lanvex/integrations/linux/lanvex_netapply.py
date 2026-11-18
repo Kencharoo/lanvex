@@ -93,6 +93,15 @@ FILTER_DOMAIN_RE = re.compile(
 DNSMASQ_CONF = "/etc/dnsmasq.conf"
 DNSMASQ_DIR = "/etc/dnsmasq.d"
 DNSMASQ_FILE = "/etc/dnsmasq.d/lanvex.conf"
+# Kea instead of dnsmasq, on servers that run it: Lanvex writes its networks to a file of its own, which
+# kea-dhcp4.conf includes as its shared networks (set up once by an administrator, see docs/networks.md).
+KEA_CONF = "/etc/kea/kea-dhcp4.conf"
+KEA_FILE = "/etc/kea/lanvex-shared-networks.json"
+KEA_INCLUDE_RE = re.compile(
+    r"<\?include\s+\"" + re.escape("/etc/kea/lanvex-shared-networks.json") + r"\"\s*\?>"
+)
+KEA_UNITS = ("kea-dhcp4.service", "kea-dhcp4-server.service", "isc-kea-dhcp4-server.service")
+KEA_SOCKETS = ("/run/kea/kea4-ctrl-socket", "/var/run/kea/kea4-ctrl-socket", "/tmp/kea4-ctrl-socket")
 NETPLAN_LANVEX = "/etc/netplan/60-lanvex.yaml"  # the VLANs Lanvex manages on a netplan server
 IFUPDOWN_MAIN = "/etc/network/interfaces"
 IFUPDOWN_DIR = "/etc/network/interfaces.d"
@@ -2031,8 +2040,11 @@ def render_manifest(
     dnsmasq_before: dict | None = None,
     access: list | None = None,
     forward_before: str | None = None,
+    dhcp_server: str | None = None,
 ) -> str:
     doc = {"managed_by": "Lanvex", "backend": backend, "vlans": sorted(names)}
+    if dhcp_server == "kea":
+        doc["dhcp_server"] = "kea"  # Lanvex's pools are in Kea, not dnsmasq
     if dnsmasq_before is not None:
         # How dnsmasq ran before Lanvex served DHCP here, so it is left that way once Lanvex stops.
         doc["dnsmasq_before"] = dnsmasq_before
@@ -2067,6 +2079,202 @@ def choose_backend(change: dict) -> str:
         "Lanvex creates VLAN interfaces where NetworkManager, netplan or ifupdown manages their parent "
         "interface (%s); none of them does here." % ", ".join(parents),
     )
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Kea
+
+
+def kea_unit() -> str | None:
+    for unit in KEA_UNITS:
+        r = run(["systemctl", "show", "-p", "LoadState", "--value", unit], timeout=15)
+        if r.stdout.strip() == "loaded":
+            return unit
+    return None
+
+
+def strip_kea_comments(text: str) -> str:
+    """Kea's JSON with its comments (//, #, /* */) removed and its includes read as empty lists."""
+    out, i, n, in_str = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\":
+                out.append(text[i + 1 : i + 2])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+        elif c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+        elif text.startswith("//", i) or c == "#":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+        elif text.startswith("<?include", i):
+            end = text.find("?>", i)
+            out.append("[]")
+            i = n if end < 0 else end + 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def kea_setup() -> dict:
+    """Whether Kea serves DHCP here for Lanvex: installed, with Lanvex's file included, and on which
+    interfaces it listens ("*" for all)."""
+    unit = kea_unit()
+    try:
+        text = read_text(KEA_CONF)
+    except OSError:
+        return {"unit": unit, "included": False, "interfaces": None}
+    interfaces = None
+    try:
+        dhcp4 = json.loads(strip_kea_comments(text)).get("Dhcp4") or {}
+        interfaces = (dhcp4.get("interfaces-config") or {}).get("interfaces")
+    except ValueError:
+        pass
+    return {"unit": unit, "included": bool(KEA_INCLUDE_RE.search(text)), "interfaces": interfaces}
+
+
+def dhcp_server() -> str:
+    """Which DHCP server serves Lanvex's pools here: Kea once kea-dhcp4.conf includes Lanvex's file,
+    otherwise dnsmasq. Kept for as long as Lanvex serves DHCP with it."""
+    if read_manifest().get("dhcp_server") == "kea" and os.path.exists(KEA_FILE):
+        return "kea"
+    if os.path.exists(DNSMASQ_FILE):
+        return "dnsmasq"  # Lanvex's pools are in dnsmasq: they stay there, never served twice
+    setup = kea_setup()
+    return "kea" if setup["unit"] and setup["included"] else "dnsmasq"
+
+
+def lease_seconds(lease: str) -> int:
+    if lease == "infinite":
+        return 4294967295
+    return int(lease[:-1]) * {"m": 60, "h": 3600, "d": 86400}[lease[-1]]
+
+
+def kea_subnet_id(iface: str) -> int:
+    """Stable per interface, and far from the small numbers people give their own subnets."""
+    return 0x40000000 | (int(hashlib.sha256(iface.encode()).hexdigest()[:8], 16) & 0x3FFFFFFF)
+
+
+def render_kea(pools: list) -> str:
+    """Lanvex's shared networks for Kea: one per network, with its subnet, pool and fixed addresses."""
+    nets = []
+    for p in pools:
+        subnet = {
+            "id": kea_subnet_id(p["interface"]),
+            "subnet": p["network"],
+            "pools": [{"pool": "%s - %s" % (p["start"], p["end"])}],
+            "valid-lifetime": lease_seconds(p["lease"]),
+            "option-data": [
+                {"name": "routers", "data": p["router"]},
+                {"name": "domain-name-servers", "data": ", ".join(p["dns"])},
+            ],
+            "reservations": [
+                dict(
+                    {"hw-address": r["mac"], "ip-address": r["ip"]},
+                    **({"hostname": r["name"]} if r["name"] else {}),
+                )
+                for r in p["reservations"]
+            ],
+        }
+        nets.append(
+            {
+                "name": "lanvex-" + p["interface"],
+                "interface": p["interface"],
+                "user-context": {"lanvex": MANAGED},
+                "subnet4": [subnet],
+            }
+        )
+    return json.dumps(nets, indent=2) + "\n"
+
+
+def kea_pools(text: str) -> set:
+    """The interfaces Lanvex's Kea file serves."""
+    try:
+        return {n.get("interface") for n in json.loads(text) if isinstance(n, dict)} - {None}
+    except ValueError:
+        return set()
+
+
+def kea_validate(text: str) -> None:
+    """kea-dhcp4 -t on the configuration as it would be, with the candidate in place of Lanvex's file."""
+    binary = which("kea-dhcp4")
+    if not binary:
+        raise Refused("missing_tool", "kea-dhcp4 is not installed.")
+    root = tempfile.mkdtemp(prefix="lanvex-kea-")
+    try:
+        candidate = os.path.join(root, "lanvex-shared-networks.json")
+        with open(candidate, "w", encoding="utf-8") as f:
+            f.write(text)
+        main = os.path.join(root, "kea-dhcp4.conf")
+        with open(main, "w", encoding="utf-8") as f:
+            f.write(KEA_INCLUDE_RE.sub('<?include "%s"?>' % candidate, read_text(KEA_CONF)))
+        r = run([binary, "-t", main], timeout=60)
+        if r.returncode != 0:
+            raise Refused(
+                "rejected", "Kea rejected the new configuration: %s" % (r.stderr or r.stdout).strip()[-800:]
+            )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kea_command(command: str) -> dict | None:
+    """A command over Kea's control socket, where there is one; None without."""
+    import socket  # noqa: PLC0415 - only here
+
+    for path in KEA_SOCKETS:
+        if not os.path.exists(path):
+            continue
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(10)
+                s.connect(path)
+                s.sendall(json.dumps({"command": command}).encode())
+                data = b""
+                while True:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+                    try:
+                        return json.loads(data.decode())
+                    except ValueError:
+                        continue
+        except OSError:
+            continue
+    return None
+
+
+def kea_check(n: dict) -> tuple:
+    """Kea runs, and (asked over its control socket, where it has one) serves Lanvex's networks."""
+    k = n["kea"]
+    active = run(["systemctl", "is-active", k["unit"]], timeout=15).stdout.strip()
+    if not k["wanted"]:
+        return (True, "Kea serves no Lanvex network.")
+    if active != "active":
+        return (False, "%s is %s." % (k["unit"], active or "not running"))
+    answer = kea_command("config-get")
+    if answer is None:
+        return (True, "%s is running with the new configuration (checked with kea-dhcp4 -t)." % k["unit"])
+    nets = {
+        x.get("interface")
+        for x in ((answer.get("arguments") or {}).get("Dhcp4") or {}).get("shared-networks") or []
+        if isinstance(x, dict) and (x.get("user-context") or {}).get("lanvex")
+    }
+    missing = sorted(set(k["serves"]) - nets)
+    if missing:
+        return (False, "Kea runs, but does not serve %s yet." % ", ".join(missing))
+    return (True, "Kea serves %s." % ", ".join(sorted(k["serves"])))
 
 
 # What package managers leave next to a configuration file; dnsmasq's conf-dir skips these (Fedora and
@@ -2859,8 +3067,11 @@ def networks_plan(change: dict) -> dict:
     firewalld = service_state("firewalld")["active"] and bool(which("firewall-cmd"))
     # None: DHCP stays as it is. A list (possibly empty): exactly these pools.
     pools = None if change["dhcp"] is None else change["dhcp"]["pools"]
+    server = dhcp_server()
     if pools is not None:
         served = {p["interface"] for p in pools}
+    elif server == "kea":
+        served = kea_pools(read_text(KEA_FILE)) if os.path.exists(KEA_FILE) else set()
     elif os.path.exists(DNSMASQ_FILE):
         served = {
             x.split("=", 1)[1].strip()
@@ -2986,6 +3197,11 @@ def networks_plan(change: dict) -> dict:
     # DNS filters: one dnsmasq per filtered network, on Lanvex's dummy link.
     filters = dns_addresses(rules)
     filters_before = our_dns_filters()
+    if server == "kea" and (filters or takeover):
+        raise Refused(
+            "unsupported",
+            "Kea serves DHCP here; DNS filters and taking over from Netzverwaltung need dnsmasq.",
+        )
     if filters:
         clash = dns_net_clash()
         if clash:
@@ -3027,8 +3243,29 @@ def networks_plan(change: dict) -> dict:
     )
     dns_stop = sorted(n for n in filters_before if n not in filters)
 
-    dnsmasq = None
-    if pools is not None:
+    dnsmasq, kea = None, None
+    if pools is not None and server == "kea":
+        setup = kea_setup()
+        if not setup["unit"]:
+            raise Refused("missing_tool", "Kea (kea-dhcp4) is not installed.")
+        listens = setup["interfaces"] or []
+        deaf = sorted(p["interface"] for p in pools if "*" not in listens and p["interface"] not in listens)
+        if deaf:
+            raise Refused(
+                "unsupported",
+                'Kea does not listen on %s. Add %s (or "*") to interfaces-config in %s first.'
+                % (", ".join(deaf), "it" if len(deaf) == 1 else "them", KEA_CONF),
+            )
+        state = service_state(setup["unit"])
+        kea = dict(state, unit=setup["unit"], wanted=bool(pools), serves=sorted(served))
+        add(KEA_FILE, "Kea: DHCP for the Lanvex networks", render_kea(pools))
+        own_dns = sorted({d for p in pools for d in p["dns"] if d == p["router"]})
+        if own_dns:
+            warnings.append(
+                "Kea serves DHCP only: devices get %s as their DNS server, so a DNS server must answer there."
+                % ", ".join(own_dns)
+            )
+    elif pools is not None:
         if pools:
             if not dnsmasq_service():
                 raise Refused(
@@ -3174,7 +3411,7 @@ def networks_plan(change: dict) -> dict:
     # Only the rules that differ from the default (DHCP and DNS on the server, nothing else).
     access_record = [by_name[n] for n in sorted(wanted) if by_name[n] != default_rule(n)] or None
     manifest = (
-        render_manifest(backend, list(wanted), dnsmasq_before, access_record, forward_before)
+        render_manifest(backend, list(wanted), dnsmasq_before, access_record, forward_before, server)
         if wanted
         else None
     )
@@ -3210,6 +3447,15 @@ def networks_plan(change: dict) -> dict:
         and (dnsmasq["wanted"] or dnsmasq["active"])
         and not stop_dnsmasq
     )
+    if kea is None and server == "kea" and vlan_changed and served:
+        # Pools unchanged, VLANs changed: Kea finds the interfaces again when it reloads.
+        unit = kea_unit()
+        if unit:
+            kea = dict(service_state(unit), unit=unit, wanted=True, serves=sorted(served))
+    reload_kea = kea is not None and (
+        any(f["path"] == KEA_FILE for f in files) or (vlan_changed and bool(served))
+    )
+
     commands += [" ".join(shlex.quote(w) for w in ufw_rule_argv(r, delete=True)) for r in ufw_delete]
     commands += [" ".join(shlex.quote(w) for w in ufw_rule_argv(r)) for r in ufw_add]
     nft_changed = any(f["path"] == NFT_FILE for f in files)
@@ -3233,6 +3479,11 @@ def networks_plan(change: dict) -> dict:
                 "dnsmasq also serves DHCP for other configuration here (%s). Restarting it interrupts DHCP and "
                 "DNS for those networks too, for a moment; devices keep their addresses." % ", ".join(others)
             )
+    if kea is not None and kea["wanted"] and not kea["enabled"]:
+        commands.append("systemctl enable %s" % kea["unit"])
+    if reload_kea or (kea is not None and kea["wanted"] and not kea["active"]):
+        commands.insert(0, "kea-dhcp4 -t %s" % KEA_CONF)
+        commands.append("systemctl reload-or-restart %s" % kea["unit"])
     if disable_dnsmasq:
         commands.append("systemctl disable dnsmasq")
     if stop_dnsmasq:
@@ -3259,7 +3510,8 @@ def networks_plan(change: dict) -> dict:
         "warnings": warnings,
         "_write": {f["path"]: (f["after"] if f["action"] != "delete" else None) for f in files},
         "_changed": bool(files or ufw_add or ufw_delete or set_forward)
-        or (dnsmasq is not None and dnsmasq["wanted"] and not (dnsmasq["active"] and dnsmasq["enabled"])),
+        or (dnsmasq is not None and dnsmasq["wanted"] and not (dnsmasq["active"] and dnsmasq["enabled"]))
+        or (kea is not None and kea["wanted"] and not (kea["active"] and kea["enabled"])),
         # Files another tool writes that the change alters through it; backed up for a rollback.
         "_backup": [f for f in UFW_FILES if os.path.exists(f)] if (ufw_add or ufw_delete) else [],
         "_networks": {
@@ -3270,6 +3522,8 @@ def networks_plan(change: dict) -> dict:
             "disable_dnsmasq": disable_dnsmasq,
             "restart_dnsmasq": restart_dnsmasq
             or bool(dnsmasq and dnsmasq["wanted"] and not dnsmasq["active"]),
+            "kea": kea,
+            "reload_kea": reload_kea or bool(kea and kea["wanted"] and not kea["active"]),
             "up": touched,
             "created": created,
             "removed": removed,
@@ -3410,6 +3664,11 @@ def networks_apply(plan: dict) -> None:
         run(["systemctl", "disable", "dnsmasq"], timeout=30, check=True)
     if n.get("stop_dnsmasq"):
         run(["systemctl", "stop", "dnsmasq"], timeout=60, check=True)
+    k = n.get("kea")
+    if k is not None and k["wanted"] and not k["enabled"]:
+        run(["systemctl", "enable", k["unit"]], timeout=30, check=True)
+    if n.get("reload_kea"):
+        run(["systemctl", "reload-or-restart", k["unit"]], timeout=60, check=True)
     dns = n.get("dns") or {}
     for name in dns.get("start") or []:
         run(["systemctl", "enable", "lanvex-dns@" + name], timeout=30, check=True)
@@ -3473,6 +3732,10 @@ def networks_restore(state: dict) -> None:
             run(["systemctl", "restart", "dnsmasq"], timeout=60)
         else:
             run(["systemctl", "stop", "dnsmasq"], timeout=60)
+    k = n.get("kea")
+    if k is not None:
+        run(["systemctl", "enable" if k["enabled"] else "disable", k["unit"]], timeout=30)
+        run(["systemctl", "reload-or-restart" if k["active"] else "stop", k["unit"]], timeout=60)
     dns = n.get("dns") or {}
     for name in sorted(set(dns.get("filters") or {}) | set(dns.get("before") or [])):
         if name not in (dns.get("start") or []) and name not in (dns.get("stop") or []):
@@ -3656,6 +3919,9 @@ def networks_verify(st: dict) -> list:
 
         ok, detail = _wait_for(serving, 15)
         checks.append({"id": "dhcp", "label": "DHCP service (dnsmasq)", "ok": ok, "detail": detail})
+    if n.get("kea") is not None:
+        ok, detail = _wait_for(lambda: kea_check(n), 20)
+        checks.append({"id": "dhcp", "label": "DHCP service (Kea)", "ok": ok, "detail": detail})
     return checks
 
 
@@ -3839,6 +4105,7 @@ def cmd_version(_req: dict) -> dict:
             "systemd_run": bool(which("systemd-run")),
             "ping": bool(which("ping")),
             "dnsmasq": dnsmasq_service(),
+            "kea": bool(which("kea-dhcp4")),
             "firewall_cmd": bool(which("firewall-cmd")),
             "ifup": bool(which("ifup")),
             "ufw": bool(which("ufw")),
@@ -3866,6 +4133,8 @@ def plan_for(req: dict) -> tuple:
 def validate_plan(kind: str, plan: dict) -> None:
     if kind == "networks":
         dnsmasq_validate(plan["_write"].get(DNSMASQ_FILE) or "")
+        if plan["_write"].get(KEA_FILE):
+            kea_validate(plan["_write"][KEA_FILE])
         if plan["backend"] == "netplan" and plan["_write"].get(NETPLAN_LANVEX):
             netplan_validate({NETPLAN_LANVEX: plan["_write"][NETPLAN_LANVEX]})
         if plan["_write"].get(NFT_FILE):

@@ -24,6 +24,10 @@
   address, static addresses or DHCP, on NetworkManager and netplan servers; checked (the interface,
   its members, its addresses) and rolled back like any change, and removable again
   ([docs/changes.md](docs/changes.md#bridges-and-bonds)).
+- **Kea** as the DHCP server for Lanvex's networks on servers that run it: Lanvex writes its own
+  file of shared networks, which `kea-dhcp4.conf` includes (set up once), checks it with
+  `kea-dhcp4 -t`, reloads Kea, verifies over Kea's control socket and rolls back like before. Kea's
+  leases appear with dnsmasq's ([docs/networks.md](docs/networks.md#kea-instead-of-dnsmasq)).
 - **Makers from MAC addresses** on switch ports, in Discovery and in unknown-device alerts (the IEEE
   registry, through netaddr); random addresses of phones and laptops are marked as such.
 - **lanvexctl finds installations set up before it**, in any directory, by the directory their

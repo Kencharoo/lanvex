@@ -214,9 +214,10 @@ def _dhcp(results: Results) -> DhcpFacts | None:
     config, leases = results.get(Cmd.DHCP_CONFIG), results.get(Cmd.DHCP_LEASES)
     if config is None or not config.ok:
         return None
+    lease_text = leases.stdout if leases is not None and leases.ok else ""
     return DhcpFacts(
-        pools=P.parse_lanvex_dnsmasq(config.stdout),
-        leases=P.parse_dnsmasq_leases(leases.stdout) if leases is not None and leases.ok else [],
+        pools=P.parse_lanvex_dnsmasq(config.stdout) + P.parse_lanvex_kea(config.stdout),
+        leases=P.parse_dnsmasq_leases(lease_text) + P.parse_kea_leases(lease_text),
     )
 
 

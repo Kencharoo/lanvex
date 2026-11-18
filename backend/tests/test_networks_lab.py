@@ -68,6 +68,9 @@ RESET = {
     "lab-debian": (
         "for l in vlan50 vlan60; do ifdown --force $l >/dev/null 2>&1; done; "
         "rm -f /etc/network/interfaces.d/lanvex /etc/network/interfaces.d/other-vlans; "
+        # Kea back to off, with Debian's configuration (the Kea test sets it up for Lanvex).
+        "systemctl disable --now kea-dhcp4-server 2>/dev/null; rm -f /etc/kea/lanvex-shared-networks.json; "
+        "if [ -f /etc/kea/kea-dhcp4.conf.dist ]; then cp /etc/kea/kea-dhcp4.conf.dist /etc/kea/kea-dhcp4.conf; fi; "
         "systemctl enable dnsmasq 2>/dev/null; systemctl restart dnsmasq"
     ),
 }
@@ -657,3 +660,57 @@ def test_taking_over_netzverwaltung_and_giving_it_back(host: str) -> None:
         assert "192.168.50.20/24" in sh(CLIENT, "ip -4 -o address show dev eth0.50")
     finally:
         reset(host)  # Netzverwaltung's stand-in goes too
+
+
+KEA_CONF = """{
+  "Dhcp4": {
+    // Set up for Lanvex as docs/networks.md says: listening everywhere, Lanvex's networks included.
+    "interfaces-config": { "interfaces": [ "*" ] },
+    "control-socket": { "socket-type": "unix", "socket-name": "/run/kea/kea4-ctrl-socket" },
+    "lease-database": { "type": "memfile", "persist": true, "name": "/var/lib/kea/kea-leases4.csv" },
+    "shared-networks": <?include "/etc/kea/lanvex-shared-networks.json"?>
+  }
+}
+"""
+
+
+def test_kea_serves_the_pools_where_it_is_set_up(host: str) -> None:
+    if host != "lab-debian" or "kea-dhcp4" not in sh(host, "command -v kea-dhcp4 || true"):
+        pytest.skip("Kea is installed in the Debian lab host")
+    subprocess.run(
+        ["docker", "exec", "-i", host, "sh", "-c", "cat > /etc/kea/kea-dhcp4.conf"],
+        input=KEA_CONF,
+        text=True,
+        check=True,
+    )
+    sh(host, "echo '[]' > /etc/kea/lanvex-shared-networks.json && systemctl enable --now kea-dhcp4-server")
+    mac = client_mac()
+    request = networks([pool(reservations=[{"mac": mac, "ip": "192.168.50.21", "name": "lab-nm"}])])
+    plan = call(host, "plan", request)
+    by_path = {f["path"]: f for f in plan["files"]}
+    assert "/etc/dnsmasq.d/lanvex.conf" not in by_path  # Kea serves the pools, not dnsmasq
+    nets = json.loads(by_path["/etc/kea/lanvex-shared-networks.json"]["after"])
+    assert (
+        nets[0]["interface"] == "vlan50"
+        and nets[0]["subnet4"][0]["reservations"][0]["ip-address"] == "192.168.50.21"
+    )
+    assert json.loads(by_path["/etc/lanvex/networks.json"]["after"])["dhcp_server"] == "kea"
+    assert plan["commands"][0] == "kea-dhcp4 -t /etc/kea/kea-dhcp4.conf"
+    assert plan["commands"][-1] == "systemctl reload-or-restart kea-dhcp4-server.service"
+    assert any("Kea serves DHCP only" in w for w in plan["warnings"])
+
+    cid, _ = apply(host, request)
+    result = call(host, "verify", {"id": cid})
+    assert result["passed"], result["checks"]
+    assert next(c for c in result["checks"] if c["id"] == "dhcp")["detail"] == "Kea serves vlan50."
+    client_gets("192.168.50.21", host)
+    assert call(host, "confirm", {"id": cid})["state"] == "confirmed"
+    assert "192.168.50.21," in sh(host, "cat /var/lib/kea/kea-leases4.csv")
+
+    # Removing the pool and rolling that back: Kea serves it again.
+    cid, _ = apply(host, networks([]))
+    assert call(host, "verify", {"id": cid})["passed"]
+    assert json.loads(sh(host, "cat /etc/kea/lanvex-shared-networks.json")) == []
+    call(host, "rollback", {"id": cid})
+    assert json.loads(sh(host, "cat /etc/kea/lanvex-shared-networks.json"))[0]["interface"] == "vlan50"
+    assert sh(host, "systemctl is-active kea-dhcp4-server || true").strip() == "active"

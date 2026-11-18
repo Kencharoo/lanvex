@@ -451,6 +451,89 @@ def parse_networkctl_lldp(text: str) -> list[LldpNeighbor]:
 # ---- DHCP (dnsmasq) ----------------------------------------------------------------------------------
 
 
+def _lease_text(seconds: int) -> str:
+    if seconds >= 4294967295:
+        return "infinite"
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds % size == 0:
+            return f"{seconds // size}{unit}"
+    return f"{max(1, seconds // 60)}m"
+
+
+def parse_lanvex_kea(text: str) -> list[DhcpPool]:
+    """Lanvex's Kea file (shared networks as the helper writes them), when it follows dnsmasq's in `text`."""
+    start = 0 if text.startswith("[") else text.find("\n[") + 1
+    if start == 0 and not text.startswith("["):
+        return []
+    try:
+        nets = json.loads(text[start:])
+    except ValueError:
+        return []
+    out = []
+    for n in nets if isinstance(nets, list) else []:
+        for sub in (n.get("subnet4") or []) if isinstance(n, dict) else []:
+            pool = ((sub.get("pools") or [{}])[0].get("pool") or "").replace(" ", "")
+            first, _, last = pool.partition("-")
+            if not (n.get("interface") and first and last):
+                continue
+            options = {
+                o.get("name"): o.get("data") for o in sub.get("option-data") or [] if isinstance(o, dict)
+            }
+            try:
+                netmask = str(ipaddress.ip_network(sub.get("subnet")).netmask)
+            except (TypeError, ValueError):
+                netmask = None
+            out.append(
+                DhcpPool(
+                    interface=n["interface"],
+                    start=first,
+                    end=last,
+                    netmask=netmask,
+                    lease=_lease_text(int(sub["valid-lifetime"])) if sub.get("valid-lifetime") else None,
+                    router=options.get("routers"),
+                    dns=[
+                        d.strip() for d in (options.get("domain-name-servers") or "").split(",") if d.strip()
+                    ],
+                    reservations=[
+                        DhcpReservation(
+                            mac=r["hw-address"].lower(), ip=r["ip-address"], name=r.get("hostname")
+                        )
+                        for r in sub.get("reservations") or []
+                        if isinstance(r, dict) and r.get("hw-address") and r.get("ip-address")
+                    ],
+                )
+            )
+    return out
+
+
+def parse_kea_leases(text: str) -> list[DhcpLease]:
+    """Kea's memfile (kea-leases4.csv): one line per update; the last line for an address counts, and
+    a lifetime of 0 or a state other than 0 means the lease is gone."""
+    latest: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        parts = line.split(",")
+        if len(parts) < 10 or parts[0] == "address" or "." not in parts[0]:
+            continue
+        latest[parts[0]] = parts
+    out = []
+    for ip, p in latest.items():
+        if p[3] in ("", "0") or p[9] not in ("", "0") or ":" not in p[1]:
+            continue
+        try:
+            lifetime, expire = int(p[3]), int(p[4])
+        except ValueError:
+            continue
+        out.append(
+            DhcpLease(
+                ip=ip,
+                mac=p[1].lower(),
+                hostname=p[8].rstrip(".") or None,
+                expires_at=None if lifetime >= 4294967295 else datetime.fromtimestamp(expire, UTC),
+            )
+        )
+    return out
+
+
 def parse_lanvex_dnsmasq(text: str) -> list[DhcpPool]:
     """Lanvex's own dnsmasq file, in the form the helper writes it: one block per interface."""
     pools: dict[str, DhcpPool] = {}

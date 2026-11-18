@@ -445,3 +445,47 @@ def test_lanvex_dnsmasq_file_and_leases() -> None:
 def test_dhcp_is_read_only_on_networkmanager_servers() -> None:
     assert assemble(load("nm")).dhcp is not None and assemble(load("nm")).dhcp.pools == []
     assert assemble(load("netplan")).dhcp is None or assemble(load("netplan")).dhcp.pools == []
+
+
+def test_kea_pools_after_dnsmasqs_file_and_kea_leases() -> None:
+    from lanvex.integrations.linux import lanvex_netapply as h
+    from lanvex.integrations.linux import parsers as P
+
+    pool = {
+        "interface": "vlan50",
+        "network": "192.168.50.0/24",
+        "start": "192.168.50.100",
+        "end": "192.168.50.199",
+        "lease": "12h",
+        "router": "192.168.50.1",
+        "dns": ["192.168.50.1"],
+        "reservations": [{"mac": "02:00:00:00:00:05", "ip": "192.168.50.5", "name": "nas"}],
+    }
+    text = "# Managed by Lanvex.\ninterface=vlan60\ndhcp-range=set:lx-vlan60,10.6.0.10,10.6.0.20,255.255.255.0,1h\n"
+    text += h.render_kea([pool])
+    dnsmasq, kea = P.parse_lanvex_dnsmasq(text), P.parse_lanvex_kea(text)
+    assert [p.interface for p in dnsmasq] == ["vlan60"]
+    assert len(kea) == 1 and kea[0].model_dump() == {
+        "interface": "vlan50",
+        "start": "192.168.50.100",
+        "end": "192.168.50.199",
+        "netmask": "255.255.255.0",
+        "lease": "12h",
+        "router": "192.168.50.1",
+        "dns": ["192.168.50.1"],
+        "reservations": [{"mac": "02:00:00:00:00:05", "ip": "192.168.50.5", "name": "nas"}],
+    }
+    assert P.parse_lanvex_kea("") == [] and P.parse_lanvex_kea("[]\n") == []
+
+    csv = "\n".join(
+        [
+            "address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context,pool_id",
+            "192.168.50.120,02:00:00:00:00:aa,,43200,1800000000,1,0,0,laptop.,0,,0",
+            "192.168.50.121,02:00:00:00:00:bb,,43200,1800000000,1,0,0,,0,,0",
+            "192.168.50.121,02:00:00:00:00:bb,,0,1800000000,1,0,0,,0,,0",  # released since
+            "192.168.50.122,02:00:00:00:00:cc,,43200,1800000000,1,0,0,,1,,0",  # declined
+        ]
+    )
+    leases = P.parse_kea_leases(csv)
+    assert [(x.ip, x.mac, x.hostname) for x in leases] == [("192.168.50.120", "02:00:00:00:00:aa", "laptop")]
+    assert P.parse_dnsmasq_leases(csv) == []  # neither parser takes the other's lines

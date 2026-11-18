@@ -80,9 +80,12 @@ COMMANDS: dict[Cmd, str] = {
     Cmd.LLDPCLI_NEIGHBORS: _ENV + "lldpcli -f json0 show neighbors details",
     Cmd.NETWORKCTL_LLDP: _ENV + "networkctl lldp --no-pager",
     # DHCP Lanvex serves (its own dnsmasq file) and the leases dnsmasq gave out (Fedora, then Debian path).
-    Cmd.DHCP_CONFIG: _ENV + "sh -c 'cat /etc/dnsmasq.d/lanvex.conf 2>/dev/null; true'",
+    # Lanvex's DHCP pools: in dnsmasq's directory, or in Kea's (JSON, after dnsmasq's file).
+    Cmd.DHCP_CONFIG: _ENV
+    + "sh -c 'cat /etc/dnsmasq.d/lanvex.conf 2>/dev/null; cat /etc/kea/lanvex-shared-networks.json 2>/dev/null; true'",
     Cmd.DHCP_LEASES: _ENV
-    + "sh -c 'cat /var/lib/dnsmasq/dnsmasq.leases /var/lib/misc/dnsmasq.leases 2>/dev/null; true'",
+    + "sh -c 'cat /var/lib/dnsmasq/dnsmasq.leases /var/lib/misc/dnsmasq.leases /var/lib/kea/kea-leases4.csv "
+    "2>/dev/null; true'",
     # Which VLAN interfaces Lanvex's helper created here (on servers without NetworkManager profiles).
     Cmd.LANVEX_NETWORKS: _ENV + "sh -c 'cat /etc/lanvex/networks.json 2>/dev/null; true'",
     Cmd.HELPER_VERSION: _HELPER + "version",
