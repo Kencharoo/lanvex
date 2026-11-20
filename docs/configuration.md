@@ -65,6 +65,8 @@ Core; to use one, add it to the `core` service's `environment` in `docker-compos
 | `LANVEX_TRUSTED_PROXIES` | `[]` | JSON list of CIDRs whose `X-Forwarded-For` / `X-Forwarded-Proto` are believed. A proxy on the Docker host connects from the network gateway: `["172.31.250.1/32"]` with the default subnet |
 | `LANVEX_LOGIN_RATE_LIMIT` / `_WINDOW_SECONDS` | `10` / `300` | Per client IP and username |
 | `LANVEX_WRITE_RATE_LIMIT` / `_WINDOW_SECONDS` | `120` / `60` | Per user, all writes |
+| `LANVEX_LDAP_*` | — | Sign-in with Active Directory or LDAP: [sign-in.md](sign-in.md) |
+| `LANVEX_OIDC_*` | — | Single sign-on with OpenID Connect: [sign-in.md](sign-in.md) |
 
 ## Server management
 

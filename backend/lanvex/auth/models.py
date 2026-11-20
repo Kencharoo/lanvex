@@ -14,9 +14,22 @@ class Role(enum.StrEnum):
     READONLY = "readonly"
 
 
+class AuthSource(enum.StrEnum):
+    LOCAL = "local"  # a password Lanvex keeps
+    DIRECTORY = "directory"  # LDAP or Active Directory
+    SSO = "sso"  # OpenID Connect
+
+
+# Accounts that sign in elsewhere have no password in Lanvex; no Argon2 hash ever looks like this.
+NO_PASSWORD = "!external"  # noqa: S105 - a marker, not a password
+
+
 class User(TimestampMixin, Base):
     __tablename__ = "users"
-    __table_args__ = (Index("uq_users_username_lower", func.lower(text("username")), unique=True),)
+    __table_args__ = (
+        Index("uq_users_username_lower", func.lower(text("username")), unique=True),
+        Index("uq_users_external", "auth_source", "external_id", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -27,6 +40,11 @@ class User(TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auth_source: Mapped[str] = mapped_column(
+        String(16), default=AuthSource.LOCAL.value, server_default=AuthSource.LOCAL.value, nullable=False
+    )
+    # The account in the directory (its DN or objectGUID) or at the identity provider (issuer and subject).
+    external_id: Mapped[str | None] = mapped_column(String(512))
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 

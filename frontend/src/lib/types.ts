@@ -36,6 +36,13 @@ export interface User {
   is_active: boolean;
   last_login_at: string | null;
   created_at: string;
+  /** Where the account signs in: a password in Lanvex, the directory (LDAP, Active Directory), or SSO. */
+  auth_source: "local" | "directory" | "sso";
+}
+export interface SignInMethods {
+  directory: boolean;
+  /** The single sign-on button's label; null without single sign-on. */
+  sso: string | null;
 }
 export interface SessionInfo {
   user: User;

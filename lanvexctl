@@ -269,7 +269,8 @@ cmd_status() {
 
 cmd_start() { require_installed; detect_runtime; compose up -d; wait_healthy lanvex 5; }
 cmd_stop() { require_installed; detect_runtime; compose stop; }
-cmd_restart() { require_installed; detect_runtime; compose restart; wait_healthy lanvex 5; }
+# Applies changes to .env too: `up -d` recreates the containers whose settings changed, then all restart.
+cmd_restart() { require_installed; detect_runtime; compose up -d >/dev/null; compose restart; wait_healthy lanvex 5; }
 
 cmd_logs() {
   require_installed; detect_runtime

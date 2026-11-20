@@ -46,7 +46,13 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - name: OpenLDAP for the directory sign-in tests
+        working-directory: .
+        run: scripts/ldap-test-server.sh
       - run: uv run pytest -q
+        env:
+          LANVEX_TEST_LDAP_URL: ldap://localhost
+          LANVEX_TEST_LDAP_CA: ${{ github.workspace }}/.ldap-test/ca.crt
 
   frontend:
     name: Frontend

@@ -1,8 +1,8 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -100,6 +100,32 @@ class Settings(BaseSettings):
 
     trusted_proxies: list[str] = Field(default_factory=list)
 
+    # Sign-in with a directory: LDAP or Active Directory. Users sign in with their directory account;
+    # membership in one of the two groups (nested groups count on Active Directory) decides the role.
+    ldap_url: Annotated[list[str], NoDecode] = Field(default_factory=list)  # several for failover
+    ldap_type: Literal["ad", "ldap"] = "ldap"
+    ldap_starttls: bool = False
+    ldap_ca_file: str | None = None
+    ldap_bind_dn: str | None = None
+    ldap_bind_password: SecretStr | None = None
+    ldap_user_base: str | None = None
+    ldap_user_filter: str | None = None  # {username} is replaced; the default depends on the type
+    ldap_admin_group: str | None = None
+    ldap_readonly_group: str | None = None
+    ldap_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+
+    # Single sign-on with OpenID Connect (Keycloak, Entra ID, Authentik, Google Workspace, …).
+    # Callback: <LANVEX_PUBLIC_URL>/api/v1/auth/sso/callback.
+    oidc_issuer: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: SecretStr | None = None
+    oidc_scopes: str = "openid profile email"
+    oidc_username_claim: str = "preferred_username"
+    oidc_groups_claim: str = "groups"
+    oidc_admin_groups: list[str] = Field(default_factory=list)
+    oidc_readonly_groups: list[str] = Field(default_factory=list)
+    oidc_name: str = Field(default="Single sign-on", max_length=40)  # the sign-in button's label
+
     @field_validator("netbox_url", "core_upstream_url", "netbox_public_url", "core_static_dir", mode="before")
     @classmethod
     def _empty_url_is_none(cls, v: object) -> object:
@@ -130,12 +156,56 @@ class Settings(BaseSettings):
 
         return [str(ipaddress.ip_network(n, strict=False)) for n in v]
 
-    @field_validator("netbox_token", "bootstrap_admin_password", "secret_key", "smtp_password", mode="before")
+    @field_validator("ldap_url", mode="before")
+    @classmethod
+    def _ldap_urls(cls, v: object) -> object:
+        # One URL as it is, or several separated by spaces; a JSON list works too.
+        if isinstance(v, str) and not v.strip().startswith("["):
+            return v.split()
+        return v
+
+    @field_validator("ldap_url")
+    @classmethod
+    def _ldap_scheme(cls, v: list[str]) -> list[str]:
+        for url in v:
+            if not url.startswith(("ldap://", "ldaps://")):
+                raise ValueError("LANVEX_LDAP_URL must start with ldap:// or ldaps://")
+        return v
+
+    @field_validator("oidc_issuer")
+    @classmethod
+    def _issuer(cls, v: str | None) -> str | None:
+        if v is not None and v.strip() and not v.startswith(("https://", "http://")):
+            raise ValueError("LANVEX_OIDC_ISSUER must be an https:// URL")
+        return v.rstrip("/") if v and v.strip() else None
+
+    @field_validator(
+        "netbox_token",
+        "bootstrap_admin_password",
+        "secret_key",
+        "smtp_password",
+        "ldap_bind_password",
+        "oidc_client_secret",
+        mode="before",
+    )
     @classmethod
     def _empty_secret_is_none(cls, v: object) -> object:
         return None if v == "" else v
 
-    @field_validator("smtp_host", "smtp_username", "smtp_from", "public_url", mode="before")
+    @field_validator(
+        "smtp_host",
+        "smtp_username",
+        "smtp_from",
+        "public_url",
+        "ldap_ca_file",
+        "ldap_bind_dn",
+        "ldap_user_base",
+        "ldap_user_filter",
+        "ldap_admin_group",
+        "ldap_readonly_group",
+        "oidc_client_id",
+        mode="before",
+    )
     @classmethod
     def _empty_is_none(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v
@@ -146,6 +216,21 @@ class Settings(BaseSettings):
         if v is not None and not v.startswith(("http://", "https://")):
             raise ValueError("LANVEX_PUBLIC_URL must start with http:// or https://")
         return v.rstrip("/") if v else v
+
+    @property
+    def ldap_configured(self) -> bool:
+        return bool(
+            self.ldap_url and self.ldap_user_base and (self.ldap_admin_group or self.ldap_readonly_group)
+        )
+
+    @property
+    def oidc_configured(self) -> bool:
+        return bool(
+            self.oidc_issuer
+            and self.oidc_client_id
+            and self.public_url
+            and (self.oidc_admin_groups or self.oidc_readonly_groups)
+        )
 
     @property
     def smtp_configured(self) -> bool:

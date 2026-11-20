@@ -1,0 +1,51 @@
+# TEST DATA: a small school directory for tests/test_ldap_live.py (loaded by scripts/ldap-test-server.sh).
+dn: ou=people,dc=school,dc=example
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=school,dc=example
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=services,dc=school,dc=example
+objectClass: organizationalUnit
+ou: services
+
+dn: cn=lanvex,ou=services,dc=school,dc=example
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+cn: lanvex
+userPassword: svc-password
+
+dn: uid=anna,ou=people,dc=school,dc=example
+objectClass: inetOrgPerson
+uid: anna
+cn: Anna Admin
+sn: Admin
+displayName: Anna Admin
+userPassword: anna-password
+
+dn: uid=bert,ou=people,dc=school,dc=example
+objectClass: inetOrgPerson
+uid: bert
+cn: Bert Reader
+sn: Reader
+userPassword: bert-password
+
+dn: uid=carl,ou=people,dc=school,dc=example
+objectClass: inetOrgPerson
+uid: carl
+cn: Carl Student
+sn: Student
+userPassword: carl-password
+
+dn: cn=net-admins,ou=groups,dc=school,dc=example
+objectClass: groupOfNames
+cn: net-admins
+member: uid=anna,ou=people,dc=school,dc=example
+
+dn: cn=net-readers,ou=groups,dc=school,dc=example
+objectClass: posixGroup
+cn: net-readers
+gidNumber: 5001
+memberUid: bert

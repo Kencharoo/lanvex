@@ -23,6 +23,25 @@ switch over SNMPv3 after a failed test, its ports, Discovery, removing it.
 
 Not verified against real switches yet (see below).
 
+### Sign-in with a directory or single sign-on (unreleased)
+
+Against a real OpenLDAP (slapd, in CI on every push, set up by `scripts/ldap-test-server.sh`): sign-in
+through a search with Lanvex's account and a bind as the user, over STARTTLS with the certificate
+checked (a certificate from another CA is refused), roles from a `groupOfNames` and a `posixGroup`, a
+wrong password, an empty password (no anonymous bind), a name with filter characters, an account in
+neither group, Lanvex's own account refused. API tests against ldap3's in-memory directory: accounts
+made on the first sign-in, roles following the groups, `memberOf`, a local user with the same name
+signing in locally, deactivated accounts, password and role not changeable in Lanvex, the directory
+down while local users still sign in, the setup shown without secrets; the Active Directory query for
+nested groups. Single sign-on against an OpenID Connect stand-in that checks PKCE and the client
+secret: sign-in with roles from groups (also from userinfo), refused for no group, a foreign
+signature, another audience, a local user's name, a foreign state, another browser, a cancelled
+sign-in; never redirected to another site. In the browser (Playwright): single sign-on across two
+sites, the session holding afterwards.
+
+Not verified yet: Active Directory itself (its nested-group query is checked as Lanvex sends it), and
+Keycloak, Entra ID and Authentik themselves.
+
 ### Switch port VLAN changes (new in 1.3)
 
 Against the SNMP agent in the test process, which takes SET requests into its tables: a port moved to
@@ -303,8 +322,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 489 tests: 433 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 8 live NetBox, 48 SSH lab (6 reading, discovery and recording; 12 changes; 30 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 8 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora, Kea only on Debian). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
-| Frontend | Type check, 30 unit tests, production build; 13 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 reading two SNMP switches in software) |
+| Backend | 504 tests: 446 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 2 against OpenLDAP (in CI), 8 live NetBox, 48 SSH lab (6 reading, discovery and recording; 12 changes; 30 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 8 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora, Kea only on Debian). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Frontend | Type check, 30 unit tests, production build; 14 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 single sign-on across two sites; 1 reading two SNMP switches in software) |
 | Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 

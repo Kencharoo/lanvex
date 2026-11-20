@@ -34,6 +34,7 @@ export function SettingsPage() {
         <AppearanceSection />
         <AccountSection />
         {isAdmin && <UsersSection />}
+        {isAdmin && <SignInSection />}
         {isAdmin && (
           <div id="monitoring" className="scroll-mt-6">
             <MonitoringSection />
@@ -137,8 +138,19 @@ function AccountSection() {
     },
   });
   const mismatch = repeat.length > 0 && repeat !== next;
+  const role = user.role === "admin" ? "administrator" : "read-only";
+  if (user.auth_source !== "local") {
+    return (
+      <Section
+        title="Your account"
+        description={`Signed in as ${user.username}, ${role}, with ${user.auth_source === "directory" ? "the directory" : "single sign-on"}. Your password and groups are managed there.`}
+      >
+        {null}
+      </Section>
+    );
+  }
   return (
-    <Section title="Your account" description={`Signed in as ${user.username}, ${user.role === "admin" ? "administrator" : "read-only"}.`}>
+    <Section title="Your account" description={`Signed in as ${user.username}, ${role}.`}>
       <form
         className="grid max-w-md gap-4 rounded-[var(--radius-panel)] border border-line bg-surface p-4"
         onSubmit={(e) => {
@@ -160,6 +172,75 @@ function AccountSection() {
           Change password
         </Button>
       </form>
+    </Section>
+  );
+}
+
+interface SignInConfiguration {
+  directory: { type: "ad" | "ldap"; urls: string[]; encrypted: boolean; user_base: string; admin_group: string | null; readonly_group: string | null } | null;
+  sso: { name: string; issuer: string; client_id: string; callback: string; admin_groups: string[]; readonly_groups: string[] } | null;
+}
+
+function SignInSection() {
+  const conf = useQuery({ queryKey: ["auth-configuration"], queryFn: () => api<SignInConfiguration>("/auth/configuration") });
+  const test = useMutation({ mutationFn: () => api<{ ok: boolean; message: string }>("/auth/directory/test", { method: "POST" }) });
+  const d = conf.data?.directory;
+  const sso = conf.data?.sso;
+  const row = (label: string, value: React.ReactNode) => (
+    <div className="grid grid-cols-[10rem_1fr] gap-3 py-1.5 text-[13px]">
+      <dt className="text-muted">{label}</dt>
+      <dd className="min-w-0 break-words">{value}</dd>
+    </div>
+  );
+  return (
+    <Section title="Sign-in" description="Set in .env; see docs/sign-in.md.">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="rounded-[var(--radius-panel)] border border-line bg-surface p-4">
+          <p className="mb-2 flex items-center gap-2 text-[13px] font-medium">
+            Directory {d ? <Badge tone="ok">{d.type === "ad" ? "Active Directory" : "LDAP"}</Badge> : <Badge>Off</Badge>}
+          </p>
+          {d && (
+            <>
+              <dl>
+                {row("Servers", <span className="addr">{d.urls.join(", ")}</span>)}
+                {row("Users", <span className="addr">{d.user_base}</span>)}
+                {row("Administrators", <span className="addr">{d.admin_group ?? "—"}</span>)}
+                {row("Read-only", <span className="addr">{d.readonly_group ?? "—"}</span>)}
+              </dl>
+              {!d.encrypted && (
+                <Notice tone="warn" className="mt-2">
+                  Passwords cross the network unencrypted: use ldaps:// or STARTTLS.
+                </Notice>
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button size="sm" variant="secondary" onClick={() => test.mutate()} loading={test.isPending}>
+                  Test directory
+                </Button>
+                {test.data && (
+                  <span className={cn("flex items-center gap-1.5 text-[13px]", test.data.ok ? "text-ok" : "text-danger")}>
+                    {test.data.ok ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
+                    {test.data.message}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        <div className="rounded-[var(--radius-panel)] border border-line bg-surface p-4">
+          <p className="mb-2 flex items-center gap-2 text-[13px] font-medium">
+            Single sign-on {sso ? <Badge tone="ok">{sso.name}</Badge> : <Badge>Off</Badge>}
+          </p>
+          {sso && (
+            <dl>
+              {row("Provider", <span className="addr">{sso.issuer}</span>)}
+              {row("Client ID", <span className="addr">{sso.client_id}</span>)}
+              {row("Redirect URI", <span className="addr">{sso.callback}</span>)}
+              {row("Administrators", sso.admin_groups.join(", ") || "—")}
+              {row("Read-only", sso.readonly_groups.join(", ") || "—")}
+            </dl>
+          )}
+        </div>
+      </div>
     </Section>
   );
 }
@@ -198,6 +279,11 @@ function UsersSection() {
       ),
     },
     {
+      key: "source",
+      header: "Sign-in",
+      cell: (u) => (u.auth_source === "directory" ? <Badge>Directory</Badge> : u.auth_source === "sso" ? <Badge>SSO</Badge> : <span className="text-muted">Password</span>),
+    },
+    {
       key: "role",
       header: "Role",
       cell: (u) => (
@@ -205,7 +291,8 @@ function UsersSection() {
           aria-label={`Role for ${u.username}`}
           className="h-7 w-36"
           value={u.role}
-          disabled={update.isPending}
+          title={u.auth_source !== "local" ? "Set by the account's groups" : undefined}
+          disabled={update.isPending || u.auth_source !== "local"}
           onChange={(e) => update.mutate({ id: u.id, role: e.target.value as Role })}
         >
           <option value="admin">Administrator</option>

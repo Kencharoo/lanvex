@@ -21,6 +21,13 @@ const api = {
   // Configuration changes are only ever exercised against the lab containers (servers.lab / changes.lab specs).
   LANVEX_AUTOMATION_ENABLED: process.env.LANVEX_E2E_LAB === "1" ? "true" : "false",
   LANVEX_CHANGE_ROLLBACK_SECONDS: "60",
+  // Single sign-on against the TEST DOUBLE in backend/tests/oidc_idp.py (sso.spec.ts).
+  LANVEX_PUBLIC_URL: "http://127.0.0.1:15173",
+  LANVEX_OIDC_ISSUER: "http://localhost:18003",
+  LANVEX_OIDC_CLIENT_ID: "lanvex-e2e",
+  LANVEX_OIDC_CLIENT_SECRET: "e2e-client-secret",
+  LANVEX_OIDC_ADMIN_GROUPS: '["net-admins"]',
+  LANVEX_OIDC_NAME: "School account",
 };
 
 export default defineConfig({
@@ -43,6 +50,11 @@ export default defineConfig({
     {
       command: `cd ${backend} && uv run python -m tests.snmp_lab --ready 18002`,
       url: "http://127.0.0.1:18002/",
+      reuseExistingServer: false,
+    },
+    {
+      command: `cd ${backend} && uv run uvicorn tests.oidc_idp:app --host localhost --port 18003 --log-level warning`,
+      url: "http://localhost:18003/.well-known/openid-configuration",
       reuseExistingServer: false,
     },
     {

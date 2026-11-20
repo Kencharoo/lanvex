@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Sign-in with Active Directory, LDAP or single sign-on** (OpenID Connect: Keycloak, Entra ID,
+  Authentik, …). Directory accounts use the usual sign-in form, single sign-on a button of its own.
+  Groups decide the role, again at every sign-in; accounts in neither group are refused. Accounts are
+  created on their first sign-in and can be deactivated in Lanvex; local users keep working, also
+  when the directory is down. LDAPS and STARTTLS with the certificate checked; nested groups on Active
+  Directory; the code flow with PKCE, state and nonce, and the ID token checked against the
+  provider's keys. *Settings, Sign-in* shows the setup and tests the directory
+  ([docs/sign-in.md](docs/sign-in.md)).
+- `lanvexctl restart` applies changes to `.env` (it only restarted the containers before).
+
+New dependencies: ldap3 (LGPL-3.0, used unmodified as a library) for LDAP, joserfc (BSD) for ID tokens.
+
 ## 1.3.0 — 2026-11-18
 
 Changes on switches and more kinds of server change.

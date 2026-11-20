@@ -25,7 +25,7 @@ and single sign-on, installed with Lanvex) or one the user already runs.
 | `frontend/` | UI, client-side validation for fast feedback | Talk to NetBox, hold NetBox credentials |
 | `backend/lanvex/netbox` | Only module that speaks HTTP to NetBox: auth, timeouts, retries, pagination, error mapping | Business rules |
 | `backend/lanvex/ipam`, `vlans`, `devices`, `dashboard` | Domain services: validation, overlap checks, utilization, mapping NetBox payloads to Lanvex models | Raw HTTP |
-| `backend/lanvex/auth` | Local users, Argon2 hashing, server-side sessions, roles, CSRF | — |
+| `backend/lanvex/auth` | Local users, Argon2 hashing, server-side sessions, roles, CSRF; sign-in with a directory (`directory.py`: LDAP bind and group checks) and OpenID Connect (`sso.py`: code flow with PKCE, ID token checks); accounts for both made on first sign-in, their role from groups | Keep directory or provider passwords |
 | `backend/lanvex/audit` | Append-only audit trail of every write Lanvex performs | — |
 | `backend/lanvex/integrations` | Adapters declaring explicit capabilities. `linux` (SSH) reads servers and talks to the change helper; `snmp` reads switches (GET and GETBULK, v2c and v3) and writes a port's VLANs (SET, Q-BRIDGE-MIB) for an approved switch change; others plug in the same way | Run arbitrary commands; send SNMP SET outside an approved switch change |
 | `backend/lanvex/servers` | Server registry, encrypted credentials, pinned host keys, snapshots of actual state and their history, scheduled reads, comparison with NetBox, recording differences in NetBox | Write to servers |
@@ -201,6 +201,12 @@ Migrations: Alembic in `backend/alembic`.
 
 ## Security model
 
+- Sign-in: Lanvex's own users (Argon2), or a directory (LDAP bind as the user after a search with
+  Lanvex's account; LDAPS or STARTTLS with the certificate checked) or OpenID Connect (code flow with
+  PKCE; state, nonce and verifier encrypted in a ten-minute cookie; ID token signature, issuer,
+  audience, expiry and nonce checked). External accounts carry `auth_source` and `external_id` (the
+  directory's GUID or DN, the provider's issuer and subject) and no password; their role comes from
+  their groups at every sign-in.
 - Roles: `admin` (read + write NetBox objects, manage users) and `readonly`. Enforced server-side
   per endpoint via dependencies; the UI only hides what the server already refuses.
 - Sessions: random 256-bit token in an `HttpOnly`, `SameSite=Strict` cookie (`Secure` in production);

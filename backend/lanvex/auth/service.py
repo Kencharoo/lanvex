@@ -8,7 +8,8 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lanvex.auth.models import Role, Session, User
+from lanvex.auth.directory import Identity
+from lanvex.auth.models import NO_PASSWORD, AuthSource, Role, Session, User
 from lanvex.core.config import Settings
 from lanvex.core.db import utcnow
 from lanvex.core.errors import Conflict, NotFound, ValidationFailed
@@ -49,15 +50,63 @@ def constant_time_equals(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
 
 
+class SignInRefused(Exception):
+    """Signed in elsewhere, but Lanvex will not let this account in; `code` says why."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+async def find_user(db: AsyncSession, username: str) -> User | None:
+    return await db.scalar(select(User).where(func.lower(User.username) == username.strip().lower()))
+
+
 async def authenticate(db: AsyncSession, username: str, password: str) -> User | None:
-    user = await db.scalar(select(User).where(func.lower(User.username) == username.strip().lower()))
-    if user is None:
+    """A local user with this password. Directory and SSO accounts have no password here."""
+    user = await find_user(db, username)
+    if user is None or user.auth_source != AuthSource.LOCAL:
         verify_password(password, _DUMMY_HASH)
         return None
     if not verify_password(password, user.password_hash) or not user.is_active:
         return None
     if _hasher.check_needs_rehash(user.password_hash):
         user.password_hash = _hasher.hash(password)
+    return user
+
+
+async def provision(db: AsyncSession, who: Identity) -> User:
+    """The Lanvex account for someone the directory or the identity provider signed in: created on their
+    first sign-in, with role and name brought up to date on every one."""
+    user = await db.scalar(
+        select(User).where(User.auth_source == who.source.value, User.external_id == who.external_id)
+    )
+    if user is None:
+        if await find_user(db, who.username):
+            raise SignInRefused(
+                "taken",
+                f"Lanvex already has a user named {who.username}. An administrator can rename or remove it.",
+            )
+        user = User(
+            username=who.username,
+            display_name=who.display_name,
+            password_hash=NO_PASSWORD,
+            role=who.role,
+            auth_source=who.source.value,
+            external_id=who.external_id,
+        )
+        db.add(user)
+        await db.flush()
+        return user
+    if not user.is_active:
+        raise SignInRefused("disabled", "This account is deactivated in Lanvex.")
+    if user.role != who.role:
+        user.role = who.role
+    if who.display_name:
+        user.display_name = who.display_name
+    if who.username.lower() != user.username.lower() and not await find_user(db, who.username):
+        user.username = who.username  # renamed in the directory
+    await db.flush()
     return user
 
 

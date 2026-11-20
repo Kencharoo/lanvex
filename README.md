@@ -29,7 +29,7 @@ change and approved it; see below.
 | Discovery | Hosts in the servers' neighbour tables and DHCP leases with the switch port they are on, the devices on the other end of each server interface as they announce themselves over LLDP, and what switches see on their ports, compared with NetBox: missing addresses and cables can be recorded after a preview |
 | Overview | Inventory counts, most-utilized networks, addresses by status, recent changes (NetBox change log, falling back to the Lanvex audit log) |
 | Monitoring | Alerts for servers and switches that stop answering or cannot be read, drift from the documentation, DHCP pools running full, unknown devices getting a lease and failed changes; by email and webhooks (ntfy, Gotify, Slack, Discord, Teams, JSON). See [docs/monitoring.md](docs/monitoring.md) |
-| Platform | Local users with admin / read-only roles, server-side sessions, CSRF, rate limiting, append-only audit log, light and dark themes, NetBox connection checks |
+| Platform | Local users, Active Directory or LDAP, and single sign-on with OpenID Connect, with admin / read-only roles from groups ([docs/sign-in.md](docs/sign-in.md)); server-side sessions, CSRF, rate limiting, append-only audit log, light and dark themes, NetBox connection checks |
 
 **Automation** lists every server and switch change with its status. On switches Lanvex changes port VLANs only; it does not configure dedicated routers. On Linux servers it manages VLAN interfaces, DHCP, access rules and DNS filters, and takes over from Netzverwaltung (see [docs/networks.md](docs/networks.md)).
 
@@ -99,6 +99,7 @@ your NetBox.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, data flows, security model
 - [docs/core.md](docs/core.md) — Lanvex Core: what it is, sign-in and roles, backups, updates, troubleshooting
 - [docs/configuration.md](docs/configuration.md) — every setting
+- [docs/sign-in.md](docs/sign-in.md) — signing in with Active Directory, LDAP or single sign-on (OpenID Connect)
 - [docs/development.md](docs/development.md) — local setup and tests
 - [docs/operations.md](docs/operations.md) — production, NetBox token permissions, backups, troubleshooting
 - [docs/changes.md](docs/changes.md) — changing server configuration: setup, how a change runs, safety, rollback

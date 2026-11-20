@@ -30,3 +30,4 @@ dump.rdb
 # Lanvex Core source, fetched by scripts/fetch-core.sh or shipped in release archives
 /core/
 /core.new/
+.ldap-test/
