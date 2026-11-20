@@ -42,6 +42,25 @@ sites, the session holding afterwards.
 Not verified yet: Active Directory itself (its nested-group query is checked as Lanvex sends it), and
 Keycloak, Entra ID and Authentik themselves.
 
+### Server changes on ifupdown servers (unreleased)
+
+Lab tests on the Debian 12 host (CI), through the API, the change runner, real SSH and the helper
+installed through sudo: a second address and a static route with a metric on `eth1`, applied with
+ifdown and ifup, verified and confirmed, then taken back so that `/etc/network/interfaces` is byte for
+byte what Debian shipped; a gateway ifup cannot add (a second default route next to `eth0`'s) undone,
+with the file, addresses and route as before; IPv6 refused while `disable_ipv6` is set, then a static
+IPv6 address with an IPv6 route; a bridge created from a spare interface and removed, and an
+active-backup bond of two. Unit tests: the stanzas rewritten in place (extra addresses as stanzas of
+their own, routes, DNS, DHCP, IPv6 static, automatic and link-local only), files that are refused,
+sourced files, bridge and bond stanzas, members with addresses refused, `wpa-psk` redacted, and
+ifupdown 0.8's own parser (`ifup --no-act`) taking every file Lanvex writes. With ifupdown 0.8.41
+on veth interfaces: a change applied and rolled back, a bridge created, removed and created again.
+
+### The manual (unreleased)
+
+English and German, in `docs/manual`; every link and anchor checked; *Manual* in the user menu links
+the running version's copy (unit test).
+
 ### Gateway, DNS and static routes compared with the documentation (unreleased)
 
 Against Lanvex Core (NetBox 4.7.5) running locally, as its own service account with the new device
@@ -332,7 +351,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Gateway that drops ping | Accepted when it answers ARP on the link (a host ignoring ICMP echo stands in for a firewall) |
 | Lost connection | A change that cuts Lanvex off (a /32 mask on the management interface): Lanvex does not confirm, the server's own timer restores the configuration, Lanvex finds out afterwards and reports *Rolled back* |
 | Drift | A file edited after the preview is not overwritten; nothing changes |
-| Hosts that cannot take changes | ifupdown host: interface settings refused with the reason (networks only); missing sudo rule and missing Python reported distinctly; helper upload over SFTP |
+| Hosts that cannot take changes | Missing sudo rule and missing Python reported distinctly; helper upload over SFTP |
 | UI end to end | Browser test: install the helper with the commands the dialog shows, enable, prepare, review the diff, approve by typing the name, watch it apply and verify, see it under Automation and on the server page |
 | Lanvex restarts, second-admin rule, cancellation, unreachable servers, indirect connections, protected interfaces, browser confirmation, networks changes, every runner path | 42 API tests against a scripted server with a controllable clock |
 
@@ -340,8 +359,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 514 tests: 455 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 2 against OpenLDAP (in CI), 9 live NetBox (run locally against Lanvex Core 1.4.0.dev0 on NetBox 4.7.5), 48 SSH lab (6 reading, discovery and recording; 12 changes; 30 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 8 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora, Kea only on Debian). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
-| Frontend | Type check, 33 unit tests, production build; 14 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 single sign-on across two sites; 1 reading two SNMP switches in software) |
+| Backend | 532 tests: 468 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 2 against OpenLDAP (in CI), 9 live NetBox (run locally against Lanvex Core 1.4.0.dev0 on NetBox 4.7.5), 53 SSH lab (6 reading, discovery and recording; 17 changes, 5 of them on Debian 12 with ifupdown; 30 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 8 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora, Kea only on Debian). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Frontend | Type check, 34 unit tests, production build; 14 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 single sign-on across two sites; 1 reading two SNMP switches in software) |
 | Lanvex Core | Its own 22 tests (permissions of the service account, including changing devices but not adding or deleting them; the custom fields for DHCP and access rules; sign-in through Lanvex; its CSRF cookie for scripts), run for 1.4.0.dev0 |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
@@ -352,8 +371,7 @@ with the helper installed through sudo exactly as documented. Only lab container
 | Switches from real vendors | The tests use agents built from what the MIBs specify; real switches differ (LLDP port numbering, VLAN tables, Cisco's per-VLAN contexts, AES-192/256 variants, slow agents on large MAC tables) | Add a switch of each kind at hand and compare its page with the switch's own view |
 | VLAN changes on real switches | The test agent takes any SET it is given; real switches may refuse some (a VLAN's whole port list in one request, PVID before membership), keep the change only until restart, or need a write view set up | Allow changes on a test switch, move an unused port and back, and compare with the switch's own view |
 | Access rules with real users | The lab's client is a container; a phone or laptop on a real VLAN was not used | Allow a network the Internet on a test server and try it |
-| Reading and interface changes on Debian | The Debian 12 lab host (0.8) runs the networks tests through the helper; Lanvex's SSH reads and interface changes run on the Ubuntu hosts | Read a Debian server with Lanvex before relying on it |
-| Interface changes on Fedora; networks on other versions | Networks are tested on Fedora 44, Ubuntu 24.04 and Debian 12; interface changes on the Ubuntu hosts. Older netplan (Ubuntu 20.04/22.04), ifupdown and NetworkManager versions, RHEL, and Ubuntu with NetworkManager for networks are untested | Run a change on a test server of each kind before relying on it |
+| Interface changes on Fedora; networks on other versions | Networks are tested on Fedora 44, Ubuntu 24.04 and Debian 12; interface changes on the Ubuntu hosts and Debian 12. Older netplan (Ubuntu 20.04/22.04), ifupdown and NetworkManager versions, RHEL, and Ubuntu with NetworkManager for networks are untested | Run a change on a test server of each kind before relying on it |
 | Changes on real hardware and real routers | The lab is containers on one bridge | Try on a non-critical server first, with console access at hand |
 | A networks change through Lanvex against a live Lanvex Core, end to end | The CI lab has no Lanvex Core; the pieces were verified separately (helper on Fedora in CI, Lanvex Core locally, the flow with stand-ins) | A network on KlassenServer or a test server, from Add network to a device with a lease |
 | Netzverwaltung and Lanvex side by side on KlassenServer | Lanvex leaves `nv-` files, Netzverwaltung's profiles and zones alone (tested with stand-ins on Fedora), but not with Netzverwaltung itself | Add a Lanvex network on a free VLAN there, then run netzverwaltung-apply and check both still serve DHCP |
@@ -370,9 +388,8 @@ with the helper installed through sudo exactly as documented. Only lab container
 ## Not built yet
 
 - Block lists by name for the DNS filter; DNS filters on Kea servers.
-- **More kinds of server change.** Bridges and bonds on ifupdown servers, or with the interface
-  Lanvex connects through as a member; IPv6 DNS servers; interface settings on ifupdown servers;
-  nftables rules for DHCP (pointed out today).
+- **More kinds of server change.** Bridges and bonds with the interface Lanvex connects through as a
+  member; IPv6 DNS servers; DHCPv6 on ifupdown servers; nftables rules for DHCP (pointed out today).
 - Other switch changes (creating VLANs, port names, saving the configuration); discovery of devices no
   server or switch sees; a deployment wizard.
 - Editing prefix tenant and scopes other than a site, and IP tenant/role/NAT; device creation.
