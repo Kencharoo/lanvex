@@ -14,7 +14,7 @@ import { useSession } from "@/app/session";
 import { useNetBoxLabel } from "@/lib/system";
 import type { ChangeDetail, Comparison, Server } from "@/lib/types";
 import { absoluteTime, relativeTime } from "@/lib/utils";
-import { differs, RecordDialog } from "../servers/record";
+import { differs, RecordDialog, settingLabel } from "../servers/record";
 import { BeforeAfter, CheckList, ChangeStatusBadge, DiffView, Timeline, isActive } from "./shared";
 
 const BACKEND_LABEL: Record<string, string> = { netplan: "netplan", networkmanager: "NetworkManager", ifupdown: "ifupdown" };
@@ -199,7 +199,11 @@ function Documentation({ change: c }: { change: ChangeDetail }) {
     );
   }
   const rows = cmp.rows.filter((r) => differs(r) && (r.server_interface === c.interface || r.netbox_interface === c.interface));
-  if (rows.length === 0) {
+  const dnsChanged = c.kind === "interface_ipv4" && c.request.dns_servers != null;
+  const settings = (cmp.settings ?? []).filter(
+    (r) => differs(r) && (r.interface === c.interface || (dnsChanged && (r.kind === "dns_servers" || r.kind === "dns_search"))),
+  );
+  if (rows.length === 0 && settings.length === 0) {
     return <Notice title={`${nbName} matches the server`} />;
   }
   return (
@@ -213,9 +217,16 @@ function Documentation({ change: c }: { change: ChangeDetail }) {
           </Button>
         }
       >
-        {c.interface}: {rows.map((r) => r.server_address ?? r.netbox_address).join(", ")}
+        {c.interface}: {[...rows.map((r) => r.server_address ?? r.netbox_address), ...settings.map(settingLabel)].join(", ")}
       </Notice>
-      <RecordDialog server={s} rows={cmp.rows} initial={rows.map((r) => r.address)} open={open} onClose={() => setOpen(false)} />
+      <RecordDialog
+        server={s}
+        rows={cmp.rows}
+        settings={cmp.settings}
+        initial={{ addresses: rows.map((r) => r.address), settings: settings.map((r) => r.id) }}
+        open={open}
+        onClose={() => setOpen(false)}
+      />
     </>
   );
 }

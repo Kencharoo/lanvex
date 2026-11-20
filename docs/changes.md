@@ -91,6 +91,42 @@ directions:
   length), starting from the interface's current addresses. It then goes through the usual preview,
   approval and verification. Offered for static IPv4 addresses, when changes are set up for the server.
 
+### Gateway, DNS and static routes
+
+The comparison also covers the server's default gateway, DNS servers, search domains and static
+routes, against what NetBox documents for them:
+
+| Setting | Documented as |
+|---|---|
+| Default gateway | The gateway of the prefix the server's gateway is in: the address tagged `lanvex-gateway` (set under *IP Addresses* in Lanvex, or by tagging the address in NetBox) |
+| DNS servers, search domains | `dns_servers` and `dns_search` under the key `lanvex` of the device's or virtual machine's config context |
+| Static routes | `routes` under the same key: a list of `{"to": …, "via": …}` |
+
+```json
+{
+  "lanvex": {
+    "dns_servers": ["10.10.0.53", "10.10.0.54"],
+    "dns_search": ["school.example"],
+    "routes": [{"to": "10.50.0.0/16", "via": "10.10.0.254"}]
+  }
+}
+```
+
+Settings shared by many servers go into one config context in NetBox (assigned by site, role, tag, …);
+a server's own go into its local config context data. DNS servers are compared in order (the first is
+asked first); routes by destination and next hop. Routes the server got from DHCP or a routing daemon
+are not static routes and are left out. What nothing documents is shown as *Not documented* but raises
+no drift alert.
+
+Both directions work as for addresses:
+
+- **Record in NetBox…** makes the server's gateway the prefix's gateway (the old gateway's address is
+  kept, without the tag), and writes DNS servers, search domains and routes into the device's local
+  config context data under `lanvex`. The rest of the local context data is kept. Local context data
+  overrides config contexts, so this also records a server that deliberately differs from its site.
+- **Change the server to match…** opens the change form with the documented gateway, DNS servers or
+  routes filled in, on the interface they belong to.
+
 ### When Lanvex loses contact
 
 If the change cuts the connection Lanvex relies on, verification cannot reach the server. Lanvex

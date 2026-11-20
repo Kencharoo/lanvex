@@ -400,9 +400,26 @@ export interface ComparisonRow {
   recorded_elsewhere: string | null;
 }
 
+/** A network setting compared with the documentation: the gateway of a prefix, or the device's config
+ * context (key "lanvex": dns_servers, dns_search, routes). */
+export interface SettingRow {
+  id: string;
+  kind: "gateway" | "dns_servers" | "dns_search" | "route";
+  status: "match" | "differs" | "only_on_server" | "only_documented";
+  /** The family ("IPv4") for a gateway, the destination for a route. */
+  key: string;
+  interface: string | null;
+  /** A route's next hop, the gateway, or DNS servers and domains, comma-separated. */
+  server: string | null;
+  documented: string | null;
+  prefix: string | null;
+  prefix_id: number | null;
+}
+
 export interface RecordAction {
   address: string | null;
-  kind: "create_interface" | "create" | "assign" | "update_mask" | "move" | "unassign";
+  setting?: string | null;
+  kind: "create_interface" | "create" | "assign" | "update_mask" | "move" | "unassign" | "gateway" | "settings";
   text: string;
   problem: string | null;
 }
@@ -490,6 +507,8 @@ export interface Comparison {
   snapshot_taken_at: string | null;
   rows: ComparisonRow[];
   counts: Record<string, number>;
+  settings: SettingRow[];
+  documented_settings: { dns_servers?: unknown; dns_search?: unknown; routes?: unknown } | null;
 }
 
 export interface SystemInfo {

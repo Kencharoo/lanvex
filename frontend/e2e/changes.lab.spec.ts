@@ -137,6 +137,15 @@ test("install the helper, prepare, approve and apply an address change, verified
   await expect(page.getByText("Recorded in NetBox")).toBeVisible();
   await expect(cmp.getByText("All 3 addresses match.")).toBeVisible();
   expect(br0()).toEqual(["10.11.0.1/24", "10.11.0.2/24"]); // documentation only: the server is unchanged
+
+  // Its DNS settings are not documented yet; recording them writes the device's config context.
+  await expect(cmp.getByText(/^Gateway, DNS and static routes: \d differences?\.$/)).toBeVisible();
+  await expect(cmp.getByRole("row", { name: /DNS servers.*Not documented/ })).toBeVisible();
+  await cmp.getByRole("button", { name: "Record settings in NetBox…" }).click();
+  const recSettings = page.getByRole("dialog", { name: "Record in NetBox" });
+  await expect(recSettings.getByText(/^Record DNS servers .+ for kob-srv-01$/)).toBeVisible();
+  await recSettings.getByRole("button", { name: /^Make \d updates?$/ }).click();
+  await expect(cmp.getByText("Gateway, DNS and static routes match.")).toBeVisible();
   await page.goto(changeUrl);
   await expect(page.getByText("NetBox matches the server")).toBeVisible();
   await page.getByRole("link", { name: "Open server" }).click();

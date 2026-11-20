@@ -315,11 +315,12 @@ async def record_in_netbox(
     _: AdminUser,
     audit: Audit,
 ) -> RecordPlan:
-    """Record what the server has in NetBox, for the comparison rows picked. Without a token this only
-    previews; with the preview's token it applies that exact plan, or refuses if the plan changed."""
+    """Record what the server has in NetBox, for the comparison rows picked (addresses, and settings by
+    their ids). Without a token this only previews; with the preview's token it applies that exact plan,
+    or refuses if the plan changed."""
     svc = _svc(request, db, settings)
     s = await svc.get(server_id)
-    recorder, plan, steps = await svc.record_plan(s, body.addresses)
+    recorder, plan, steps = await svc.record_plan(s, body.addresses, body.settings)
     if body.token is None:
         return plan
     if body.token != plan.token:

@@ -1,7 +1,7 @@
 import re
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -258,6 +258,22 @@ class ComparisonRow(ApiModel):
     )
 
 
+class SettingRow(ApiModel):
+    """A network setting the server has, compared with the documentation: a default gateway (with the
+    gateway documented for its prefix), DNS servers, search domains, or a static route (with the
+    device's config context, key "lanvex")."""
+
+    id: str  # what to name when recording it: gateway:<next hop>, dns_servers, dns_search, route:<to>
+    kind: Literal["gateway", "dns_servers", "dns_search", "route"]
+    status: Literal["match", "differs", "only_on_server", "only_documented"]
+    key: str  # what identifies it: the family for a gateway, the destination for a route
+    interface: str | None = None
+    server: str | None = None  # a route's next hop; the gateway; DNS servers and domains, comma-separated
+    documented: str | None = None
+    prefix: str | None = None  # gateway: the documented prefix the server's gateway is in
+    prefix_id: int | None = None
+
+
 class Comparison(ApiModel):
     linked: bool
     netbox: NetBoxRef | None
@@ -265,3 +281,6 @@ class Comparison(ApiModel):
     snapshot_taken_at: datetime | None
     rows: list[ComparisonRow]
     counts: dict[str, int]
+    settings: list[SettingRow] = []
+    # The device's documented settings (config context "lanvex"); None when it documents none.
+    documented_settings: dict[str, Any] | None = None

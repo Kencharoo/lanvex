@@ -14,7 +14,7 @@ from lanvex.monitoring.models import Severity
 from lanvex.monitoring.schemas import MonitoringSettings
 from lanvex.networks.schemas import NetworksView
 from lanvex.servers.models import ConnectionStatus
-from lanvex.servers.schemas import Comparison
+from lanvex.servers.schemas import Comparison, SettingRow
 
 # Alerts about events rather than conditions: they end when acknowledged (or, for unknown devices,
 # when the device is documented), and each is reported once per server or switch.
@@ -134,6 +134,16 @@ def drift(
                 continue
             where = f" ({iface})" if iface else ""
             lines.append(f"{r.address}{where}: {ADDRESS_DRIFT.get(r.status, r.status)}")
+        # Only what contradicts the documentation: a setting nothing documents is no alert, but a route
+        # missing from a documented list of routes is.
+        routes_listed = isinstance((comparison.documented_settings or {}).get("routes"), list)
+        for st in comparison.settings:
+            contradicts = st.status in ("differs", "only_documented") or (
+                st.kind == "route" and st.status == "only_on_server" and routes_listed
+            )
+            if not contradicts or _ignored(st.interface, cfg.drift_ignore_interfaces):
+                continue
+            lines.append(_setting_line(st))
     if view is not None and view.linked and view.supported:
         for n in view.networks:
             if n.status in NETWORK_DRIFT:
@@ -150,6 +160,20 @@ def drift(
     return [
         Finding("drift", "", Severity.WARNING, f"{server} differs from its documentation ({count})", lines)
     ]
+
+
+def _setting_line(st: SettingRow) -> str:
+    if st.kind == "gateway":
+        where = f" ({st.interface})" if st.interface else ""
+        return f"Default gateway {st.server}{where}: documented gateway of {st.prefix} is {st.documented}"
+    if st.kind == "route":
+        if st.status == "only_documented":
+            return f"Route to {st.key} via {st.documented}: documented, not on the server"
+        if st.status == "only_on_server":
+            return f"Route to {st.key} via {st.server}: on the server, not documented"
+        return f"Route to {st.key}: via {st.server}, documented via {st.documented}"
+    name = "DNS servers" if st.kind == "dns_servers" else "Search domains"
+    return f"{name}: {st.server or 'none'}, documented {st.documented or 'none'}"
 
 
 def pool_usage(server: str, facts: HostFacts, threshold: int, now: datetime) -> list[Finding]:

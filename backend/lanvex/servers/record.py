@@ -11,6 +11,13 @@ Planned per comparison result:
 - only in NetBox: unassign the record (it stays in NetBox, so nothing is lost).
 - prefix length differs: correct the record's prefix length.
 - interface differs: move the record to the server's interface.
+
+And for the network settings picked (servers/settings_drift.py):
+- default gateway: make the server's gateway the gateway of the documented prefix it is in.
+- DNS servers, search domains, static routes: write what the server has into the device's own local
+  config context data, key "lanvex" (the rest of it is kept). Local context data overrides config
+  contexts, so this records the server's own settings also where a site-wide config context documents
+  others.
 """
 
 import hashlib
@@ -18,30 +25,42 @@ import ipaddress
 import json
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from lanvex.core.errors import Conflict, LanvexError, ValidationFailed
 from lanvex.integrations.linux.facts import HostFacts
 from lanvex.netbox.client import NetBoxClient
 from lanvex.schemas import ApiModel
+from lanvex.servers import settings_drift
 from lanvex.servers.models import Server
-from lanvex.servers.schemas import ComparisonRow, NetBoxRef
+from lanvex.servers.schemas import ComparisonRow, NetBoxRef, SettingRow
 
-ActionKind = Literal["create_interface", "create", "assign", "update_mask", "move", "unassign"]
+ActionKind = Literal[
+    "create_interface", "create", "assign", "update_mask", "move", "unassign", "gateway", "settings"
+]
+SETTING_NAMES = {"dns_servers": "DNS servers", "dns_search": "search domains"}
 
 DEVICE_INTERFACE_TYPES = {"bridge": ("bridge", "Bridge"), "bond": ("lag", "Link aggregation group")}
 
 
 class RecordAction(ApiModel):
     address: str | None  # the comparison row (host address) this belongs to; None for interfaces
+    setting: str | None = None  # or the setting row's id
     kind: ActionKind
     text: str
     problem: str | None = None  # set when this cannot be done; the rest of the plan still can
 
 
 class RecordRequest(ApiModel):
-    addresses: list[str] = Field(min_length=1, max_length=200)
+    addresses: list[str] = Field(default_factory=list, max_length=200)
+    settings: list[str] = Field(default_factory=list, max_length=200)  # setting rows' ids
     token: str | None = None  # the preview's token; without it nothing is written
+
+    @model_validator(mode="after")
+    def _something(self) -> "RecordRequest":
+        if not self.addresses and not self.settings:
+            raise ValueError("Pick at least one difference to record.")
+        return self
 
 
 class RecordPlan(ApiModel):
@@ -67,13 +86,23 @@ class Recorder:
         self.iface_type = "virtualization.vminterface" if self.vm else "dcim.interface"
         self.where = target.name or f"#{target.object_id}"
 
-    async def plan(self, rows: list[ComparisonRow], addresses: list[str]) -> tuple[RecordPlan, list[_Step]]:
+    async def plan(
+        self,
+        rows: list[ComparisonRow],
+        addresses: list[str],
+        setting_rows: list[SettingRow] | None = None,
+        settings: list[str] | None = None,
+    ) -> tuple[RecordPlan, list[_Step]]:
         by_address = {r.address: r for r in rows}
         key = "virtual_machine_id" if self.vm else "device_id"
-        interfaces = {
-            i["name"]: i["id"]
-            for i in await self.nb.list_all(self.iface_path, {key: self.s.netbox_object_id}, cap=5000)
-        }
+        interfaces = (
+            {
+                i["name"]: i["id"]
+                for i in await self.nb.list_all(self.iface_path, {key: self.s.netbox_object_id}, cap=5000)
+            }
+            if addresses
+            else {}
+        )
         parent: dict[str, Any] | None = None
         steps: list[_Step] = []
         new_interfaces: set[str] = set()
@@ -253,7 +282,10 @@ class Recorder:
                     )
                 )
 
-        # Interfaces first, then addresses in the order picked.
+        if settings:
+            steps += await self._plan_settings(setting_rows or [], settings)
+
+        # Interfaces first, then addresses and settings in the order picked.
         steps.sort(key=lambda st: st.action.kind != "create_interface")
         actions = [st.action for st in steps]
         return RecordPlan(
@@ -262,6 +294,98 @@ class Recorder:
 
     def _blocked(self, host: str, kind: ActionKind, text: str, problem: str) -> _Step:
         return _Step(RecordAction(address=host, kind=kind, text=text, problem=problem), "", "", None)
+
+    async def _plan_settings(self, rows: list[SettingRow], picked: list[str]) -> list[_Step]:
+        from lanvex.ipam import addressing as addr
+        from lanvex.ipam.prefixes import PREFIXES, PrefixService, to_prefix
+
+        by_id = {r.id: r for r in rows}
+        steps: list[_Step] = []
+        path = (
+            f"{'virtualization/virtual-machines/' if self.vm else 'dcim/devices/'}{self.s.netbox_object_id}/"
+        )
+        obj: dict[str, Any] | None = None
+        local: dict[str, Any] = {}
+        lanvex: dict[str, Any] = {}
+        routes: list[dict[str, str]] | None = None
+
+        def blocked(sid: str, kind: ActionKind, text: str, problem: str) -> _Step:
+            return _Step(
+                RecordAction(address=None, setting=sid, kind=kind, text=text, problem=problem), "", "", None
+            )
+
+        for sid in dict.fromkeys(picked):
+            r = by_id.get(sid)
+            if r is None:
+                steps.append(
+                    blocked(
+                        sid, "settings", f"Record {sid}", "It no longer differs. Review the comparison again."
+                    )
+                )
+                continue
+            if r.status == "match":
+                continue
+            action = RecordAction(address=None, setting=sid, kind="settings", text="")
+            if r.kind == "gateway":
+                assert r.prefix and r.prefix_id is not None and r.server
+                action.kind = "gateway"
+                ps = PrefixService(self.nb)
+                p = to_prefix(await self.nb.get(f"{PREFIXES}{r.prefix_id}/"))
+                gw = f"{r.server}/{addr.parse_network(p.prefix).prefixlen}"
+                old = await ps.find_gateway(p)
+                action.text = (
+                    f"Make {r.server} the gateway of {p.prefix} (instead of {r.documented})"
+                    if r.documented
+                    else f"Record {r.server} as the gateway of {p.prefix}"
+                )
+                problem = addr.address_in_prefix(
+                    addr.parse_interface(gw), addr.parse_network(p.prefix), p.is_pool
+                )
+                if problem:
+                    action.problem = problem
+                    steps.append(_Step(action, "", "", None))
+                    continue
+                body = {"prefix_id": p.id, "gateway": gw, "clear": old.ip_address_id if old else None}
+                steps.append(_Step(action, "gateway", f"ipam/prefixes/{p.id}/", body))
+                continue
+
+            if obj is None:
+                obj = await self.nb.get(path)
+                raw = obj.get("local_context_data")
+                local = dict(raw) if isinstance(raw, dict) else {}
+                own = local.get(settings_drift.KEY)
+                lanvex = dict(own) if isinstance(own, dict) else {}
+                routes = settings_drift.documented_routes(
+                    settings_drift.documented(obj.get("config_context"))
+                )
+            if r.kind in SETTING_NAMES:
+                values = [v.strip() for v in (r.server or "").split(",") if v.strip()]
+                lanvex[r.kind] = values
+                name = SETTING_NAMES[r.kind]
+                was = f" (instead of {r.documented})" if r.documented else ""
+                action.text = (
+                    f"Record {name} {r.server} for {self.where}{was}"
+                    if values
+                    else f"Record that {self.where} has no {name}{was}"
+                )
+            else:  # a static route
+                current = [x for x in (routes or []) if x["to"] != r.key]
+                if r.server:
+                    current.append({"to": r.key, "via": r.server})
+                    current.sort(key=lambda x: settings_drift._sort_key(x["to"]))
+                    action.text = f"Record the route to {r.key} via {r.server} for {self.where}" + (
+                        f" (instead of via {r.documented})" if r.documented else ""
+                    )
+                else:
+                    action.text = (
+                        f"Remove the route to {r.key} via {r.documented} from {self.where}'s documentation"
+                    )
+                routes = current
+                lanvex["routes"] = current
+            # Each write carries everything recorded so far, so the documentation is whole after each.
+            body = {"local_context_data": {**local, settings_drift.KEY: dict(lanvex)}}
+            steps.append(_Step(action, "patch", path, body))
+        return steps
 
     async def apply(self, plan: RecordPlan, steps: list[_Step]) -> RecordPlan:
         created: dict[str, int] = {}
@@ -274,7 +398,9 @@ class Recorder:
             if isinstance(ref, str):
                 body["assigned_object_id"] = created[ref.removeprefix("interface:")]
             try:
-                if st.method == "post":
+                if st.method == "gateway":
+                    await self._gateway(body)
+                elif st.method == "post":
                     obj = await self.nb.post(st.path, body)
                     if st.action.kind == "create_interface":
                         created[body["name"]] = obj["id"]
@@ -285,6 +411,16 @@ class Recorder:
                 break
             plan.done.append(st.action)
         return plan
+
+    async def _gateway(self, body: dict[str, Any]) -> None:
+        from lanvex.ipam.prefixes import PREFIXES, PrefixService, to_prefix
+
+        ps = PrefixService(self.nb)
+        await ps.set_gateway(
+            to_prefix(await self.nb.get(f"{PREFIXES}{body['prefix_id']}/")), str(body["gateway"])
+        )
+        if body.get("clear"):  # after: if setting the new one fails, the old one is still documented
+            await ps.clear_gateway(int(body["clear"]))
 
 
 def _token(target: NetBoxRef, actions: list[RecordAction], steps: list[_Step]) -> str:

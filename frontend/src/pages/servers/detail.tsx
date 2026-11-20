@@ -13,10 +13,10 @@ import { Badge, EmptyState, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrig
 import { useSession } from "@/app/session";
 import { ChangesSection } from "./changes-section";
 import { NetworksSection } from "./networks-section";
-import { changeSeedFor, differs, RecordDialog, type ChangeSeed } from "./record";
+import { changeSeedFor, differs, RecordDialog, settingLabel, settingSeedFor, type ChangeSeed } from "./record";
 import { api, errorMessage } from "@/lib/api";
 import { fieldError } from "@/lib/hooks";
-import type { ChangeReadiness, Comparison, ComparisonRow, HostFacts, HostInterface, HostKeyScan, HistoryEntry, HostRoute, NetBoxRef, Server, Snapshot } from "@/lib/types";
+import type { ChangeReadiness, Comparison, ComparisonRow, SettingRow, HostFacts, HostInterface, HostKeyScan, HistoryEntry, HostRoute, NetBoxRef, Server, Snapshot } from "@/lib/types";
 import { absoluteTime, cn, relativeTime } from "@/lib/utils";
 import {
   ConnectionBadge,
@@ -464,9 +464,11 @@ function ComparisonSection({
 }) {
   const nbName = useNetBoxLabel();
   const c = q.data;
-  const [recordFor, setRecordFor] = React.useState<string[] | null>(null);
+  const [recordFor, setRecordFor] = React.useState<{ addresses: string[]; settings: string[] } | null>(null);
   const fixable = !!(isAdmin && c?.linked);
   const differing = (c?.rows ?? []).filter(differs);
+  const settingsDiffering = (c?.settings ?? []).filter(differs);
+  const routesDocumented = Array.isArray(c?.documented_settings?.routes);
   const link = useMutation({
     mutationFn: (ref: { object_type: string; object_id: number } | null) =>
       api<Server>(`/servers/${server.id}`, { method: "PATCH", body: ref ? { netbox: ref } : { unlink_netbox: true } }),
@@ -526,7 +528,7 @@ function ComparisonSection({
               </Button>
             </MenuTrigger>
             <MenuContent align="end" className="max-w-80">
-              <MenuItem onSelect={() => setRecordFor([r.address])}>
+              <MenuItem onSelect={() => setRecordFor({ addresses: [r.address], settings: [] })}>
                 <BookCheck /> Record in {nbName}…
               </MenuItem>
               <MenuItem disabled={!!why} onSelect={() => typeof seed !== "string" && onPrepareChange(seed)}>
@@ -542,7 +544,7 @@ function ComparisonSection({
   return (
     <Section
       title={`Documented in ${nbName} vs. on the server`}
-      description="Addresses, without loopback and link-local"
+      description="Addresses (without loopback and link-local), gateway, DNS and static routes"
       actions={
         c?.linked && c.netbox ? (
           <span className="flex items-center gap-2 whitespace-nowrap text-xs">
@@ -598,18 +600,140 @@ function ComparisonSection({
                   : `${differing.length} of ${c.rows.length} address${c.rows.length === 1 ? "" : "es"} differ${differing.length === 1 ? "s" : ""}.`}
               </p>
               {fixable && differing.length > 0 && (
-                <Button size="sm" variant="secondary" onClick={() => setRecordFor(differing.map((r) => r.address))}>
+                <Button size="sm" variant="secondary" onClick={() => setRecordFor({ addresses: differing.map((r) => r.address), settings: [] })}>
                   <BookCheck /> Record {differing.length === 1 ? "it" : "them"} in {nbName}…
                 </Button>
               )}
             </div>
           )}
           <DataTable dense columns={columns} rows={c.rows} rowKey={(r) => r.address} empty={<p className="p-4 text-[13px] text-muted">No addresses to compare.</p>} />
-          {fixable && <RecordDialog server={server} rows={c.rows} initial={recordFor ?? []} open={recordFor !== null} onClose={() => setRecordFor(null)} />}
+          {c.linked && c.settings.length > 0 && (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                <p className="text-[13px] text-muted">
+                  {settingsDiffering.length === 0
+                    ? "Gateway, DNS and static routes match."
+                    : `Gateway, DNS and static routes: ${settingsDiffering.length} difference${settingsDiffering.length === 1 ? "" : "s"}.`}
+                </p>
+                {fixable && settingsDiffering.length > 0 && (
+                  <Button size="sm" variant="secondary" onClick={() => setRecordFor({ addresses: [], settings: settingsDiffering.map((r) => r.id) })}>
+                    <BookCheck /> Record settings in {nbName}…
+                  </Button>
+                )}
+              </div>
+              <SettingsTable
+                rows={c.settings}
+                facts={facts}
+                fixable={fixable}
+                routesDocumented={routesDocumented}
+                changeBlocker={changeBlocker}
+                onRecord={(id) => setRecordFor({ addresses: [], settings: [id] })}
+                onPrepareChange={onPrepareChange}
+              />
+            </>
+          )}
+          {fixable && (
+            <RecordDialog
+              server={server}
+              rows={c.rows}
+              settings={c.settings}
+              initial={recordFor ?? { addresses: [], settings: [] }}
+              open={recordFor !== null}
+              onClose={() => setRecordFor(null)}
+            />
+          )}
         </>
       ) : null}
     </Section>
   );
+}
+
+const SETTING_STATUS: Record<SettingRow["status"], { tone: Tone; label: string }> = {
+  match: { tone: "ok", label: "Matches" },
+  differs: { tone: "warn", label: "Differs" },
+  only_on_server: { tone: "info", label: "Not documented" },
+  only_documented: { tone: "danger", label: "Not on server" },
+};
+
+function SettingsTable({
+  rows,
+  facts,
+  fixable,
+  routesDocumented,
+  changeBlocker,
+  onRecord,
+  onPrepareChange,
+}: {
+  rows: SettingRow[];
+  facts: HostFacts;
+  fixable: boolean;
+  routesDocumented: boolean;
+  changeBlocker: string | null;
+  onRecord: (id: string) => void;
+  onPrepareChange: (seed: ChangeSeed) => void;
+}) {
+  const nbName = useNetBoxLabel();
+  const value = (r: SettingRow, v: string | null) =>
+    v ? (
+      <span className="addr">{r.kind === "route" ? `via ${v}` : v}</span>
+    ) : (
+      <span className="text-faint">{r.kind === "gateway" ? "No gateway" : "—"}</span>
+    );
+  const columns: Column<SettingRow>[] = [
+    {
+      key: "setting",
+      header: "Setting",
+      cell: (r) => (
+        <span>
+          <span className="font-medium">{settingLabel(r)}</span>
+          {r.interface && <span className="text-muted"> on {r.interface}</span>}
+        </span>
+      ),
+    },
+    { key: "status", header: "Result", cell: (r) => <Badge tone={SETTING_STATUS[r.status].tone}>{SETTING_STATUS[r.status].label}</Badge> },
+    { key: "server", header: "On the server", cell: (r) => value(r, r.server) },
+    {
+      key: "netbox",
+      header: `In ${nbName}`,
+      cell: (r) => (
+        <span>
+          {value(r, r.documented)}
+          {r.kind === "gateway" && r.prefix && <span className="text-muted"> for {r.prefix}</span>}
+        </span>
+      ),
+    },
+  ];
+  if (fixable) {
+    columns.push({
+      key: "fix",
+      header: <span className="sr-only">Actions</span>,
+      headerClassName: "w-10",
+      cell: (r) => {
+        if (!differs(r)) return null;
+        const seed = settingSeedFor(r, facts, nbName, routesDocumented);
+        const why = typeof seed === "string" ? seed : changeBlocker;
+        return (
+          <Menu>
+            <MenuTrigger asChild>
+              <Button size="icon" variant="ghost" aria-label={`Fix ${settingLabel(r)}`}>
+                <MoreHorizontal />
+              </Button>
+            </MenuTrigger>
+            <MenuContent align="end" className="max-w-80">
+              <MenuItem onSelect={() => onRecord(r.id)}>
+                <BookCheck /> Record in {nbName}…
+              </MenuItem>
+              <MenuItem disabled={!!why} onSelect={() => typeof seed !== "string" && onPrepareChange(seed)}>
+                <Settings2 /> Change the server to match…
+              </MenuItem>
+              {why && <p className="px-2 pb-1.5 text-xs text-muted">{why}</p>}
+            </MenuContent>
+          </Menu>
+        );
+      },
+    });
+  }
+  return <DataTable dense columns={columns} rows={rows} rowKey={(r) => r.id} />;
 }
 
 function LinkPicker({ onPick, busy }: { onPick: (r: NetBoxRef) => void; busy: boolean }) {

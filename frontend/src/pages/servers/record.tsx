@@ -6,18 +6,91 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import { Notice, Skeleton } from "@/components/ui/misc";
 import { api, errorMessage } from "@/lib/api";
+import { inNetworkOf, parseCidr } from "@/lib/cidr";
 import { useNetBoxLabel } from "@/lib/system";
-import type { ComparisonRow, HostFacts, RecordAction, RecordPlan, Server } from "@/lib/types";
+import type { ComparisonRow, HostFacts, RecordAction, RecordPlan, Server, SettingRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** A comparison row that differs, so that recording it means something. */
-export const differs = (r: ComparisonRow) => r.status !== "match";
+export const differs = (r: { status: string }) => r.status !== "match";
 
-/** How the server's change form starts when a change is prepared from a comparison row. */
+/** How the server's change form starts when a change is prepared from a comparison row: the interface,
+ * and what to set on it (the rest starts as the server has it). */
 export interface ChangeSeed {
   iface: string;
-  addresses: string[];
+  addresses?: string[];
+  gateway?: string;
+  dns?: { servers: string; search: string };
+  routes?: { to: string; via: string; metric: string }[];
   note: string;
+}
+
+export const settingLabel = (r: SettingRow) =>
+  r.kind === "gateway" ? `Default gateway (${r.key})` : r.kind === "dns_servers" ? "DNS servers" : r.kind === "dns_search" ? "Search domains" : `Route to ${r.key}`;
+
+const isDefault = (dst: string) => dst === "0.0.0.0/0" || dst === "::/0" || dst === "default";
+const network = (dst: string) => {
+  const p = parseCidr(dst);
+  return p.ok ? p.value.canonical : (p.suggestion ?? dst);
+};
+
+/** Why Lanvex cannot change an interface of the server, or null. */
+function unchangeable(name: string | null | undefined, facts: HostFacts): string | null {
+  if (!name) return "The server does not say which interface this is on.";
+  const iface = facts.interfaces.find((i) => i.name === name);
+  if (!iface) return `The server has no interface ${name}.`;
+  if (iface.kind === "loopback" || iface.master) return `Lanvex cannot change ${name}: it is ${iface.master ? `part of ${iface.master}` : "the loopback interface"}.`;
+  return null;
+}
+
+/**
+ * The server change that makes a gateway, the DNS settings or a static route match the documentation,
+ * or why there is none. `routesDocumented`: the documentation lists the server's routes, so a route
+ * missing from it is one to remove.
+ */
+export function settingSeedFor(r: SettingRow, facts: HostFacts, nbName: string, routesDocumented: boolean): ChangeSeed | string {
+  if (r.kind === "gateway") {
+    if (!r.documented) return `${nbName} documents no gateway for ${r.prefix}.`;
+    if (r.key !== "IPv4") return "Change the IPv6 gateway with Change IP settings.";
+    const why = unchangeable(r.interface, facts);
+    if (why) return why;
+    const iface = facts.interfaces.find((i) => i.name === r.interface)!;
+    if (iface.addresses.some((a) => a.family === 4 && a.dynamic)) return `${iface.name} gets its address and gateway from DHCP.`;
+    return { iface: iface.name, gateway: r.documented, note: `Sets the default gateway to ${r.documented}, as documented for ${r.prefix} in ${nbName}.` };
+  }
+  if (r.kind === "dns_servers" || r.kind === "dns_search") {
+    if (r.status === "only_on_server") return `${nbName} documents no ${r.kind === "dns_servers" ? "DNS servers" : "search domains"} for this server.`;
+    const scopes = facts.dns.resolved ?? [];
+    const name =
+      scopes.find((x) => x.servers.length && !unchangeable(x.scope, facts))?.scope ??
+      facts.routes.find((rt) => rt.family === 4 && isDefault(rt.destination))?.interface ??
+      null;
+    const why = unchangeable(name, facts);
+    if (why) return why;
+    const scope = scopes.find((x) => x.scope === name);
+    const servers = r.kind === "dns_servers" ? (r.documented ?? "") : (scope?.servers ?? []).filter((x) => !x.includes(":")).join(", ");
+    const search = r.kind === "dns_search" ? (r.documented ?? "") : (scope?.domains ?? []).filter((d) => d !== "~.").join(", ");
+    return { iface: name!, dns: { servers, search }, note: `Sets the ${r.kind === "dns_servers" ? "DNS servers" : "search domains"} of ${name} as documented in ${nbName}.` };
+  }
+  if (r.status === "only_on_server" && !routesDocumented) return `${nbName} documents no routes for this server.`;
+  const via = r.documented ?? "";
+  const name = r.interface ?? facts.interfaces.find((i) => i.addresses.some((a) => a.scope !== "link" && inNetworkOf(a.address, via)))?.name;
+  if (!name) return `No interface of the server is in the network of ${via}.`;
+  const why = unchangeable(name, facts);
+  if (why) return why;
+  const current = facts.routes
+    .filter((rt) => rt.interface === name && rt.gateway && !isDefault(rt.destination) && (rt.protocol === "static" || rt.protocol === "boot"))
+    .map((rt) => ({ to: rt.destination, via: rt.gateway ?? "", metric: rt.metric == null ? "" : String(rt.metric) }));
+  const old = current.find((rt) => network(rt.to) === r.key);
+  const routes = current.filter((rt) => rt !== old);
+  if (r.documented) routes.push({ to: r.key, via: r.documented, metric: old?.metric ?? "" });
+  const note =
+    r.status === "only_on_server"
+      ? `Removes the route to ${r.key}, which ${nbName} does not document.`
+      : r.status === "only_documented"
+        ? `Adds the route to ${r.key} via ${via}, as documented in ${nbName}.`
+        : `Routes ${r.key} via ${via}, as documented in ${nbName}.`;
+  return { iface: name, routes, note };
 }
 
 /**
@@ -69,38 +142,55 @@ export function ActionLine({ a, state }: { a: RecordAction; state?: "done" | "fa
   );
 }
 
+const SETTING_STATUS: Record<SettingRow["status"], string> = {
+  match: "matches",
+  differs: "differs",
+  only_on_server: "not documented",
+  only_documented: "not on the server",
+};
+
 export function RecordDialog({
   server: s,
   rows,
+  settings = [],
   initial,
   open,
   onClose,
 }: {
   server: Server;
   rows: ComparisonRow[];
-  initial: string[];
+  settings?: SettingRow[];
+  initial: { addresses: string[]; settings: string[] };
   open: boolean;
   onClose: () => void;
 }) {
   const nbName = useNetBoxLabel();
   const qc = useQueryClient();
   const candidates = rows.filter(differs);
-  const [picked, setPicked] = React.useState<string[]>(initial);
+  const settingCandidates = settings.filter(differs);
+  const [picked, setPicked] = React.useState<string[]>([]);
+  const [pickedSettings, setPickedSettings] = React.useState<string[]>([]);
   React.useEffect(() => {
-    if (open) setPicked(initial);
+    if (open) {
+      setPicked(initial.addresses);
+      setPickedSettings(initial.settings);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   const addresses = candidates.map((r) => r.address).filter((a) => picked.includes(a));
+  const settingIds = settingCandidates.map((r) => r.id).filter((x) => pickedSettings.includes(x));
+  const picks = { addresses, settings: settingIds };
+  const nothing = addresses.length === 0 && settingIds.length === 0;
 
   const preview = useQuery({
-    queryKey: ["servers", s.id, "record", addresses],
-    queryFn: () => api<RecordPlan>(`/servers/${s.id}/record`, { method: "POST", body: { addresses } }),
-    enabled: open && addresses.length > 0,
+    queryKey: ["servers", s.id, "record", addresses, settingIds],
+    queryFn: () => api<RecordPlan>(`/servers/${s.id}/record`, { method: "POST", body: picks }),
+    enabled: open && !nothing,
     staleTime: 0,
     gcTime: 0,
   });
   const apply = useMutation({
-    mutationFn: (plan: RecordPlan) => api<RecordPlan>(`/servers/${s.id}/record`, { method: "POST", body: { addresses, token: plan.token } }),
+    mutationFn: (plan: RecordPlan) => api<RecordPlan>(`/servers/${s.id}/record`, { method: "POST", body: { ...picks, token: plan.token } }),
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: ["servers", s.id, "comparison"] });
       if (!result.failed) {
@@ -113,11 +203,13 @@ export function RecordDialog({
   React.useEffect(() => {
     if (open) apply.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, addresses.join(",")]);
+  }, [open, addresses.join(","), settingIds.join(",")]);
 
   const plan = preview.data;
   const doable = plan?.actions.filter((a) => !a.problem).length ?? 0;
   const result = apply.data;
+  const toggle = (set: React.Dispatch<React.SetStateAction<string[]>>, key: string, on: boolean) => set((p) => (on ? [...p, key] : p.filter((x) => x !== key)));
+  const box = "size-4 rounded border-line accent-[var(--accent)]";
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -127,29 +219,39 @@ export function RecordDialog({
         width="max-w-xl"
       >
         <DialogBody>
-          {candidates.length > 1 && (
-            <fieldset className="grid gap-1.5">
-              <legend className="mb-1.5 text-[13px] font-medium">Addresses</legend>
-              {candidates.map((r) => (
-                <label key={r.address} className="flex items-center gap-2 text-[13px]">
-                  <input
-                    type="checkbox"
-                    className="size-4 rounded border-line accent-[var(--accent)]"
-                    checked={picked.includes(r.address)}
-                    disabled={apply.isPending}
-                    onChange={(e) => setPicked((p) => (e.target.checked ? [...p, r.address] : p.filter((x) => x !== r.address)))}
-                  />
-                  <span className="addr">{r.address}</span>
-                  <span className="text-xs text-muted">
-                    {r.status === "only_on_server" ? "on the server only" : r.status === "only_in_netbox" ? `in ${nbName} only` : r.status === "mask_differs" ? "prefix length differs" : "interface differs"}
-                  </span>
-                </label>
-              ))}
-            </fieldset>
+          {candidates.length + settingCandidates.length > 1 && (
+            <div className="grid gap-3">
+              {candidates.length > 0 && (
+                <fieldset className="grid gap-1.5">
+                  <legend className="mb-1.5 text-[13px] font-medium">Addresses</legend>
+                  {candidates.map((r) => (
+                    <label key={r.address} className="flex items-center gap-2 text-[13px]">
+                      <input type="checkbox" className={box} checked={picked.includes(r.address)} disabled={apply.isPending} onChange={(e) => toggle(setPicked, r.address, e.target.checked)} />
+                      <span className="addr">{r.address}</span>
+                      <span className="text-xs text-muted">
+                        {r.status === "only_on_server" ? "on the server only" : r.status === "only_in_netbox" ? `in ${nbName} only` : r.status === "mask_differs" ? "prefix length differs" : "interface differs"}
+                      </span>
+                    </label>
+                  ))}
+                </fieldset>
+              )}
+              {settingCandidates.length > 0 && (
+                <fieldset className="grid gap-1.5">
+                  <legend className="mb-1.5 text-[13px] font-medium">Gateway, DNS and routes</legend>
+                  {settingCandidates.map((r) => (
+                    <label key={r.id} className="flex items-center gap-2 text-[13px]">
+                      <input type="checkbox" className={box} checked={pickedSettings.includes(r.id)} disabled={apply.isPending} onChange={(e) => toggle(setPickedSettings, r.id, e.target.checked)} />
+                      <span>{settingLabel(r)}</span>
+                      <span className="text-xs text-muted">{SETTING_STATUS[r.status]}</span>
+                    </label>
+                  ))}
+                </fieldset>
+              )}
+            </div>
           )}
 
-          {addresses.length === 0 ? (
-            <p className="text-[13px] text-muted">Pick at least one address.</p>
+          {nothing ? (
+            <p className="text-[13px] text-muted">Pick at least one difference.</p>
           ) : preview.isPending ? (
             <Skeleton className="h-20 w-full" />
           ) : preview.error ? (

@@ -16,13 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lanvex.auth.models import User
 from lanvex.core.config import Settings, get_settings
-from lanvex.core.errors import Conflict, NotFound, ValidationFailed
+from lanvex.core.errors import Conflict, LanvexError, NotFound, ValidationFailed
+from lanvex.core.logging import get_logger
 from lanvex.core.secrets import Vault
 from lanvex.integrations.base import capabilities
 from lanvex.integrations.linux import adapter, transport
 from lanvex.integrations.linux.commands import Cmd
 from lanvex.integrations.linux.facts import HostFacts
 from lanvex.netbox.client import NetBoxClient
+from lanvex.servers import settings_drift
 from lanvex.servers.history import HistoryChange, fingerprint
 from lanvex.servers.history import changes as history_changes
 from lanvex.servers.models import (
@@ -45,12 +47,15 @@ from lanvex.servers.schemas import (
     ServerCreate,
     ServerOut,
     ServerUpdate,
+    SettingRow,
     TestResult,
 )
 
 NOT_STORED = "[not stored: this file can contain secrets]"
 SECRET_BEARING = {Cmd.IFUPDOWN_CONFIG.value, Cmd.IFUPDOWN_INCLUDES.value}
 _locks: dict[uuid.UUID, asyncio.Lock] = {}
+
+log = get_logger("lanvex.servers")
 
 
 def _lock(server_id: uuid.UUID) -> asyncio.Lock:
@@ -579,7 +584,9 @@ class ServerService:
 
     # ---- documented vs actual ------------------------------------------------------
 
-    async def record_plan(self, s: Server, addresses: list[str]) -> tuple[Recorder, RecordPlan, list[Any]]:
+    async def record_plan(
+        self, s: Server, addresses: list[str], settings: list[str] | None = None
+    ) -> tuple[Recorder, RecordPlan, list[Any]]:
         """Plan the NetBox writes that make the documentation match the server's last read."""
         if self.nb is None:
             raise ValidationFailed("Recording needs a configured NetBox connection.")
@@ -591,7 +598,9 @@ class ServerService:
         comparison = await self.compare(s)
         assert comparison.netbox is not None
         recorder = Recorder(self.nb, s, comparison.netbox, facts)
-        plan, steps = await recorder.plan(comparison.rows, check_addresses(addresses))
+        plan, steps = await recorder.plan(
+            comparison.rows, check_addresses(addresses), comparison.settings, settings or []
+        )
         return recorder, plan, steps
 
     async def compare(self, s: Server) -> Comparison:
@@ -729,6 +738,11 @@ class ServerService:
         counts: dict[str, int] = {}
         for r in rows:
             counts[r.status] = counts.get(r.status, 0) + 1
+        setting_rows, doc = (
+            await self._compare_settings(link, facts)
+            if self.nb is not None and link is not None
+            else ([], None)
+        )
         return Comparison(
             linked=link is not None,
             netbox=ref,
@@ -736,7 +750,51 @@ class ServerService:
             snapshot_taken_at=snap.taken_at if snap else None,
             rows=rows,
             counts=counts,
+            settings=setting_rows,
+            documented_settings=doc,
         )
+
+    async def _compare_settings(
+        self, link: NetBoxLink, facts: HostFacts
+    ) -> tuple[list[SettingRow], dict[str, Any] | None]:
+        assert self.nb is not None
+        path = "dcim/devices/" if link.object_type == "dcim.device" else "virtualization/virtual-machines/"
+        try:
+            obj = await self.nb.get(f"{path}{link.object_id}/")
+        except NotFound:
+            return [], None
+        doc = settings_drift.documented(obj.get("config_context"))
+        prefixes: dict[str, settings_drift.DocumentedPrefix] = {}
+        try:
+            await self._documented_prefixes(facts, prefixes)
+        except LanvexError as e:  # best effort: the addresses' comparison stands without it
+            log.warning("gateway_comparison_skipped", error=e.message)
+        return settings_drift.compare(facts, doc, prefixes), doc
+
+    async def _documented_prefixes(
+        self, facts: HostFacts, prefixes: dict[str, "settings_drift.DocumentedPrefix"]
+    ) -> None:
+        from lanvex.ipam.prefixes import PREFIXES, PrefixService, to_prefix
+
+        assert self.nb is not None
+        ps = PrefixService(self.nb)
+        for _family, via, _iface in settings_drift.default_routes(facts):
+            if via in prefixes:
+                continue
+            found = [
+                p
+                for p in await self.nb.list_all(PREFIXES, {"contains": via}, cap=100)
+                if (p.get("status") or {}).get("value") != "container"
+            ]
+            if not found:
+                continue
+            best = max(found, key=lambda p: ipaddress.ip_network(p["prefix"]).prefixlen)
+            gw = await ps.find_gateway(to_prefix(best))
+            prefixes[via] = settings_drift.DocumentedPrefix(
+                prefix=best["prefix"],
+                prefix_id=int(best["id"]),
+                gateway=str(ipaddress.ip_interface(gw.address).ip) if gw else None,
+            )
 
 
 def _lease_interface(facts: HostFacts, ip: str) -> str | None:

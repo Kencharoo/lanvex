@@ -1,6 +1,6 @@
 # Status of Lanvex 1.3.0
 
-Last updated 2026-11-18. "Verified" means it was run, not just written.
+Last updated 2026-11-20. "Verified" means it was run, not just written.
 
 ## Verified
 
@@ -41,6 +41,24 @@ sites, the session holding afterwards.
 
 Not verified yet: Active Directory itself (its nested-group query is checked as Lanvex sends it), and
 Keycloak, Entra ID and Authentik themselves.
+
+### Gateway, DNS and static routes compared with the documentation (unreleased)
+
+Against Lanvex Core (NetBox 4.7.5) running locally, as its own service account with the new device
+permission: a server (a stand-in with real lab facts) with another gateway than its prefix documents,
+other DNS servers than a site-wide config context documents, an undocumented search domain, a route
+nothing documents and a documented route it lacks; each compared, all recorded after a preview (the
+prefix's gateway moved, the device's local context data written with its other keys kept, the site's
+context overridden as NetBox renders it), everything matching afterwards. API tests with a stand-in:
+the preview writing nothing, a documentation changed since the preview refused, a difference that no
+longer exists not recorded. The drift alert's lines, and settings nothing documents raising none. The
+change form prepared from a gateway, DNS or route difference (unit tests). Lanvex Core's own tests:
+the service account may change devices but not add or delete them. In the browser: the comparison and
+the record preview looked at with a stand-in documentation; the lab browser test records a server's
+DNS in CI.
+
+Not verified yet: "Change the server to match…" for these settings in the lab (the form is prepared as
+for addresses, whose path is tested end to end).
 
 ### Switch port VLAN changes (new in 1.3)
 
@@ -278,7 +296,7 @@ as the containers are wired, but outside Docker (see *Not verified yet*).
 
 | What | How |
 |---|---|
-| Every IPAM, VLAN, device and dashboard operation Lanvex performs | 8 live tests (`pytest -m netbox`) drive the Lanvex API against a disposable NetBox 4.7.4 and check results directly in NetBox |
+| Every IPAM, VLAN, device and dashboard operation Lanvex performs | 9 live tests (`pytest -m netbox`) drive the Lanvex API against a disposable NetBox 4.7.4 and check results directly in NetBox |
 | Token formats and permissions | Passes with a superuser v2 token, a v1 token, and a least-privilege token holding exactly the permissions in docs/operations.md (including creating the `lanvex-gateway` tag). A write-disabled token is refused with a clear message and the refusal is audited |
 | Filters Lanvex relies on | Every filter name checked against NetBox's own filtersets |
 | UI | Browser walkthrough against real NetBox: create a network through the wizard, verify the result in NetBox, device detail, overview with NetBox's change log |
@@ -322,9 +340,9 @@ with the helper installed through sudo exactly as documented. Only lab container
 
 | What | How |
 |---|---|
-| Backend | 504 tests: 446 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 2 against OpenLDAP (in CI), 8 live NetBox, 48 SSH lab (6 reading, discovery and recording; 12 changes; 30 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 8 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora, Kea only on Debian). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
-| Frontend | Type check, 30 unit tests, production build; 14 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 single sign-on across two sites; 1 reading two SNMP switches in software) |
-| Lanvex Core | Its own tests (permissions of the service account, the custom fields for DHCP and access rules, its CSRF cookie for scripts), last run for 0.9.0; 1.0.0 changes only its version |
+| Backend | 514 tests: 455 unit and API (real PostgreSQL, SNMP agents in the test process, migrations up/down/up with no drift), 2 against OpenLDAP (in CI), 9 live NetBox (run locally against Lanvex Core 1.4.0.dev0 on NetBox 4.7.5), 48 SSH lab (6 reading, discovery and recording; 12 changes; 30 networks runs on Fedora 44, Ubuntu 24.04 and Debian 12, of which 8 are skipped by design: ufw only on Ubuntu, the takeover only on Fedora, Kea only on Debian). The lab tests run in CI on every push (33 passed for 1.0.0); the one that also needs a live NetBox ran locally against Lanvex Core 4.7.5, as its own service account |
+| Frontend | Type check, 33 unit tests, production build; 14 Playwright tests in Chrome (3 in the lab job in CI, one of them changing a switch in software; 1 against Lanvex Core; 1 single sign-on across two sites; 1 reading two SNMP switches in software) |
+| Lanvex Core | Its own 22 tests (permissions of the service account, including changing devices but not adding or deleting them; the custom fields for DHCP and access rules; sign-in through Lanvex; its CSRF cookie for scripts), run for 1.4.0.dev0 |
 | Helper | Runs on Python 3.7+ (checked with vermin); stdlib only, plus PyYAML on netplan hosts |
 
 ## Not verified yet
@@ -357,7 +375,6 @@ with the helper installed through sudo exactly as documented. Only lab container
   nftables rules for DHCP (pointed out today).
 - Other switch changes (creating VLANs, port names, saving the configuration); discovery of devices no
   server or switch sees; a deployment wizard.
-- Comparing gateways, routes and DNS with NetBox (today the comparison covers addresses).
 - Editing prefix tenant and scopes other than a site, and IP tenant/role/NAT; device creation.
 
 ## Known limitations

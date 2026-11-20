@@ -49,6 +49,10 @@ so the comparison on the server page shows any difference that remains. Closing 
 always a deliberate step in one direction: *record* (actual → documented: `servers/record.py` plans
 the NetBox writes, the administrator sees them, and only that exact plan is applied, checked by a
 token over the plan) or *change* (documented → actual: a server change prepared from the difference).
+The comparison covers addresses (IP records on the device's interfaces) and, in
+`servers/settings_drift.py`, the default gateway (the prefix's `lanvex-gateway` address), DNS servers,
+search domains and static routes (the device's rendered config context, key `lanvex`). Recording those
+writes the prefix's gateway tag and the device's local config context data, nothing else.
 
 ## Server management: reading
 

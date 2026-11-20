@@ -10,7 +10,17 @@
   Directory; the code flow with PKCE, state and nonce, and the ID token checked against the
   provider's keys. *Settings, Sign-in* shows the setup and tests the directory
   ([docs/sign-in.md](docs/sign-in.md)).
+- **Gateway, DNS and static routes compared with the documentation**: the default gateway with the
+  gateway of its prefix, DNS servers, search domains and static routes with the device's config
+  context (key `lanvex`, from site-wide config contexts or the device's own data). Differences are in
+  the server's comparison and in the drift alert; each can be recorded in NetBox (the prefix's
+  gateway, the device's local config context data) or prepared as a server change
+  ([docs/changes.md](docs/changes.md#gateway-dns-and-static-routes)).
 - `lanvexctl restart` applies changes to `.env` (it only restarted the containers before).
+
+Lanvex Core grants Lanvex's service account *change* on devices and virtual machines, for the
+recorded DNS and routes. With your own NetBox, grant it too if you want to record them
+([docs/operations.md](docs/operations.md#netbox-token-permissions)).
 
 New dependencies: ldap3 (LGPL-3.0, used unmodified as a library) for LDAP, joserfc (BSD) for ID tokens.
 

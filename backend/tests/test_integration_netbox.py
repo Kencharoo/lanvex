@@ -26,10 +26,17 @@ from lanvex.core.config import get_settings
 from lanvex.core.db import Database
 from lanvex.core.errors import NotFound
 from lanvex.core.ratelimit import MemoryRateLimiter
+from lanvex.integrations.linux.facts import Route
+from lanvex.ipam.prefixes import PrefixService, to_prefix
 from lanvex.main import create_app
 from lanvex.netbox.client import NetBoxClient
 
+from . import test_server_history
 from .conftest import login
+from .test_server_history import FakeServer
+from .test_servers_api import body
+
+fake = test_server_history.fake
 
 URL = os.environ.get("LANVEX_TEST_NETBOX_URL", "")
 TOKEN = os.environ.get("LANVEX_TEST_NETBOX_TOKEN", "")
@@ -64,6 +71,7 @@ async def _purge(nb: NetBoxClient) -> None:
         for v in await nb.list_all("ipam/vlans/", {"vid": vid, "q": "lanvex-it"}):
             await nb.delete(f"ipam/vlans/{v['id']}/")
     for path in (
+        "extras/config-contexts/",
         "dcim/devices/",
         "ipam/vlan-groups/",
         "dcim/device-types/",
@@ -543,3 +551,74 @@ async def test_write_disabled_token_is_reported_and_audited(
     async with database.sessionmaker() as s:
         ev = (await s.scalars(select(AuditEvent).where(AuditEvent.action == "prefix.create"))).one()
     assert ev.outcome == "failure" and "NetBox denied" in ev.detail["error"]
+
+
+async def test_gateway_dns_and_routes_compared_and_recorded(
+    api: httpx.AsyncClient, nb_admin: NetBoxClient, infra: dict[str, Any], fake: FakeServer
+) -> None:
+    """The server (a stand-in with real lab facts) uses gateway .254, DNS 127.0.0.11, search domain
+    lab.example.net and a static route to 203.0.113.0/24; NetBox documents gateway .193 for the prefix,
+    and a site-wide config context documents other DNS servers and another route."""
+    nb, device = nb_admin, infra["device"]
+    prefix = await nb.post("ipam/prefixes/", {"prefix": "198.51.100.192/26", "status": "active"})
+    await PrefixService(nb).set_gateway(to_prefix(prefix), "198.51.100.193/26")
+    await nb.post(
+        "extras/config-contexts/",
+        {
+            "name": f"lanvex-it site {infra['tag']}",
+            "sites": [infra["site"]["id"]],
+            "data": {
+                "lanvex": {
+                    "dns_servers": ["198.51.100.53"],
+                    "routes": [{"to": "192.0.2.0/24", "via": "198.51.100.200"}],
+                }
+            },
+        },
+    )
+    await nb.patch(f"dcim/devices/{device['id']}/", {"local_context_data": {"ntp": ["pool.ntp.org"]}})
+    for r in fake.facts.routes:
+        if r.is_default and r.family == 4:
+            r.gateway = "198.51.100.254"
+    fake.facts.routes.append(
+        Route(
+            destination="203.0.113.0/24",
+            family=4,
+            gateway="198.51.100.200",
+            interface="eth0",
+            protocol="static",
+        )
+    )
+    link = {"object_type": "dcim.device", "object_id": device["id"]}
+    s = ok(await api.post("/api/v1/servers", json=body(address="192.0.2.10", netbox=link)), 201)["server"]
+    assert ok(await api.post(f"/api/v1/servers/{s['id']}/collect"))["status"] == "ok"
+
+    c = ok(await api.get(f"/api/v1/servers/{s['id']}/comparison"))
+    rows = {r["id"]: r for r in c["settings"]}
+    assert {k: (r["status"], r["server"], r["documented"]) for k, r in rows.items()} == {
+        "gateway:198.51.100.254": ("differs", "198.51.100.254", "198.51.100.193"),
+        "dns_servers": ("differs", "127.0.0.11", "198.51.100.53"),
+        "dns_search": ("only_on_server", "lab.example.net", None),
+        "route:192.0.2.0/24": ("only_documented", None, "198.51.100.200"),
+        "route:203.0.113.0/24": ("only_on_server", "198.51.100.200", None),
+    }
+
+    url = f"/api/v1/servers/{s['id']}/record"
+    plan = ok(await api.post(url, json={"settings": list(rows)}))
+    done = ok(await api.post(url, json={"settings": list(rows), "token": plan["token"]}))
+    assert done["failed"] is None and len(done["done"]) == 5, done
+
+    after = await nb.get(f"dcim/devices/{device['id']}/")
+    assert after["local_context_data"] == {
+        "ntp": ["pool.ntp.org"],
+        "lanvex": {
+            "dns_servers": ["127.0.0.11"],
+            "dns_search": ["lab.example.net"],
+            "routes": [{"to": "203.0.113.0/24", "via": "198.51.100.200"}],
+        },
+    }
+    assert after["config_context"]["lanvex"]["routes"] == [{"to": "203.0.113.0/24", "via": "198.51.100.200"}]
+    gateway = await PrefixService(nb).find_gateway(to_prefix(prefix))
+    assert gateway is not None and gateway.address == "198.51.100.254/26"
+    c = ok(await api.get(f"/api/v1/servers/{s['id']}/comparison"))
+    assert {r["status"] for r in c["settings"]} == {"match"}
+    ok(await api.delete(f"/api/v1/servers/{s['id']}"), 204)

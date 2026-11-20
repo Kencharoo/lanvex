@@ -386,6 +386,9 @@ def ser(kind: str, o: dict[str, Any]) -> dict[str, Any]:
             rack=None,
             tenant=None,
             comments="",
+            # No config contexts here: what a device renders is its own local context data.
+            local_context_data=o.get("local_context_data"),
+            config_context=o.get("local_context_data") or {},
         )
     elif kind == "interfaces":
         d.update(

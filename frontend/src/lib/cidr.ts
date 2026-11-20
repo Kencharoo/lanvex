@@ -85,6 +85,20 @@ export function formatV6(v: bigint): string {
   return `${left}::${right}`;
 }
 
+/** Whether `ip` is in the network of `address` (an address with its prefix length, host bits allowed). */
+export function inNetworkOf(address: string, ip: string): boolean {
+  const [a, len] = address.split("/");
+  const family = a.includes(":") ? 6 : 4;
+  if (ip.includes(":") !== (family === 6) || !/^\d{1,3}$/.test(len ?? "")) return false;
+  const parse = family === 4 ? parseV4 : parseV6;
+  const x = parse(a);
+  const y = parse(ip.split("%")[0]);
+  const bits = family === 4 ? 32 : 128;
+  if (x === null || y === null || Number(len) > bits) return false;
+  const shift = BigInt(bits - Number(len));
+  return x >> shift === y >> shift;
+}
+
 export type ParseResult = { ok: true; value: ParsedNetwork } | { ok: false; error: string; suggestion?: string };
 
 export function parseCidr(input: string): ParseResult {

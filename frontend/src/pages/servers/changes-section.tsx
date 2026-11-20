@@ -594,6 +594,16 @@ function draftFor(facts: HostFacts, iface: string): Draft {
   };
 }
 
+/** The form prepared from the comparison: the interface as it is, with what the seed sets. */
+function seededDraft(facts: HostFacts, seed: ChangeSeed): Draft {
+  const d = draftFor(facts, seed.iface);
+  if (seed.addresses) Object.assign(d, { method: "static", addresses: seed.addresses });
+  if (seed.gateway !== undefined) Object.assign(d, { method: "static", gateway: seed.gateway });
+  if (seed.dns) Object.assign(d, { changeDns: true, dns: seed.dns.servers, search: seed.dns.search });
+  if (seed.routes) Object.assign(d, { changeRoutes: true, routes: seed.routes });
+  return d;
+}
+
 const split = (v: string) =>
   v
     .split(/[\s,;]+/)
@@ -631,7 +641,7 @@ function ChangeDialog({
   });
   React.useEffect(() => {
     if (open) {
-      setD(seed ? { ...draftFor(facts, seed.iface), method: "static", addresses: seed.addresses } : draftFor(facts, candidates[0]?.name ?? ""));
+      setD(seed ? seededDraft(facts, seed) : draftFor(facts, candidates[0]?.name ?? ""));
       prepare.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
