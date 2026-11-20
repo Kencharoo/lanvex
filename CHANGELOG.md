@@ -16,6 +16,11 @@
   the server's comparison and in the drift alert; each can be recorded in NetBox (the prefix's
   gateway, the device's local config context data) or prepared as a server change
   ([docs/changes.md](docs/changes.md#gateway-dns-and-static-routes)).
+- **Server changes on Debian and other ifupdown servers**: IPv4 addresses, gateway and DNS, IPv6,
+  static routes, bridges and bonds, as on netplan and NetworkManager servers. Lanvex rewrites only the
+  interface's own stanzas, checks the new file with `ifup --no-act`, and applies it with ifdown and
+  ifup behind the rollback timer. Bridges and bonds are created with `ip link`, so bridge-utils and
+  ifenslave are not needed ([docs/changes.md](docs/changes.md#on-ifupdown-servers)). Needs helper 7.
 - `lanvexctl restart` applies changes to `.env` (it only restarted the containers before).
 
 Lanvex Core grants Lanvex's service account *change* on devices and virtual machines, for the

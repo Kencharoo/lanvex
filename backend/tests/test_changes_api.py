@@ -1111,7 +1111,7 @@ async def test_networks_on_netplan_servers(
     assert any("Removing vlan60" in w for w in change["preview"]["warnings"])
 
 
-async def test_ifupdown_servers_get_networks_but_not_interface_changes(
+async def test_ifupdown_servers_get_interface_changes_and_networks(
     admin: httpx.AsyncClient, fake: FakeServer, automation: None, runner: ChangeRunner
 ) -> None:
     fake.facts = assemble(load("ifup"))
@@ -1123,11 +1123,18 @@ async def test_ifupdown_servers_get_networks_but_not_interface_changes(
     assert (await admin.post(f"/api/v1/servers/{sid}/collect")).status_code == 200
     assert (await admin.post(f"/api/v1/servers/{sid}/changes/helper/check")).status_code == 200
     r = await admin.put(f"/api/v1/servers/{sid}/changes/enabled", json={"enabled": True})
-    assert r.json()["ready"] is True and r.json()["interface_changes"] is False, r.text
+    assert r.json()["ready"] is True and r.json()["interface_changes"] is True, r.text
 
-    eth0 = {"kind": "interface_ipv4", "interface": "eth0", "method": "dhcp", "addresses": []}
+    eth0 = {
+        "kind": "interface_ipv4",
+        "interface": "eth0",
+        "method": "static",
+        "addresses": ["172.30.0.13/24", "172.30.0.14/24"],
+        "gateway": "172.30.0.1",
+    }
     r = await admin.post(f"/api/v1/servers/{sid}/changes", json=eth0)
-    assert r.status_code == 409 and r.json()["error"]["code"] == "unsupported_stack", r.text
+    assert r.status_code == 201, r.text
+    assert (await admin.post(f"/api/v1/changes/{r.json()['id']}/cancel")).status_code == 200
     r = await admin.post(f"/api/v1/servers/{sid}/changes", json=networks_body())
     assert r.status_code == 201, r.text
 

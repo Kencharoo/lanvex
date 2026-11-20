@@ -27,7 +27,7 @@ It is **off by default**, three times over: for the installation, for each serve
 | netplan → systemd-networkd (Ubuntu Server default) | Yes | The netplan file that defines the interface |
 | netplan → NetworkManager (Ubuntu Desktop / NM with netplan, 23.10+) | Yes | The netplan file NetworkManager's profile is generated from |
 | NetworkManager with keyfiles (Fedora, RHEL, Debian with NM) | Yes | `/etc/NetworkManager/system-connections/<profile>.nmconnection` |
-| ifupdown (`/etc/network/interfaces`) | Networks only | Interface settings: no. VLAN networks with DHCP: yes, in `/etc/network/interfaces.d/lanvex` ([networks.md](networks.md)) |
+| ifupdown (`/etc/network/interfaces` and the files it sources; Debian) | Yes | The file with the interface's `iface` stanzas ([below](#on-ifupdown-servers)) |
 | NetworkManager profiles that exist only in memory | No | Refused with an explanation |
 | netplan definitions that match many interfaces (`match: {name: "en*"}`) | No | Refused; only definitions for exactly this interface are edited |
 
@@ -35,7 +35,28 @@ The server needs **systemd** and **Python 3.8 or newer**. On netplan servers, `p
 needed; it is installed with netplan.
 
 Tested end to end on Ubuntu 24.04 with netplan → systemd-networkd, NetworkManager keyfiles, and
-NetworkManager-in-netplan. See [status.md](status.md) for what has not been tested.
+NetworkManager-in-netplan, and on Debian 12 with ifupdown. See [status.md](status.md) for what has not
+been tested.
+
+### On ifupdown servers
+
+Lanvex rewrites only the interface's `iface` stanzas; the rest of the file stays byte for byte, and so
+does every option of the first stanza it does not manage (`mtu`, `pre-up` commands, comments).
+
+- **Addresses:** the first address in the first `inet` stanza, each further one in a stanza of its own
+  (`iface eth1 inet static` with only `address`), as interfaces(5) describes. IPv6 the same way in
+  `inet6` stanzas; *automatic* is `inet6 auto`, *link-local only* `inet6 auto` with `accept_ra 0`.
+- **Static routes:** `up ip route replace <network> via <next hop> [metric <n>] dev <interface>` with a
+  matching `down ip route del` line. Route lines written another way (`up route add -net …`) are left
+  alone, but a change that sets routes is refused until they are rewritten like this.
+- **DNS:** `dns-nameservers` and `dns-search`, which ifupdown passes on only through resolvconf or
+  systemd-resolved. Without either, Lanvex refuses DNS changes rather than write lines with no effect.
+- **Applying:** `ifdown --force` with the configuration the interface was brought up with, then
+  `ifup` with the new one; the interface's connections pause for a moment. ifup checks the new file
+  without running anything before it is written (`ifup --no-act`).
+- **Refused:** an interface whose stanzas are spread over several files, a method other than static,
+  dhcp or manual, a further stanza with options besides its address, IPv6 where it is turned off
+  (`disable_ipv6`), and DHCP without a DHCP client installed.
 
 ## How a change runs
 
@@ -283,21 +304,24 @@ behind the rollback timer, verified, and confirmed or rolled back.
   static addresses with an optional gateway, or DHCP. Its addresses can be changed later with *Change
   IP settings*, like any interface's.
 - **Files:** NetworkManager profiles `lxlink-<name>` and `lxlink-<name>-<member>` (the member profiles
-  win over others for the same device when NetworkManager starts), or the netplan file
-  `61-lxlink-<name>.yaml`. `/etc/lanvex/links.json` lists them.
+  win over others for the same device when NetworkManager starts), the netplan file
+  `61-lxlink-<name>.yaml`, or on ifupdown servers `/etc/network/interfaces.d/10-lxlink-<name>`, whose
+  stanza creates the bridge or bond with `ip link` (neither bridge-utils nor ifenslave is needed) and
+  deletes it on the way down. `/etc/lanvex/links.json` lists them. On ifupdown, members may have a
+  `manual` stanza but no addresses of their own, and `/etc/network/interfaces` must source
+  `interfaces.d` (Debian's default).
 - **Checked:** the bridge or bond exists, every member is in it, and it has the requested addresses
   (or a DHCP lease within 45 seconds).
 - **Removing** one Lanvex created (*Bridges and bonds by Lanvex*, *Remove…*) deletes its files and the
   interface and frees the members. Refused while it carries Lanvex's connection or a VLAN.
-
-Interfaces on ifupdown servers cannot be bridged or bonded from Lanvex yet.
 
 ## What the helper does as root
 
 - Reads the network configuration and runs `netplan generate --root-dir` (validation in a temporary
   directory), `netplan generate`, `netplan apply`, `nmcli` (connection list, load, reapply, up),
   `ip -json`, `ping`, `resolvectl`, `getent`, and `systemd-run`/`systemctl` for its own timer units.
-  For networks also `ifup`/`ifdown`, `ip link add`/`delete` for its own VLAN interfaces,
+  On ifupdown servers `ifup` (also `--no-act`, to check a file), `ifdown --force` and `ip address del`
+  for addresses ifdown left behind. For networks also `ip link add`/`delete` for its own VLAN interfaces,
   `dnsmasq --test`, `firewall-cmd --check-config` and `--reload`, `ufw` (its own marked rules),
   `nft -c`/`-f` for its own table and `nft delete table inet lanvex`, `nft -j list chains` (read
   only), `ip route` (read only), `sysctl -w net.ipv4.ip_forward`, `ip link add lxdns type dummy`

@@ -44,8 +44,9 @@ from lanvex.integrations.linux.lanvex_netapply import HELPER_VERSION
 from lanvex.servers.models import Server
 from lanvex.servers.service import ServerService
 
-SUPPORTED_STACKS = {"netplan-networkd", "netplan-networkmanager", "networkmanager"}
-# VLAN interfaces and DHCP: NetworkManager keyfiles, also where netplan hands interfaces to it.
+# Interface settings, bridges and bonds.
+SUPPORTED_STACKS = {"netplan-networkd", "netplan-networkmanager", "networkmanager", "ifupdown"}
+# VLAN interfaces and DHCP.
 NETWORK_STACKS = {"networkmanager", "netplan-networkmanager", "netplan-networkd", "ifupdown"}
 # Servers Lanvex can change at all (interface settings, networks, or both).
 CHANGE_STACKS = SUPPORTED_STACKS | NETWORK_STACKS
@@ -655,7 +656,7 @@ class ChangeService:
         if facts.stack.key not in SUPPORTED_STACKS:
             raise Conflict(
                 f"{s.name}'s network is managed by {facts.stack.primary}. Lanvex creates bridges and bonds on servers "
-                "that use netplan or NetworkManager.",
+                "that use netplan, NetworkManager or ifupdown.",
                 code="unsupported_stack",
             )
         present = {i.name: i for i in facts.interfaces}
@@ -738,7 +739,7 @@ class ChangeService:
         if facts.stack.key not in SUPPORTED_STACKS:
             raise Conflict(
                 f"{s.name}'s network is managed by {facts.stack.primary}. Lanvex changes interface settings on servers "
-                "that use netplan or NetworkManager; here it manages VLAN networks only.",
+                "that use netplan, NetworkManager or ifupdown.",
                 code="unsupported_stack",
             )
         if any(facts.lanvex_owned(i) for i in facts.interfaces if i.name == req.interface):

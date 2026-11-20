@@ -1,7 +1,8 @@
 """Configuration changes against REAL servers: the lab in deploy/lab. Skipped unless LANVEX_TEST_LAB=1.
 
 Everything goes through the Lanvex API and the change runner, over real SSH, to the real helper on
-Ubuntu 24.04 hosts managed by netplan/systemd-networkd and by NetworkManager. `docker exec` plays the
+Ubuntu 24.04 hosts managed by netplan/systemd-networkd and by NetworkManager, and on a Debian 12 host
+managed by ifupdown (lab-debian, where the lab has it). `docker exec` plays the
 server administrator (installing the helper, checking results as root) and resets the lab between
 tests. These tests change only lab containers.
 """
@@ -50,10 +51,28 @@ def install_helper(host: str) -> None:
     )
 
 
+def debian() -> bool:
+    r = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", "lab-debian"], capture_output=True, text=True
+    )
+    return r.stdout.strip() == "true"
+
+
+def hosts() -> list[str]:
+    return ["lab-netplan", "lab-nm"] + (["lab-debian"] if debian() else [])
+
+
 def reset(host: str) -> None:
     """Put the lab host's network configuration back to what deploy/lab ships."""
     sh(host, "systemctl stop 'lanvex-rollback-*.timer' 2>/dev/null; rm -rf /var/lib/lanvex/changes; true")
-    if host == "lab-netplan":
+    if host == "lab-debian":
+        docker("cp", str(LAB / "debian" / "interfaces"), "lab-debian:/etc/network/interfaces")
+        sh(
+            host,
+            "rm -f /etc/network/interfaces.d/10-lxlink-*; ifdown --force eth1 >/dev/null 2>&1; "
+            "ip address flush dev eth1; ifup eth1",
+        )
+    elif host == "lab-netplan":
         docker("cp", str(LAB / "netplan-networkd" / "50-lab.yaml"), "lab-netplan:/etc/netplan/50-lab.yaml")
         sh(
             host,
@@ -97,7 +116,7 @@ async def lab(
     app.state.netbox = None
     runner = ChangeRunner(database, get_settings())
     app.state.change_runner = runner
-    for host in ("lab-netplan", "lab-nm"):
+    for host in hosts():
         reset(host)
         install_helper(host)
     async with httpx.AsyncClient(
@@ -105,7 +124,7 @@ async def lab(
     ) as c:
         await login(c, "admin", users["admin"])
         yield c, runner
-    for host in ("lab-netplan", "lab-nm"):
+    for host in hosts():
         reset(host)
 
 
@@ -305,8 +324,7 @@ async def test_hosts_that_cannot_take_changes_say_why(lab) -> None:  # type: ign
         assert r["helper"]["state"] == "no_python" and "Python 3" in r["helper"]["message"]
     finally:
         sh("lab-ifup", "rm -rf /usr/local/libexec/lanvex /etc/sudoers.d/lanvex")
-    # ifupdown: networks (VLANs, DHCP) only, no interface settings.
-    assert r["stack_supported"] is True and r["interface_changes"] is False
+    assert r["stack_supported"] is True and r["interface_changes"] is True
 
     # Uploading the helper puts the exact file in the user's home, with a checksum to verify.
     up = ok(await api.post(f"/api/v1/servers/{s['id']}/changes/helper/upload"))
@@ -385,14 +403,16 @@ def drop_links(host: str) -> None:
     sh(
         host,
         "for i in 0 1; do ip link del lxv$i 2>/dev/null; done; ip link del lxbr1 2>/dev/null; "
-        "ip link del lxbond1 2>/dev/null; rm -f /etc/netplan/61-lxlink-* "
+        "ip link del lxbond1 2>/dev/null; rm -f /etc/netplan/61-lxlink-* /etc/network/interfaces.d/10-lxlink-* "
         "/etc/NetworkManager/system-connections/lxlink-* /etc/lanvex/links.json; "
         "nmcli connection reload 2>/dev/null; true",
     )
 
 
-@pytest.mark.parametrize("host", ["lab-netplan", "lab-nm"])
+@pytest.mark.parametrize("host", ["lab-netplan", "lab-nm", "lab-debian"])
 async def test_a_bridge_created_and_removed(lab, host: str) -> None:  # type: ignore[no-untyped-def]
+    if host == "lab-debian" and not debian():
+        pytest.skip("lab-debian is not running")
     api, runner = lab
     drop_links(host)
     spare_links(host)
@@ -425,12 +445,15 @@ async def test_a_bridge_created_and_removed(lab, host: str) -> None:  # type: ig
         drop_links(host)
 
 
-async def test_a_bond_on_networkmanager(lab) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("host", ["lab-nm", "lab-debian"])
+async def test_a_bond(lab, host: str) -> None:  # type: ignore[no-untyped-def]
+    if host == "lab-debian" and not debian():
+        pytest.skip("lab-debian is not running")
     api, runner = lab
-    drop_links("lab-nm")
-    spare_links("lab-nm")
+    drop_links(host)
+    spare_links(host)
     try:
-        s = await ready(api, "lab-nm")
+        s = await ready(api, host)
         done = await run(
             api,
             runner,
@@ -444,7 +467,120 @@ async def test_a_bond_on_networkmanager(lab) -> None:  # type: ignore[no-untyped
             },
         )
         assert done["status"] == "succeeded", done
-        assert sh("lab-nm", "cat /sys/class/net/lxbond1/bonding/mode").split()[0] == "active-backup"
-        assert sorted(sh("lab-nm", "cat /sys/class/net/lxbond1/bonding/slaves").split()) == ["lxv0", "lxv1"]
+        assert sh(host, "cat /sys/class/net/lxbond1/bonding/mode").split()[0] == "active-backup"
+        assert sorted(sh(host, "cat /sys/class/net/lxbond1/bonding/slaves").split()) == ["lxv0", "lxv1"]
     finally:
-        drop_links("lab-nm")
+        drop_links(host)
+
+
+def routes(host: str, iface: str) -> str:
+    return sh(host, f"ip -4 route show dev {iface}")
+
+
+async def test_debian_addresses_and_routes_through_ifupdown(lab) -> None:  # type: ignore[no-untyped-def]
+    if not debian():
+        pytest.skip("lab-debian is not running")
+    api, runner = lab
+    s = await ready(api, "lab-debian")
+    original = sha("lab-debian", "/etc/network/interfaces")
+    keep_dns = {"dns_servers": None, "dns_search": None}
+    c = ok(
+        await api.post(
+            f"/api/v1/servers/{s['id']}/changes",
+            json=change("eth1", ["172.31.0.15/24", "172.31.0.16/24"])
+            | keep_dns
+            | {"routes": [{"to": "10.60.0.0/16", "via": "172.31.0.1", "metric": 30}]},
+        ),
+        201,
+    )
+    f = c["preview"]["files"][0]
+    assert f["path"] == "/etc/network/interfaces" and c["preview"]["backend"] == "ifupdown"
+    diff = [x for x in f["diff"].splitlines() if x[:1] in "+-" and x[:3] not in ("+++", "---")]
+    assert "+    up ip route replace 10.60.0.0/16 via 172.31.0.1 metric 30 dev eth1" in diff
+    assert "-    up ip route replace 10.50.0.0/16 via 172.31.0.1 dev eth1" in diff
+    assert "+iface eth1 inet static" in diff and "+    address 172.31.0.16/24" in diff
+    assert ipv4("lab-debian", "eth1") == ["172.31.0.15/24"]  # preparing changed nothing
+    ok(await api.post(f"/api/v1/changes/{c['id']}/approve", json={"confirm_name": s["name"]}))
+    assert await runner.run_once()
+    done = ok(await api.get(f"/api/v1/changes/{c['id']}"))
+    assert done["status"] == "succeeded", done
+    assert next(ch for ch in done["checks"] if ch["id"] == "routes")["ok"] is True
+    assert ipv4("lab-debian", "eth1") == ["172.31.0.15/24", "172.31.0.16/24"]
+    r = routes("lab-debian", "eth1")
+    assert "10.60.0.0/16 via 172.31.0.1" in r and "metric 30" in r and "10.50.0.0/16" not in r
+    assert ipv4("lab-debian", "eth0") == ["172.30.0.15/24"]  # the other interfaces are untouched
+    assert "/etc/network/interfaces" in sh("lab-debian", "ls /etc/network/interfaces")
+
+    back = await run(
+        api,
+        runner,
+        s,
+        change("eth1", ["172.31.0.15/24"])
+        | keep_dns
+        | {"routes": [{"to": "10.50.0.0/16", "via": "172.31.0.1"}]},
+    )
+    assert back["status"] == "succeeded", back
+    assert ipv4("lab-debian", "eth1") == ["172.31.0.15/24"]
+    assert "10.50.0.0/16 via 172.31.0.1" in routes("lab-debian", "eth1")
+    assert sha("lab-debian", "/etc/network/interfaces") == original  # the file is as Debian shipped it again
+
+
+async def test_debian_change_ifup_cannot_apply_is_undone(lab) -> None:  # type: ignore[no-untyped-def]
+    """A second default route next to eth0's: ifup fails, and the server puts everything back."""
+    if not debian():
+        pytest.skip("lab-debian is not running")
+    api, runner = lab
+    s = await ready(api, "lab-debian")
+    original = sha("lab-debian", "/etc/network/interfaces")
+    done = await run(
+        api,
+        runner,
+        s,
+        change("eth1", ["172.31.0.15/24", "172.31.0.17/24"], "172.31.0.99")
+        | {"dns_servers": None, "dns_search": None},
+    )
+    # ifup refuses a second default route next to eth0's, or verification finds no gateway: either way
+    # the server puts its previous configuration back.
+    assert done["status"] == "rolled_back", done
+    assert sha("lab-debian", "/etc/network/interfaces") == original
+    assert ipv4("lab-debian", "eth1") == ["172.31.0.15/24"]
+    assert "10.50.0.0/16 via 172.31.0.1" in routes("lab-debian", "eth1")
+    assert default_via("lab-debian", "eth0").startswith("default via 172.30.0.1")
+
+
+async def test_debian_ipv6_static(lab) -> None:  # type: ignore[no-untyped-def]
+    if not debian():
+        pytest.skip("lab-debian is not running")
+    if sh("lab-debian", "test -d /proc/sys/net/ipv6 && echo yes || echo no").strip() != "yes":
+        pytest.skip("no IPv6 in this kernel")
+    api, runner = lab
+    s = await ready(api, "lab-debian")
+    # Docker turns IPv6 off on interfaces of IPv4-only networks; ifupdown, unlike NetworkManager, does not
+    # turn it back on, and the helper refuses until an administrator does.
+    sh("lab-debian", "sysctl -q -w net.ipv6.conf.eth1.disable_ipv6=1")
+    body = change("eth1", ["172.31.0.15/24"]) | {"dns_servers": None, "dns_search": None}
+    r = await api.post(
+        f"/api/v1/servers/{s['id']}/changes",
+        json=body | {"ipv6": {"method": "static", "addresses": ["fd00:31::15/64"]}},
+    )
+    assert r.status_code == 422 and "IPv6 is turned off on eth1" in r.text, r.text
+    sh("lab-debian", "sysctl -q -w net.ipv6.conf.eth1.disable_ipv6=0")
+    done = await run(
+        api,
+        runner,
+        s,
+        change("eth1", ["172.31.0.15/24"])
+        | {
+            "dns_servers": None,
+            "dns_search": None,
+            "ipv6": {"method": "static", "addresses": ["fd00:31::15/64"]},
+            "routes": [
+                {"to": "10.50.0.0/16", "via": "172.31.0.1"},
+                {"to": "fd00:99::/48", "via": "fd00:31::1"},
+            ],
+        },
+    )
+    assert done["status"] == "succeeded", done
+    assert "fd00:31::15/64" in sh("lab-debian", "ip -6 -o address show dev eth1 scope global")
+    assert "fd00:99::/48 via fd00:31::1" in sh("lab-debian", "ip -6 route show dev eth1")
+    assert "iface eth1 inet6 static" in sh("lab-debian", "cat /etc/network/interfaces")

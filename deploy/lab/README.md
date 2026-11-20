@@ -43,8 +43,9 @@ To refresh the parser fixtures in `backend/tests/fixtures/linux`, run every comm
 - Where a container registry is reachable (CI), `LANVEX_LAB_BASE_IMAGE=docker.io/library/ubuntu:24.04`
   builds the Ubuntu base from Ubuntu's image instead of debootstrap (apt retries dropped downloads),
   `LANVEX_LAB_FEDORA=1` adds `lab-fedora` (172.30.0.14: NetworkManager, firewalld, dnsmasq, like
-  KlassenServer), and `LANVEX_LAB_DEBIAN=1` adds `lab-debian` (172.30.0.15: Debian 12 with ifupdown
-  sourcing `interfaces.d` and dnsmasq running as Debian's package starts it).
+  KlassenServer), and `LANVEX_LAB_DEBIAN=1` adds `lab-debian` (172.30.0.15, and 172.31.0.15 on `eth1`
+  with a static route: Debian 12 with ifupdown sourcing `interfaces.d` and dnsmasq running as Debian's
+  package starts it). The interface changes, bridges and bonds tests run on it too.
 - The networks tests (`test_networks_lab.py`) run on `lab-fedora`, `lab-netplan` and `lab-debian`, each
   with a real DHCP client on `lab-nm`; they need a kernel with 802.1Q (CI's runners have it).
 - Without a registry, distribution coverage is Ubuntu only: Debian and Fedora package mirrors were not

@@ -10,3 +10,12 @@ iface eth0 inet static
     pre-up ip addr flush dev eth0 || true
     address 172.30.0.15/24
     gateway 172.30.0.1
+
+# A second network for the change tests, like a storage network: no default route, one static route.
+# up.sh brings it up once Docker has connected it.
+allow-hotplug eth1
+iface eth1 inet static
+    pre-up ip addr flush dev eth1 || true
+    address 172.31.0.15/24
+    up ip route replace 10.50.0.0/16 via 172.31.0.1 dev eth1
+    down ip route del 10.50.0.0/16 via 172.31.0.1 dev eth1 || true

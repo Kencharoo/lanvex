@@ -47,8 +47,8 @@ The VLAN interfaces are configured by whatever configures the trunk they sit on:
 Once Lanvex has VLANs on a server, it keeps configuring them the same way. Each tested on a real host
 of that kind in CI, with a real DHCP client on the new VLAN ([status.md](status.md)).
 
-Changing an interface's own addresses (*Change IP settings*) works on netplan and NetworkManager
-servers; on ifupdown servers Lanvex manages networks only.
+Changing an interface's own addresses (*Change IP settings*) works on all three
+([changes.md](changes.md)).
 
 ## What Lanvex writes on the server, and what it leaves alone
 

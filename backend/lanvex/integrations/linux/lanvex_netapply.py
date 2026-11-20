@@ -23,9 +23,11 @@ What it does, and nothing else:
 Safety rules:
   - It never runs a shell. Every program is called with a fixed argument list.
   - It never takes file paths, program names or option names from its input. It edits only the netplan
-    file or NetworkManager profile that already defines the interface, and files of its own:
-    NetworkManager profiles named lanvex-*, firewalld zones named lx-*, and /etc/dnsmasq.d/lanvex.conf.
+    file, NetworkManager profile or ifupdown file that already defines the interface, and files of its
+    own: NetworkManager profiles named lanvex-*, firewalld zones named lx-*, and /etc/dnsmasq.d/lanvex.conf.
     Another tool's VLAN, zone or dnsmasq setting for the same interface is reported, never changed.
+  - ifupdown runs the up/down lines of its stanzas through /bin/sh. The lines this helper writes hold
+    only addresses and interface names it has validated, never other text from its input.
   - The rollback timer is armed before anything is changed. If Lanvex does not confirm in time, systemd
     runs `timer-rollback` and the previous configuration comes back on its own.
   - One change at a time; a second one is refused while another waits for confirmation.
@@ -39,6 +41,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import fnmatch
+import glob
 import hashlib
 import ipaddress
 import json
@@ -52,7 +55,7 @@ import sys
 import tempfile
 import time
 
-HELPER_VERSION = 6
+HELPER_VERSION = 7
 STATE_DIR = "/var/lib/lanvex/changes"
 LOCK_FILE = "/run/lanvex-netapply.lock"
 NETPLAN_DIR = "/etc/netplan"
@@ -158,7 +161,7 @@ DOMAIN_RE = re.compile(
 SECRET_LINE = re.compile(
     r"^(?P<lead>\s*(?:-\s+)?[\"']?)"
     r"(?P<key>[\w.-]*(?:password|passphrase|psk|secret)[\w.-]*|pin|leap-password|wep-key\d)"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value>\S.*)$",
+    r"(?P<sep>[\"']?\s*[:=]\s*|\s+)(?P<value>\S.*)$",
     re.IGNORECASE,
 )
 
@@ -1164,6 +1167,439 @@ def nm_activate(iface: str, uuid: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------------
+# ifupdown: /etc/network/interfaces and the files it sources
+#
+# An interface's settings are its "iface" stanzas, all in one file. Lanvex rewrites only those stanzas
+# (the first stanza of each family keeps every option it does not manage, in place) and leaves the rest
+# of the file byte for byte. Several addresses of one family are one stanza each, as interfaces(5)
+# describes; static routes are "up ip route replace" lines with a matching "down" line. Applying is
+# ifdown with the configuration the interface was brought up with, then ifup with the new one.
+
+IFUPDOWN_KEYWORDS = (
+    "iface",
+    "auto",
+    "mapping",
+    "source",
+    "source-directory",
+    "no-auto-down",
+    "no-scripts",
+    "rename",
+    "template",
+)
+INET_KEYS = ("address", "netmask", "broadcast", "network", "gateway", "pointopoint")
+INET6_KEYS = (
+    "address",
+    "netmask",
+    "gateway",
+    "accept_ra",
+    "autoconf",
+    "dhcp",
+    "request_prefix",
+    "privext",
+    "ll-attempts",
+    "ll-interval",
+)
+EXTRA_STANZA_KEYS = ("address", "netmask", "broadcast")
+DNS_KEYS = ("dns-nameservers", "dns-search", "dns-domain")
+# ifupdown hands dns-* options to the resolver only through one of these hooks.
+RESOLV_HOOKS = (
+    "/etc/network/if-up.d/000resolvconf",
+    "/etc/network/if-up.d/resolvconf",
+    "/etc/network/if-up.d/resolved",
+)
+_CMD_KEYS = ("pre-up", "up", "post-up", "down", "pre-down", "post-down")
+ROUTE_UP_RE = re.compile(
+    r"^(?:up|post-up)\s+ip\s+(?:-[46]\s+)?route\s+(?:add|replace|append)\s+(?P<to>\S+)\s+via\s+(?P<via>\S+)"
+    r"(?:\s+metric\s+(?P<metric>\d+))?(?:\s+dev\s+(?P<dev>\S+))?(?:\s+onlink)?\s*(?:\|\|\s*true)?\s*$"
+)
+ROUTE_DOWN_RE = re.compile(
+    r"^(?:down|pre-down|post-down)\s+ip\s+(?:-[46]\s+)?route\s+(?:del|delete)\s+(?P<to>\S+)"
+    r"(?:\s+via\s+\S+)?(?:\s+metric\s+\d+)?(?:\s+dev\s+\S+)?(?:\s+onlink)?\s*(?:\|\|\s*true)?\s*$"
+)
+ADDR_CMD_RE = re.compile(
+    r"^(?:pre-up|up|post-up|down|pre-down|post-down)\s+ip\s+(?:-[46]\s+)?addr(?:ess)?\s+(?:add|del|delete)\s+"
+    r"\S+\s+dev\s+(?P<dev>\S+)\s*(?:\|\|\s*true)?\s*$"
+)
+
+
+def _okey(line: str) -> str:
+    """An option line's key; "" for blank lines and comments."""
+    words = line.split()
+    return "" if not words or words[0].startswith("#") else words[0]
+
+
+def ifupdown_files() -> list:
+    """/etc/network/interfaces and every file it sources, in the order ifupdown reads them."""
+    out, todo = [], [IFUPDOWN_MAIN]
+    while todo and len(out) < 128:
+        path = todo.pop(0)
+        if path in out or not os.path.isfile(path):
+            continue
+        out.append(path)
+        try:
+            text = read_text(path)
+        except OSError:
+            continue
+        nested = []
+        for line in text.splitlines():
+            words = line.split()
+            if len(words) != 2 or words[0] not in ("source", "source-directory"):
+                continue
+            target = words[1] if words[1].startswith("/") else os.path.join("/etc/network", words[1])
+            if words[0] == "source":
+                nested += sorted(p for p in glob.glob(target) if os.path.isfile(p))
+            elif os.path.isdir(target):
+                nested += sorted(
+                    os.path.join(target, f) for f in os.listdir(target) if re.match(r"^[A-Za-z0-9_-]+$", f)
+                )
+        todo = nested + todo
+    return out
+
+
+def ifupdown_blocks(lines: list) -> list:
+    """The stanzas of a file: {"start", "end", "words"}, lines[start:end] the stanza with its options.
+    Comments and blank lines after an iface stanza's last option are not part of it."""
+    blocks, cur = [], None
+    for i, line in enumerate(lines):
+        words = line.split()
+        first = words[0] if words else ""
+        if first in IFUPDOWN_KEYWORDS or first.startswith("allow-"):
+            if cur is not None:
+                blocks.append(cur)
+            cur = {"start": i, "end": i + 1, "words": words}
+        elif cur is not None and cur["words"][0] in ("iface", "mapping") and _okey(line):
+            cur["end"] = i + 1
+    if cur is not None:
+        blocks.append(cur)
+    return blocks
+
+
+def ifupdown_find(iface: str) -> tuple:
+    """(path, lines, the interface's iface blocks) from the one file that defines it, or (None, [], [])."""
+    found = []
+    for path in ifupdown_files():
+        if path == IFUPDOWN_LANVEX:
+            continue
+        lines = read_text(path).split("\n")
+        mine = [b for b in ifupdown_blocks(lines) if b["words"][:2] == ["iface", iface]]
+        if mine:
+            found.append((path, lines, mine))
+    if len(found) > 1:
+        raise Refused(
+            "unsupported",
+            "%s is defined in more than one ifupdown file (%s). Keep its stanzas in one file first."
+            % (iface, ", ".join(p for p, _, _ in found)),
+        )
+    return found[0] if found else (None, [], [])
+
+
+def ifupdown_addresses(lines: list, blocks: list) -> list:
+    """The addresses the stanzas configure, as address/length."""
+    out = []
+    for b in blocks:
+        opts = {}
+        for line in lines[b["start"] + 1 : b["end"]]:
+            words = line.split()
+            if len(words) >= 2 and words[0] in ("address", "netmask"):
+                opts.setdefault(words[0], words[1])
+        if "address" not in opts:
+            continue
+        text = opts["address"]
+        if "/" not in text and "netmask" in opts:
+            text = "%s/%s" % (text, opts["netmask"])
+        try:
+            out.append(str(ipaddress.ip_interface(text)))
+        except ValueError:
+            continue
+    return out
+
+
+def ifupdown_route_lines(iface: str, routes: list, indent: str) -> list:
+    out = []
+    for r in routes:
+        spec = "%s via %s%s dev %s" % (
+            r["to"],
+            r["via"],
+            " metric %d" % r["metric"] if r.get("metric") is not None else "",
+            iface,
+        )
+        out += [indent + "up ip route replace " + spec, indent + "down ip route del " + spec + " || true"]
+    return out
+
+
+def ifupdown_routes(lines: list, blocks: list) -> list:
+    """The static routes the stanzas add (default routes are not static routes)."""
+    out = []
+    for b in blocks:
+        for line in lines[b["start"] + 1 : b["end"]]:
+            m = ROUTE_UP_RE.match(line.strip())
+            if m and m.group("to") not in ("default", "0.0.0.0/0", "::/0"):
+                r = {"to": m.group("to"), "via": m.group("via")}
+                if m.group("metric"):
+                    r["metric"] = int(m.group("metric"))
+                out.append(r)
+    return out
+
+
+def _managed_route(line: str) -> bool:
+    stripped = line.strip()
+    m = ROUTE_UP_RE.match(stripped) or ROUTE_DOWN_RE.match(stripped)
+    return bool(m) and m.group("to") not in ("default", "0.0.0.0/0", "::/0")
+
+
+def ifupdown_edit(
+    iface: str,
+    opts: list,
+    indent: str,
+    managed: tuple,
+    address_lines: list,
+    dns_lines: list | None,
+    route_lines: list | None,
+) -> list:
+    """A first stanza's option lines with Lanvex's settings in place of the old ones; the rest as it was."""
+    out, placed = [], set()
+    for line in opts:
+        key = _okey(line)
+        addr = ADDR_CMD_RE.match(line.strip())
+        if key in managed or (addr and addr.group("dev") == iface):
+            if "address" not in placed:
+                out += address_lines
+                placed.add("address")
+            continue
+        if dns_lines is not None and key in DNS_KEYS:
+            if "dns" not in placed:
+                out += dns_lines
+                placed.add("dns")
+            continue
+        if route_lines is not None and key in _CMD_KEYS and _managed_route(line):
+            if "routes" not in placed:
+                out += route_lines
+                placed.add("routes")
+            continue
+        out.append(line)
+    if "address" not in placed:
+        out = address_lines + out
+    if dns_lines is not None and "dns" not in placed:
+        out += dns_lines
+    if route_lines is not None and "routes" not in placed:
+        out += route_lines
+    return out
+
+
+def ifupdown_plan(iface: str, change: dict) -> dict:
+    path, lines, mine = ifupdown_find(iface)
+    if path is None:
+        raise Refused(
+            "unsupported",
+            "%s is not defined in /etc/network/interfaces or the files it sources." % iface,
+        )
+    for b in mine:
+        if len(b["words"]) < 4:
+            raise Refused("unsupported", "%s has an incomplete iface line in %s." % (iface, path))
+    inet = [b for b in mine if b["words"][2] == "inet"]
+    inet6 = [b for b in mine if b["words"][2] == "inet6"]
+    if not inet:
+        raise Refused("unsupported", "%s has no IPv4 (inet) stanza in %s." % (iface, path))
+    if inet[0]["words"][3] not in ("static", "dhcp", "manual"):
+        raise Refused(
+            "unsupported",
+            "%s uses ifupdown's %s method. Lanvex changes interfaces set up as static, dhcp or manual."
+            % (iface, inet[0]["words"][3]),
+        )
+    ipv6 = change.get("ipv6")
+    routes = change.get("routes")
+    if change["dns_servers"] is not None and not any(os.path.exists(h) for h in RESOLV_HOOKS):
+        raise Refused(
+            "unsupported",
+            "ifupdown passes DNS servers on only through resolvconf or systemd-resolved, and this server "
+            "has neither. Leave DNS out of the change.",
+        )
+    if change["method"] == "dhcp" and not (which("dhclient") or which("udhcpc") or which("dhcpcd")):
+        raise Refused(
+            "unsupported", "ifupdown needs a DHCP client (isc-dhcp-client), which is not installed."
+        )
+    off = "/proc/sys/net/ipv6/conf/%s/disable_ipv6" % iface
+    if ipv6 is not None and os.path.exists(off) and read_text(off).strip() == "1":
+        raise Refused(
+            "unsupported",
+            "IPv6 is turned off on %s (net.ipv6.conf.%s.disable_ipv6 = 1). Turn it on first, or leave IPv6 "
+            "out of the change." % (iface, iface),
+        )
+    v6routes = [r for r in routes or [] if ":" in r["via"]]
+    if v6routes and ipv6 is None and not inet6:
+        raise Refused(
+            "unsupported",
+            "%s has no IPv6 stanza for the IPv6 routes to go in. Set its IPv6 in the same change." % iface,
+        )
+
+    def opts(b):
+        return lines[b["start"] + 1 : b["end"]]
+
+    for b in inet[1:] + (inet6[1:] if ipv6 is not None else []):
+        extra = [k for k in (_okey(x) for x in opts(b)) if k and k not in EXTRA_STANZA_KEYS]
+        if extra:
+            raise Refused(
+                "unsupported",
+                "%s has another %s stanza in %s with settings besides its address (%s). Move them to the "
+                "first stanza first." % (iface, b["words"][2], path, ", ".join(extra)),
+            )
+    if routes is not None:
+        for b in mine:
+            for x in opts(b):
+                if _okey(x) in _CMD_KEYS and re.search(r"\broute\b", x) and not _managed_route(x):
+                    m = ROUTE_UP_RE.match(x.strip()) or ROUTE_DOWN_RE.match(x.strip())
+                    if m:
+                        continue  # a default route of its own: not a static route
+                    raise Refused(
+                        "unsupported",
+                        "%s's stanza sets routes with a command Lanvex does not manage: %s. Leave routes out "
+                        'of the change, or write it as "up ip route replace <network> via <next hop>".'
+                        % (iface, x.strip()),
+                    )
+
+    sample = next((x for b in mine for x in opts(b) if _okey(x)), "")
+    indent = sample[: len(sample) - len(sample.lstrip())] or "    "
+    dns_lines = None
+    if change["dns_servers"] is not None:
+        dns_lines = []
+        if change["dns_servers"]:
+            dns_lines.append(indent + "dns-nameservers " + " ".join(change["dns_servers"]))
+        if change["dns_search"]:
+            dns_lines.append(indent + "dns-search " + " ".join(change["dns_search"]))
+    v4routes = None if routes is None else [r for r in routes if ":" not in r["via"]]
+
+    # IPv4: the first stanza edited in place, one more stanza per further address.
+    method = change["method"]
+    first = inet[0]
+    addr_lines = []
+    if method == "static":
+        addr_lines = [indent + "address " + change["addresses"][0]]
+        if change["gateway"]:
+            addr_lines.append(indent + "gateway " + change["gateway"])
+    new4 = ["iface %s inet %s" % (iface, method)]
+    route4 = ifupdown_route_lines(iface, v4routes, indent) if v4routes is not None else None
+    new4 += ifupdown_edit(iface, opts(first), indent, INET_KEYS, addr_lines, dns_lines, route4)
+    for a in change["addresses"][1:] if method == "static" else []:
+        new4 += ["", "iface %s inet static" % iface, indent + "address " + a]
+
+    # IPv6: rewritten when the change sets it; otherwise only its route lines, when routes change.
+    new6, drop6 = None, []
+    route6 = ifupdown_route_lines(iface, v6routes, indent) if routes is not None else None
+    if ipv6 is not None:
+        m6 = {"static": "static", "auto": "auto", "link-local": "auto"}[ipv6["method"]]
+        lines6 = []
+        if ipv6["method"] == "static":
+            lines6 = [indent + "address " + ipv6["addresses"][0]]
+            if ipv6.get("gateway"):
+                lines6.append(indent + "gateway " + ipv6["gateway"])
+        elif ipv6["method"] == "link-local":
+            lines6 = [indent + "accept_ra 0"]  # no router advertisements: link-local addresses only
+        new6 = ["iface %s inet6 %s" % (iface, m6)]
+        new6 += ifupdown_edit(
+            iface, opts(inet6[0]) if inet6 else [], indent, INET6_KEYS, lines6, None, route6
+        )
+        for a in ipv6["addresses"][1:] if ipv6["method"] == "static" else []:
+            new6 += ["", "iface %s inet6 static" % iface, indent + "address " + a]
+        drop6 = inet6[1:]
+    elif inet6 and route6 is not None:
+        new6 = lines[inet6[0]["start"] : inet6[0]["start"] + 1]
+        new6 += ifupdown_edit(iface, opts(inet6[0]), indent, (), [], None, route6)
+
+    # Splice: replace the first stanza of each family, drop the others it replaces; nothing else moves.
+    replace = {first["start"]: (first["end"], new4)}
+    drop = list(inet[1:]) + drop6
+    if new6 is not None and inet6:
+        replace[inet6[0]["start"]] = (inet6[0]["end"], new6)
+    elif new6 is not None:
+        replace[first["start"]] = (first["end"], new4 + [""] + new6)
+    if routes is not None:
+        # Route lines in stanzas Lanvex does not rewrite (an extra inet6 stanza) go too.
+        for b in inet6[1:] if ipv6 is None else []:
+            kept = [x for x in opts(b) if not _managed_route(x)]
+            replace[b["start"]] = (b["end"], lines[b["start"] : b["start"] + 1] + kept)
+    gone = set()
+    for b in drop:
+        gone.update(range(b["start"], b["end"]))
+        if b["start"] > 0 and not lines[b["start"] - 1].strip() and b["start"] - 1 >= first["end"]:
+            gone.add(b["start"] - 1)  # the blank line that separated it
+    out, i = [], 0
+    while i < len(lines):
+        if i in replace:
+            end, new = replace[i]
+            out += new
+            i = end
+            continue
+        if i not in gone:
+            out.append(lines[i])
+        i += 1
+    before = "\n".join(lines)
+    after = "\n".join(out)
+
+    old_addresses = ifupdown_addresses(lines, mine)
+    removed = []
+    if routes is not None:
+        wanted = {route_key(r) for r in routes}
+        removed = [r for r in ifupdown_routes(lines, mine) if route_key(r) not in wanted]
+    new_addresses = list(change["addresses"]) + (
+        list(ipv6["addresses"]) if ipv6 is not None and ipv6["method"] == "static" else []
+    )
+    return {
+        "backend": "ifupdown",
+        "files": [
+            {
+                "path": path,
+                "label": "ifupdown file",
+                "before": before,
+                "after": after,
+                "sha256": sha256_file(path),
+                "action": "modify",
+            }
+        ],
+        "commands": ["ifdown --force %s" % iface, "ifup %s" % iface],
+        "warnings": [
+            "%s is taken down and brought up again with the new settings: its connections pause for a "
+            "moment." % iface
+        ],
+        "_write": {path: after},
+        "_changed": before != after,
+        "_removed_routes": removed,
+        "_ifupdown": {"interface": iface, "old": old_addresses, "new": new_addresses},
+    }
+
+
+def ifupdown_validate(write: dict, iface: str) -> None:
+    """ifup parses the new file and says which commands it would run, without running any."""
+    if not which("ifup"):
+        raise Refused("unsupported", "ifupdown (ifup) is not installed.")
+    for path, text in write.items():
+        fd, tmp = tempfile.mkstemp(prefix="lanvex-ifupdown-")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            r = run(["ifup", "--no-act", "--force", "--interfaces=" + tmp, iface], timeout=30)
+            if r.returncode != 0:
+                raise Refused(
+                    "invalid_config",
+                    "ifupdown rejects the new %s: %s" % (path, (r.stderr or r.stdout).strip()[:500]),
+                )
+        finally:
+            os.unlink(tmp)
+
+
+def ifupdown_down(iface: str, addresses: list) -> None:
+    """ifdown with the configuration on disk, then any of these addresses ifdown left on the interface."""
+    run(["ifdown", "--force", iface], timeout=120)
+    for a in addresses:
+        run(["ip", "address", "del", a, "dev", iface], timeout=15)
+
+
+def ifupdown_up(iface: str) -> None:
+    r = run(["ifup", iface], timeout=180)
+    if r.returncode != 0:
+        raise Refused("apply_failed", "ifup %s failed: %s" % (iface, (r.stderr or r.stdout).strip()[:500]))
+
+
+# ---------------------------------------------------------------------------------------------------------
 # Bridges and bonds (kind "link"): one per change, created from interfaces with no addresses of their own,
 # or removed again. Only Lanvex's own files are written; members' own configuration is never edited.
 
@@ -1325,13 +1761,69 @@ def link_backend(members: list) -> str:
         states = nm_device_states()
         if all(states.get(m, "unmanaged") not in ("unmanaged", "unavailable") for m in members):
             return "networkmanager"
+    if which("netplan") and os.path.isdir(NETPLAN_DIR) and netplan_docs():
+        return "netplan"
+    if which("ifup") and os.path.isfile(IFUPDOWN_MAIN):
+        if not ifupdown_sources_dir():
+            raise Refused(
+                "unsupported",
+                "%s does not read the files in %s, where Lanvex puts its bridges and bonds. Add the line "
+                '"source %s/*" to it first.' % (IFUPDOWN_MAIN, IFUPDOWN_DIR, IFUPDOWN_DIR),
+            )
+        return "ifupdown"
     if which("netplan") and os.path.isdir(NETPLAN_DIR):
         return "netplan"
     raise Refused(
         "unsupported",
-        "Lanvex creates bridges and bonds where NetworkManager or netplan manages the member interfaces; "
-        "neither does here.",
+        "Lanvex creates bridges and bonds where NetworkManager, netplan or ifupdown manages the member "
+        "interfaces; none does here.",
     )
+
+
+def render_link_ifupdown(change: dict) -> str:
+    """The bridge or bond as ifupdown stanzas that create it with ip(8), so neither bridge-utils nor
+    ifenslave is needed; deleting the link on the way down frees its members."""
+    name = change["name"]
+    if change["type"] == "bridge":
+        create = "ip link add %s type bridge%s" % (name, " stp_state 1" if change["stp"] else "")
+    else:
+        create = "ip link add %s type bond mode %s miimon 100" % (name, change["mode"])
+    method = {"none": "manual", "static": "static", "dhcp": "dhcp"}[change["method"]]
+    lines = [
+        "# " + MANAGED,
+        "",
+        "auto %s" % name,
+        "iface %s inet %s" % (name, method),
+        "    pre-up [ -e /sys/class/net/%s ] || %s" % (name, create),
+    ]
+    for m in change["members"]:
+        if change["type"] == "bond":  # a bond takes members that are down
+            lines.append(
+                "    pre-up ip link set %s down && ip link set %s master %s && ip link set %s up"
+                % (m, m, name, m)
+            )
+        else:
+            lines.append("    pre-up ip link set %s master %s && ip link set %s up" % (m, name, m))
+    if change["method"] == "static":
+        lines.append("    address %s" % change["addresses"][0])
+        if change["gateway"]:
+            lines.append("    gateway %s" % change["gateway"])
+    lines.append("    post-down ip link delete %s" % name)
+    for a in change["addresses"][1:] if change["method"] == "static" else []:
+        lines += ["", "iface %s inet static" % name, "    address %s" % a]
+    return "\n".join(lines) + "\n"
+
+
+def ifupdown_member_free(member: str) -> None:
+    """A member may have an ifupdown stanza, but no addresses of its own there."""
+    path, lines, mine = ifupdown_find(member)
+    for b in mine:
+        if len(b["words"]) > 3 and b["words"][3] != "manual":
+            raise Refused(
+                "unsupported",
+                "%s has IP settings of its own in %s (%s). Remove them there first."
+                % (member, path, " ".join(b["words"])),
+            )
 
 
 def link_plan(change: dict) -> dict:
@@ -1364,11 +1856,10 @@ def link_plan(change: dict) -> dict:
             }
         )
         backend = own.get("backend") or "netplan"
-        commands = (
-            ["netplan apply", "ip link delete %s" % name]
-            if backend == "netplan"
-            else ["nmcli connection reload", "ip link delete %s" % name]
-        )
+        commands = {
+            "netplan": ["netplan apply", "ip link delete %s" % name],
+            "ifupdown": ["ifdown --force %s" % name, "ip link delete %s" % name],
+        }.get(backend, ["nmcli connection reload", "ip link delete %s" % name])
         return {
             "backend": backend,
             "files": files,
@@ -1407,6 +1898,15 @@ def link_plan(change: dict) -> dict:
         path = os.path.join(NETPLAN_DIR, "61-%s%s.yaml" % (LINK_PROFILE, name))
         write[path] = render_link_netplan(change, ids)
         commands = ["netplan generate", "netplan apply"]
+    elif backend == "ifupdown":
+        for m in change["members"]:
+            ifupdown_member_free(m)
+        if change["method"] == "dhcp" and not (which("dhclient") or which("udhcpc") or which("dhcpcd")):
+            raise Refused(
+                "unsupported", "ifupdown needs a DHCP client (isc-dhcp-client), which is not installed."
+            )
+        write[os.path.join(IFUPDOWN_DIR, "10-%s%s" % (LINK_PROFILE, name))] = render_link_ifupdown(change)
+        commands = ["ifup %s" % name]
     else:
         import uuid as uuidlib  # noqa: PLC0415 - only here
 
@@ -1461,11 +1961,14 @@ def link_plan(change: dict) -> dict:
 
 def link_apply(plan: dict) -> None:
     os.makedirs(os.path.dirname(LINKS_MANIFEST), mode=0o755, exist_ok=True)
+    if plan["backend"] == "ifupdown" and plan["_link"]["existed"]:
+        run(["ifdown", "--force", plan["_link"]["name"]], timeout=60)  # while its stanza is still there
     for path in plan["_delete"]:
         if os.path.exists(path):
             os.unlink(path)
     for path, text in plan["_write"].items():
-        atomic_write(path, text.encode("utf-8"), 0o644 if path == LINKS_MANIFEST else 0o600, 0, 0)
+        readable = path == LINKS_MANIFEST or path.startswith(IFUPDOWN_DIR + "/")
+        atomic_write(path, text.encode("utf-8"), 0o644 if readable else 0o600, 0, 0)
     link_activate(plan["backend"], plan["_link"], present=not plan["_link"]["existed"])
 
 
@@ -1474,6 +1977,14 @@ def link_activate(backend: str, link: dict, present: bool) -> None:
     name = link["name"]
     if backend == "netplan":
         netplan_apply()
+    elif backend == "ifupdown":
+        if present:
+            # --force: ifupdown may still count it as up from before a rollback deleted it.
+            r = run(["ifup", "--force", name], timeout=180)
+            if r.returncode != 0:
+                raise Refused(
+                    "apply_failed", "ifup %s failed: %s" % (name, (r.stderr or r.stdout).strip()[:500])
+                )
     else:
         run(["nmcli", "connection", "reload"], timeout=30, check=True)
         if present:
@@ -3954,11 +4465,13 @@ def detect_and_plan(change: dict) -> dict:
             if profile["file"].startswith(NM_NETPLAN_PREFIX):
                 return netplan_plan(iface, change)  # NetworkManager renders what netplan defines
             return nm_plan(iface, profile, change)
+    if which("ifup") and ifupdown_find(iface)[0] is not None:
+        return ifupdown_plan(iface, change)
     if which("netplan") and os.path.isdir(NETPLAN_DIR):
         return netplan_plan(iface, change)
     raise Refused(
         "unsupported",
-        "%s is not managed by netplan or by a stored NetworkManager profile. Lanvex cannot change it yet."
+        "%s is not managed by netplan, ifupdown or a stored NetworkManager profile. Lanvex cannot change it."
         % iface,
     )
 
@@ -4084,6 +4597,8 @@ def reactivate(state: dict) -> None:
         link_restore(state)
     elif state["backend"] == "netplan":
         netplan_apply()
+    elif state["backend"] == "ifupdown":
+        ifupdown_up(state["interface"])
     else:
         run(["nmcli", "connection", "load", state["nm"]["file"]], timeout=30, check=True)
         nm_activate(state["interface"], state["nm"]["uuid"])
@@ -4147,8 +4662,15 @@ def validate_plan(kind: str, plan: dict) -> None:
             candidates = {p: t for p, t in plan["_write"].items() if p.startswith(NETPLAN_DIR + "/")}
             candidates.update({p: None for p in plan["_delete"] if p.startswith(NETPLAN_DIR + "/")})
             netplan_validate(candidates)
+        elif plan["backend"] == "ifupdown" and not plan["_link"]["existed"]:
+            ifupdown_validate(
+                {p: t for p, t in plan["_write"].items() if p.startswith(IFUPDOWN_DIR + "/")},
+                plan["_link"]["name"],
+            )
     elif plan["backend"] == "netplan":
         netplan_validate(plan["_write"])
+    elif plan["backend"] == "ifupdown":
+        ifupdown_validate(plan["_write"], plan["_ifupdown"]["interface"])
 
 
 def cmd_plan(req: dict) -> dict:
@@ -4208,6 +4730,7 @@ def cmd_apply(req: dict) -> dict:
         "networks": plan.get("_networks"),
         "removed_routes": plan.get("_removed_routes") or [],
         "link": plan.get("_link"),
+        "ifupdown": plan.get("_ifupdown"),
     }
     event(state, "received")
     state["files"] = backup(cid, [f["path"] for f in plan["files"]] + list(plan.get("_backup") or []))
@@ -4230,6 +4753,13 @@ def cmd_apply(req: dict) -> dict:
             networks_apply(plan)
         elif kind == "link":
             link_apply(plan)
+        elif plan["backend"] == "ifupdown":
+            # ifdown needs the configuration the interface was brought up with, so it goes first.
+            ifupdown_down(change["interface"], plan["_ifupdown"]["old"])
+            for path, text in plan["_write"].items():
+                mode = os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o644
+                atomic_write(path, text.encode("utf-8"), mode, 0, 0)
+            ifupdown_up(change["interface"])
         else:
             for path, text in plan["_write"].items():
                 # netplan and NetworkManager both refuse configuration files others can read
@@ -4257,6 +4787,11 @@ def do_rollback(cid: str, state: dict, reason: str) -> None:
             networks_before_restore(state)
         except Refused:
             pass  # restore the files whatever happens
+    elif state.get("backend") == "ifupdown" and state.get("ifupdown"):
+        try:
+            ifupdown_down(state["interface"], state["ifupdown"].get("new") or [])
+        except Exception as e:  # noqa: BLE001 - restore the files whatever happens
+            event(state, "ifdown_failed", repr(e))
     restore_files(cid, state.get("files") or [])
     error = None
     try:
@@ -4396,6 +4931,14 @@ def dns_servers(iface: str) -> list | None:
         r = run(["nmcli", "-g", "IP4.DNS", "device", "show", iface], timeout=15)
         if r.returncode == 0:
             return [s.strip() for s in r.stdout.replace("|", "\n").splitlines() if s.strip()]
+    if os.path.exists("/etc/network/if-up.d/000resolvconf") or os.path.exists(
+        "/etc/network/if-up.d/resolvconf"
+    ):
+        try:  # resolvconf collects every interface's servers into resolv.conf
+            text = read_text("/etc/resolv.conf")
+        except OSError:
+            return None
+        return re.findall(r"(?m)^\s*nameserver\s+(\d{1,3}(?:\.\d{1,3}){3})\s*$", text)
     return None
 
 

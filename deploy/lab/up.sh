@@ -41,6 +41,7 @@ if docker image inspect lanvex-target:fedora >/dev/null 2>&1; then
 fi
 if docker image inspect lanvex-target:debian >/dev/null 2>&1; then
   run lab-debian lanvex-target:debian 172.30.0.15
+  docker network connect --ip 172.31.0.15 lanvex-lab-b lab-debian
   hosts="$hosts lab-debian"
 fi
 
@@ -60,6 +61,7 @@ for c in $hosts; do
     docker exec "$c" systemctl start sshd.service
   elif [ "$c" = lab-debian ]; then
     docker exec "$c" systemctl start ssh-hostkeys.service ssh.service
+    docker exec "$c" ifup eth1  # allow-hotplug: no udev in the container to bring it up
   else
     docker exec "$c" systemctl start ssh-hostkeys.service ssh.socket
   fi
