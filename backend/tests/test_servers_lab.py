@@ -33,6 +33,8 @@ pytestmark = [
 ]
 
 HOSTS = {"lab-netplan": "172.30.0.11", "lab-nm": "172.30.0.12", "lab-ifup": "172.30.0.13"}
+# Built only where a registry is reachable (CI): the change tests use them when they run.
+ADDRESSES = HOSTS | {"lab-fedora": "172.30.0.14", "lab-debian": "172.30.0.15"}
 OWNED_ADDRESSES = ("172.30.0.11", "172.30.0.50", "10.11.0.1", "172.30.0.60", "192.0.2.70")
 
 
@@ -76,7 +78,7 @@ def ok(r: httpx.Response, status: int = 200) -> Any:
 async def register(
     api: httpx.AsyncClient, host: str, *, credentials: dict | None = None, username: str = "lanvex"
 ) -> dict:
-    hk = ok(await api.post("/api/v1/servers/scan-host-key", json={"address": HOSTS[host]}))
+    hk = ok(await api.post("/api/v1/servers/scan-host-key", json={"address": ADDRESSES[host]}))
     assert hk["fingerprint_sha256"] == server_fingerprint(
         host
     )  # what an administrator compares on the server
@@ -85,7 +87,7 @@ async def register(
             "/api/v1/servers",
             json={
                 "name": f"{host}-{secrets.token_hex(2)}",
-                "address": HOSTS[host],
+                "address": ADDRESSES[host],
                 "username": username,
                 "host_key": {"public_key": hk["public_key"], "fingerprint_sha256": hk["fingerprint_sha256"]},
                 "credentials": credentials or {"method": "generated_key"},
