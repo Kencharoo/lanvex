@@ -21,6 +21,10 @@
   interface's own stanzas, checks the new file with `ifup --no-act`, and applies it with ifdown and
   ifup behind the rollback timer. Bridges and bonds are created with `ip link`, so bridge-utils and
   ifenslave are not needed ([docs/changes.md](docs/changes.md#on-ifupdown-servers)). Needs helper 7.
+- **The manual**, in English and German ([docs/manual](docs/manual/en.md)): installing, first steps,
+  documenting the network, servers and their changes, networks on a server, switches, discovery,
+  monitoring, sign-in, running Lanvex, troubleshooting. *Manual* in the user menu opens it for the
+  running version.
 - `lanvexctl restart` applies changes to `.env` (it only restarted the containers before).
 
 Lanvex Core grants Lanvex's service account *change* on devices and virtual machines, for the

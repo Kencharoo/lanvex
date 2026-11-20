@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   BellRing,
+  BookOpen,
   Boxes,
   ChevronsLeft,
   ChevronsRight,
@@ -105,8 +106,16 @@ function ConnectionIndicator({ collapsed }: { collapsed: boolean }) {
   return collapsed ? <Tooltip content={state.text} side="right">{content}</Tooltip> : content;
 }
 
+/** The manual for this version (its release tag on GitHub), in German for German browsers. */
+export function manualUrl(version: string | undefined, language = navigator.language): string {
+  const ref = version && /^\d+\.\d+\.\d+$/.test(version) ? `v${version}` : "main";
+  const lang = language.toLowerCase().startsWith("de") ? "de" : "en";
+  return `https://github.com/Kencharoo/lanvex/blob/${ref}/docs/manual/${lang}.md`;
+}
+
 function UserMenu({ collapsed }: { collapsed: boolean }) {
   const { user, signOut } = useSession();
+  const systemInfo = useSystemInfo();
   const { theme, setTheme } = useTheme();
   const themes: { v: ThemePref; label: string; icon: typeof Sun }[] = [
     { v: "light", label: "Light", icon: Sun },
@@ -133,6 +142,9 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
           </MenuItem>
         ))}
         <MenuSeparator />
+        <MenuItem onSelect={() => window.open(manualUrl(systemInfo.data?.version), "_blank", "noopener")}>
+          <BookOpen /> Manual
+        </MenuItem>
         <MenuItem onSelect={() => void signOut()}>
           <LogOut /> Sign out
         </MenuItem>

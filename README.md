@@ -96,6 +96,8 @@ your NetBox.
 
 ## Docs
 
+- **Manual**: [English](docs/manual/en.md), [Deutsch](docs/manual/de.md) — installing, daily work, servers,
+  changes, networks, switches, monitoring, sign-in, running Lanvex (also under *Manual* in Lanvex's user menu)
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, data flows, security model
 - [docs/core.md](docs/core.md) — Lanvex Core: what it is, sign-in and roles, backups, updates, troubleshooting
 - [docs/configuration.md](docs/configuration.md) — every setting

@@ -122,7 +122,7 @@ back and reloads Kea again.
   Ubuntu, installing dnsmasq next to systemd-resolved leaves it failed until Lanvex's first pool; that
   is expected.
 - dnsmasq reads `/etc/dnsmasq.d` (the default on Fedora, RHEL, Debian and Ubuntu).
-- The change helper in version 5 (Lanvex 1.0), with Python 3. After updating Lanvex, every
+- The change helper this Lanvex ships, with Python 3. After updating Lanvex, every
   server's helper shows as outdated: copy the new file to the server from the server page
   (*Configuration changes*) and run the commands shown there as an administrator of the server, as
   the first time ([changes.md](changes.md#2-on-each-server-install-the-helper)).
